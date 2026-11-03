@@ -21,7 +21,7 @@ has none) -- for a constant a function builds mid-body (a pack's IHOOKS).
 --unordered-loads: plain loads everywhere (A/B only). By default a function that uses exclusives or
 barriers (lock-free code) gets ordered loads (rt.h RD32A...); see SYNC_MN.
 """
-import bisect, json, os, re, sys
+import bisect, json, os, re, struct, sys
 from capstone import Cs, CS_ARCH_ARM, CS_MODE_THUMB, CS_MODE_ARM
 from capstone.arm import (ARM_OP_REG, ARM_OP_IMM, ARM_OP_MEM, ARM_OP_FP, ARM_SFT_INVALID)
 
@@ -254,6 +254,11 @@ class Fn:
             e = {"uxtab": f"(uint8_t)({v})", "uxtah": f"(uint16_t)({v})", "sxtab": f"(uint32_t)(int8_t)({v})",
                  "sxtah": f"(uint32_t)(int16_t)({v})"}[mn]
             out = [f"{self.dst(ops[0].reg)} = {self.r(ops[1].reg, i)} + {e};"]
+        elif mn in ("ssat", "usat"):
+            w = ops[1].imm   # the saturation width in bits (1..32); the operand keeps its shift
+            v = self.operand(ops[2], i)
+            e = (f"(uint32_t)SATS((int32_t)({v}), {w})" if mn == "ssat" else f"(uint32_t)SATU((int32_t)({v}), {w})")
+            out = [f"{self.dst(ops[0].reg)} = {e};"]
         elif mn in ("ubfx", "sbfx"):
             src, lsb, w = self.r(ops[1].reg, i), ops[2].imm, ops[3].imm
             e = (f"(({src} >> {lsb}) & 0x{(1 << w) - 1:x}u)" if mn == "ubfx"
@@ -389,13 +394,14 @@ class Fn:
             out.append("return;")
         return ["".join(out)]
 
-    def call(self, target, nxt):
+    def call(self, target, nxt, link=True):
         t = target & ~1
+        lr = f"c->r[14] = 0x{nxt | self.tbit:x}u; " if link else ""
         if t in self.entries:
-            return [f"c->r[14] = 0x{nxt | self.tbit:x}u; fn_{t:08x}(c); if (c->stop) return;"]
+            return [f"{lr}fn_{t:08x}(c); if (c->stop) return;"]
         if t in SETJMP_STUBS:   # 0 now; a guest longjmp to this buffer comes back here with its value
             return [f"c->r[14] = 0x{nxt | self.tbit:x}u; {{ RecompJmp *rj = recomp_setjmp_begin(c); if (!_setjmp(rj->host)) c->r[0] = 0; }} if (c->stop) return;"]
-        return [f"c->r[14] = 0x{nxt | self.tbit:x}u; recomp_call_external(c, 0x{target:x}u); if (c->stop) return;"]
+        return [f"{lr}recomp_call_external(c, 0x{target:x}u); if (c->stop) return;"]
 
     def branch(self, i, mn, ops):
         nxt = i.address + i.size
@@ -404,15 +410,16 @@ class Fn:
             t = ops[0].imm & 0xffffffff
             if t in self.addrs:
                 body = [f"goto L_{t:08x};"]
-            else:   # a tail call into another function
-                body = self.call(t, nxt) + ["return;"]
+            else:   # a tail jump into another function -- a branch does not link: r14 is live guest
+                # data here (the RB-insert path keeps its hint node in lr across this edge)
+                body = self.call(t, nxt, link=False) + ["return;"]
             return body if cc == 15 else [f"if (COND(c, {cc})) {{"] + body + ["}"]
         if mn in ("cbz", "cbnz"):
             r, t = self.r(ops[0].reg, i), ops[1].imm & 0xffffffff
             test = f"{r} {'==' if mn == 'cbz' else '!='} 0"
             if t in self.addrs:
                 return [f"if ({test}) goto L_{t:08x};"]
-            return [f"if ({test}) {{"] + self.call(t, nxt) + ["return; }"]
+            return [f"if ({test}) {{"] + self.call(t, nxt, link=False) + ["return; }"]
         if mn == "bl" or (mn == "blx" and ops[0].type == ARM_OP_IMM):
             body = self.call(ops[0].imm & 0xffffffff, nxt)
             return body if cc == 15 else [f"if (COND(c, {cc})) {{"] + body + ["}"]
@@ -564,6 +571,16 @@ class Fn:
             return [f"{{ uint8_t x[32], o[32]; memcpy(x, &c->vfp.d[{a0}], {nb}); memcpy(x + {nb}, &c->vfp.d[{b0}], {nb});"
                     f" for (int e = 0; e < {nb // es}; e++) {{ memcpy(o + e * {es}, x + 2 * e * {es}, {es}); memcpy(o + {nb} + e * {es}, x + (2 * e + 1) * {es}, {es}); }}"
                     f" memcpy(&c->vfp.d[{a0}], o, {nb}); memcpy(&c->vfp.d[{b0}], o + {nb}, {nb}); }}"]
+        if mn == "vzip" and dt in ("8", "16", "32") and len(regs) == 2 and regs[0][0] == regs[1][0]:
+            # interleave: dD's and dM's elements (n each) taken as x0,y0,x1,y1,... -- the first n of that
+            # stream into D and the second into M (vuzp's inverse)
+            (a0, cnt), (b0, _) = dbytes(regs[0]), dbytes(regs[1])
+            es, nb = int(dt) // 8, 8 * cnt
+            n = nb // es
+            return [f"{{ uint8_t x[32], y[32], o[32]; memcpy(x, &c->vfp.d[{a0}], {nb}); memcpy(y, &c->vfp.d[{b0}], {nb});"
+                    f" for (int e = 0; e < {n // 2}; e++) {{ memcpy(o + 2 * e * {es}, x + e * {es}, {es}); memcpy(o + (2 * e + 1) * {es}, y + e * {es}, {es});"
+                    f" memcpy(o + {nb} + 2 * e * {es}, x + ({n // 2} + e) * {es}, {es}); memcpy(o + {nb} + (2 * e + 1) * {es}, y + ({n // 2} + e) * {es}, {es}); }}"
+                    f" memcpy(&c->vfp.d[{a0}], o, {nb}); memcpy(&c->vfp.d[{b0}], o + {nb}, {nb}); }}"]
         if mn in ("vmull", "vmul") and dt == "p8" and len(regs) == 3:
             # polynomial (carry-less) multiply of each byte pair over GF(2): vmull keeps the 16-bit product, vmul its low byte
             # (np_matching2's and libssl's AES: the inverse MixColumns)
@@ -588,6 +605,24 @@ class Fn:
             d, q0 = regs[0][1], 2 * regs[1][1]
             return [f"{{ {ty} a[{16 // es}]; {oty} o[{16 // es}]; memcpy(a, &c->vfp.d[{q0}], 16); for (int k = 0; k < {16 // es}; k++) o[k] = ({oty})a[k];"
                     f" memcpy(&c->vfp.d[{d}], o, 8); }}"]
+        if mn in ("vqmovn", "vqmovun") and dt in ("s16", "s32", "s64", "u16", "u32", "u64") and regs[0][0] == "d" and regs[1][0] == "q":
+            # saturating move and narrow: each element of qM halved in width; vqmovn.s saturizes to the
+            # signed narrow range, vqmovn.u and vqmovun to the unsigned (vqmovun: signed input, unsigned result)
+            es = int(dt[1:]) // 8   # source element size
+            ob = int(dt[1:]) // 2   # result element bits
+            ty, oty = {2: ("uint16_t", "uint8_t"), 4: ("uint32_t", "uint16_t"), 8: ("uint64_t", "uint32_t")}[es]
+            sg_in = dt[0] == "s"
+            ity = {2: "int16_t", 4: "int32_t", 8: "int64_t"}[es] if sg_in else ty
+            if mn == "vqmovun" or not sg_in:   # unsigned result: clamp above (SATS below for vqmovun's negatives)
+                if sg_in:
+                    body = f"o[k] = ({oty})SATU((int64_t)({ity})a[k], {ob});"
+                else:
+                    body = f"{{ uint64_t t = ({ity})a[k]; o[k] = t > {1 << ob}ull - 1 ? {oty}({(1 << ob) - 1}) : ({oty})t; }}"
+            else:
+                body = f"o[k] = ({oty})SATS((int64_t)({ity})a[k], {ob});"
+            d, q0 = regs[0][1], 2 * regs[1][1]
+            return [f"{{ {ty} a[{16 // es}]; {oty} o[{16 // es}]; memcpy(a, &c->vfp.d[{q0}], 16); for (int k = 0; k < {16 // es}; k++) {body}"
+                    f" memcpy(&c->vfp.d[{d}], o, 8); }}"]
         if mn == "vmovl" and dt in ("u8", "s8", "u16", "s16", "u32", "s32") and regs[0][0] == "q" and regs[1][0] == "d":
             es = int(dt[1:]) // 8
             ty, oty = {("u", 1): ("uint8_t", "uint16_t"), ("s", 1): ("int8_t", "int16_t"), ("u", 2): ("uint16_t", "uint32_t"),
@@ -603,12 +638,37 @@ class Fn:
             q0, a, b = 2 * regs[0][1], regs[1][1], regs[2][1]
             return [f"{{ {ty} x[{8 // es}], y[{8 // es}]; {oty} o[{8 // es}]; memcpy(x, &c->vfp.d[{a}], 8); memcpy(y, &c->vfp.d[{b}], 8);"
                     f" for (int k = 0; k < {8 // es}; k++) o[k] = ({oty})x[k] * ({oty})y[k]; memcpy(&c->vfp.d[{q0}], o, 16); }}"]
+        if mn in ("vmlal", "vmlsl") and dt in ("u8", "s8", "u16", "s16", "u32", "s32") and regs[0][0] == "q" and regs[1][0] == "d" and regs[2][0] == "d":
+            # widening multiply-accumulate: qD +/- dN * dM at twice the width (SSD's blend/skinning code)
+            es = int(dt[1:]) // 8
+            ty, oty = {("u", 1): ("uint8_t", "uint16_t"), ("s", 1): ("int8_t", "int16_t"), ("u", 2): ("uint16_t", "uint32_t"),
+                       ("s", 2): ("int16_t", "int32_t"), ("u", 4): ("uint32_t", "uint64_t"), ("s", 4): ("int32_t", "int64_t")}[(dt[0], es)]
+            q0, a, b = 2 * regs[0][1], regs[1][1], regs[2][1]
+            op = "+" if mn == "vmlal" else "-"
+            return [f"{{ {ty} x[{8 // es}], y[{8 // es}]; {oty} o[{8 // es}]; memcpy(x, &c->vfp.d[{a}], 8); memcpy(y, &c->vfp.d[{b}], 8); memcpy(o, &c->vfp.d[{q0}], 16);"
+                    f" for (int k = 0; k < {8 // es}; k++) o[k] = ({oty})(o[k] {op} ({oty})x[k] * ({oty})y[k]); memcpy(&c->vfp.d[{q0}], o, 16); }}"]
         if mn == "vshrn" and dt in ("i16", "i32", "i64") and regs[0][0] == "d" and regs[1][0] == "q" and len(ops) == 3 and ops[2].type == ARM_OP_IMM:
             # narrowing shift right: each element of qM shifted right by the immediate (1..half width), the low half kept
             es = int(dt[1:]) // 8; n = ops[2].imm
             ty, oty = {2: ("uint16_t", "uint8_t"), 4: ("uint32_t", "uint16_t"), 8: ("uint64_t", "uint32_t")}[es]
             d, q0 = regs[0][1], 2 * regs[1][1]
             return [f"{{ {ty} a[{16 // es}]; {oty} o[{16 // es}]; memcpy(a, &c->vfp.d[{q0}], 16); for (int k = 0; k < {16 // es}; k++) o[k] = ({oty})(a[k] >> {n});"
+                    f" memcpy(&c->vfp.d[{d}], o, 8); }}"]
+        if mn in ("vqshrn", "vqshrun") and dt in ("s16", "s32", "s64", "u16", "u32", "u64") and regs[0][0] == "d" and regs[1][0] == "q" and len(ops) == 3 and ops[2].type == ARM_OP_IMM:
+            # saturating narrowing shift right: each element of qM shifted right by the immediate (signed:
+            # arithmetic), saturated to the result's range (vqshrun: signed input, unsigned result)
+            es = int(dt[1:]) // 8; n = ops[2].imm; ob = int(dt[1:]) // 2
+            ty, oty = {2: ("uint16_t", "uint8_t"), 4: ("uint32_t", "uint16_t"), 8: ("uint64_t", "uint32_t")}[es]
+            sg_in = dt[0] == "s"
+            ity = {2: "int16_t", 4: "int32_t", 8: "int64_t"}[es] if sg_in else ty
+            shift = f"((int64_t)({ity})a[k] >> {n})" if sg_in else f"(uint64_t)(a[k] >> {n})"
+            if mn == "vqshrun" or not sg_in:
+                body = (f"o[k] = ({oty})SATU({shift}, {ob});" if sg_in else
+                        f"{{ uint64_t t = {shift}; o[k] = t > {1 << ob}ull - 1 ? {oty}({(1 << ob) - 1}) : ({oty})t; }}")
+            else:
+                body = f"o[k] = ({oty})SATS({shift}, {ob});"
+            d, q0 = regs[0][1], 2 * regs[1][1]
+            return [f"{{ {ty} a[{16 // es}]; {oty} o[{16 // es}]; memcpy(a, &c->vfp.d[{q0}], 16); for (int k = 0; k < {16 // es}; k++) {body}"
                     f" memcpy(&c->vfp.d[{d}], o, 8); }}"]
         if mn == "vmovn" and dt == "i64" and regs[0][0] == "d" and regs[1][0] == "q":
             d, q0 = regs[0][1], 2 * regs[1][1]
@@ -800,6 +860,8 @@ class Fn:
                 return pack(lambda j: f"(uint32_t)(0 - {sa(j)})")
             if mn == "vabs" and len(ops) == 2 and sg:
                 return pack(lambda j: f"(uint32_t)({sa(j)} < 0 ? 0 - {sa(j)} : {sa(j)})")
+            if mn == "vqabs" and len(ops) == 2 and sg:   # saturating: INT_MIN gives INT_MAX
+                return pack(lambda j: f"(uint32_t)SATS({sa(j)} < 0 ? -(int64_t){sa(j)} : (int64_t){sa(j)}, {bits})")
             if mn in ("vshl", "vqshl") and two:   # by register: the signed low byte of M's element
                 if mn == "vshl":
                     f_ = f"SHLR_{'S' if sg else 'U'}"
@@ -1260,12 +1322,24 @@ def main():
     # function only reached through pointers is ARM when its Thumb decode holds instructions no Vita
     # code has (coprocessors other than VFP/NEON/system) and its ARM decode doesn't
     by_entry = {f.entry: f for f in fns}
+    # the image's own function pointers carry the mode: a word entry|1 is the linker saying Thumb.
+    # A blx #imm to such an entry contradicts that (a blx immediate only ever lands in ARM state),
+    # and the pointer is what the code that actually runs -- the static-init table walk -- uses:
+    # fn_818f4e30 (PCSF00532) sits in the init table as 0x818f4e31 while one caller's disassembly
+    # has "blx #0x818f4e30"; classifying it ARM derailed the init walk (docs/progress.md 2026-11-02,
+    # N01b-13 probe 2). The pointer bit wins: those entries stay Thumb.
+    thumb_refs = set()
+    for start, bb in blocks.items():
+        for o in range((-start) % 4, len(bb) - 3, 4):
+            v, = struct.unpack_from("<I", bb, o)
+            if v & 1 and (v & ~1) in by_entry:
+                thumb_refs.add(v & ~1)
     arm = set()
     def calls(f, mnem):
         for i in f.insns:
             if i.mnemonic == mnem and i.operands and i.operands[0].type == ARM_OP_IMM:
                 yield i.operands[0].imm & 0xffffffff
-    todo = [t for f in fns for t in calls(f, "blx") if t in by_entry]
+    todo = [t for f in fns for t in calls(f, "blx") if t in by_entry and t not in thumb_refs]
     todo += [a for a in d.get("arm", []) if a in by_entry]   # the analysis decoded these as ARM (its exports and calls say so)
     for f in fns:
         if junk(f.insns) and not junk(decode(fspans[f.entry], True)):
