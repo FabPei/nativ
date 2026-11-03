@@ -52,11 +52,15 @@ static inline uint8_t RD8(uint32_t a) { return *(volatile uint8_t *)(G(a)); }
 static inline uint32_t RD32A(uint32_t a) { if (a & 3) { uint32_t v = RD32(a); __atomic_thread_fence(__ATOMIC_ACQUIRE); return v; } return __atomic_load_n((uint32_t *)G(a), __ATOMIC_ACQUIRE); }
 static inline uint16_t RD16A(uint32_t a) { if (a & 1) { uint16_t v = RD16(a); __atomic_thread_fence(__ATOMIC_ACQUIRE); return v; } return __atomic_load_n((uint16_t *)G(a), __ATOMIC_ACQUIRE); }
 static inline uint8_t RD8A(uint32_t a) { return __atomic_load_n(G(a), __ATOMIC_ACQUIRE); }
-static inline void WR32(uint32_t a, uint32_t v) { *(volatile uint32_t *)(G(a)) = v; }
-static inline void WR16(uint32_t a, uint16_t v) { *(volatile uint16_t *)(G(a)) = v; }
-static inline void WR8(uint32_t a, uint8_t v) { *(volatile uint8_t *)(G(a)) = v; }
+/* a store-trace window [lo, lo+hi): every WR8/16/32 into it logs value/width/thread/return-address
+ * (P0b: who writes the worker's CAS state word). lo=hi=0 disables (one unsigned compare). */
+extern uint32_t recomp_watch_lo, recomp_watch_hi;
+extern void recomp_watch_write(uint32_t a, uint32_t v, int width);
+static inline void WR32(uint32_t a, uint32_t v) { if (a - recomp_watch_lo < recomp_watch_hi) recomp_watch_write(a, v, 4); *(volatile uint32_t *)(G(a)) = v; }
+static inline void WR16(uint32_t a, uint16_t v) { if (a - recomp_watch_lo < recomp_watch_hi) recomp_watch_write(a, v, 2); *(volatile uint16_t *)(G(a)) = v; }
+static inline void WR8(uint32_t a, uint8_t v) { if (a - recomp_watch_lo < recomp_watch_hi) recomp_watch_write(a, v, 1); *(volatile uint8_t *)(G(a)) = v; }
 static inline uint64_t RD64(uint32_t a) { return *(volatile uint64_t *)(G(a)); }
-static inline void WR64(uint32_t a, uint64_t v) { *(volatile uint64_t *)(G(a)) = v; }
+static inline void WR64(uint32_t a, uint64_t v) { if (a - recomp_watch_lo < recomp_watch_hi) recomp_watch_write(a, (uint32_t)v, 8); *(volatile uint64_t *)(G(a)) = v; }
 
 /* condition codes (capstone's ARM_CC_*: EQ=1 .. LE=14, AL=15) */
 static inline int COND(Cpu *c, int cc) {
@@ -148,7 +152,9 @@ static inline uint32_t STREXD(uint32_t a, uint64_t v) {
 	if (recomp_excl_valid != 2 || recomp_excl_addr != a) return 1;
 	recomp_excl_valid = 0;
 	uint64_t expect = recomp_excl_val64;
-	return __atomic_compare_exchange_n((uint64_t *)G(a), &expect, v, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST) ? 0 : 1;
+	int ok = __atomic_compare_exchange_n((uint64_t *)G(a), &expect, v, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST) ? 0 : 1;
+	if (ok == 0 && a - recomp_watch_lo < recomp_watch_hi) recomp_watch_write(a, (uint32_t)v, 9);   /* 9 = the STREXD store */
+	return ok;
 }
 /* byte and halfword exclusives (ldrexb/strexb, ldrexh/strexh): the same monitor over 1 or 2 bytes */
 #define RECOMP_EXCL_NARROW(N, T, K) \

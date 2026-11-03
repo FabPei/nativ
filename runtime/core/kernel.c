@@ -1865,6 +1865,13 @@ static void h_fiber_get_self(Cpu *c) { if (!A0) { RET(E_FIBER_NULL); return; } W
 static void fiber_attach_context(Fiber *g, uint32_t a, uint32_t sz) {
 	if (a && sz) { g->ctx = a; g->ctx_size = sz; g->sp0 = (a + sz) & ~7u; }
 }
+/* P0b store-trace window (rt.h's WR accessors log into it): the worker's CAS state word. */
+uint32_t recomp_watch_lo, recomp_watch_hi;
+void recomp_watch_write(uint32_t a, uint32_t v, int width) {
+	extern const char *recomp_cur_tname(void);
+	fprintf(stderr, "    watch write ea=%#x val=%#x w=%d thread=%s ret=%p\n", a, v, width, recomp_cur_tname(), __builtin_return_address(0));
+}
+
 static void h_fiber_attach_and_switch(Cpu *c) {   /* (fiber, addrContext, sizeContext, argOnRunTo, *argOnRun) */
 	Fiber *f = cur_fiber, *g = fiber_of(A0);
 	if (A0 && !(A0 & 3)) {
@@ -1879,7 +1886,8 @@ static void h_fiber_attach_and_switch(Cpu *c) {   /* (fiber, addrContext, sizeCo
 		{ uint32_t dp = RD32(A0 + 0x94);   /* obj+0xb4: the r5 descriptor */
 			fprintf(stderr, "\n    desc@%#x:", dp);
 			if (dp > 0x10000) { for (int i = 0; i < 12; i++) fprintf(stderr, " %08x", RD32(dp + 4 * i));
-				uint32_t own = RD32(dp); fprintf(stderr, "  cas@%#x=%08x", own + 0xa0, own > 0x10000 ? RD32(own + 0xa0) : 0); } }
+				uint32_t own = RD32(dp); fprintf(stderr, "  cas@%#x=%08x", own + 0xa0, own > 0x10000 ? RD32(own + 0xa0) : 0);
+				if (own > 0x10000) { recomp_watch_lo = own + 0xa0; recomp_watch_hi = 8; } } }   /* P0b: watch the CAS word from here on */
 		fprintf(stderr, "  [ctx %#x size %#x arg %#x]\n", A1, A2, A3);
 	}
 	if (!A0) { RET(E_FIBER_NULL); return; }
