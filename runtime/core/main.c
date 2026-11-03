@@ -33,6 +33,7 @@ __thread int recomp_excl_valid;
 __thread uint64_t recomp_excl_val64;   /* ldrexd/strexd */
 __thread uint32_t recomp_tpidruro;      /* the guest thread's TLS pointer */
 static pthread_mutex_t host_lock = PTHREAD_MUTEX_INITIALIZER;   /* the allocator and the call log */
+static void prof_report(void);   /* N01b-11 diagnostic: defined with the profiler (or empty) below */
 static uint64_t ncalls, budget = 200000, nlog = 400, log_from;
 
 /* the Vita runs user code in RunFast mode (flush-to-zero, default NaN): the same on each host
@@ -100,6 +101,7 @@ static void summary(const char *why) {
 		        hle_find(counts[i].name) ? "" : "   (stub)");
 	summary_threads();
 	{ extern void kernel_report_locks(void); kernel_report_locks(); }   /* who holds what the waiting threads want */
+	{ extern void kernel_report_obj_counts(void); kernel_report_obj_counts(); }   /* SignalSema/SetEvent per object (the loader gates) */
 	{ extern void gxm_sony_report(void); gxm_sony_report(); }   /* RECOMP_GXM_CHECK's findings */
 #ifdef RECOMP_VERIFY
 	extern void verify_summary(void), coverage_write(void), watch_summary(void);
@@ -383,7 +385,7 @@ void recomp_call_external(Cpu *c, uint32_t addr) {
 	if ((k <= nlog || (log_from && k >= log_from)) && log_frame_ok())
 		fprintf(stderr, "%6llu t%d %-40s %08x %08x %08x %08x lr %08x%s\n", (unsigned long long)k, my_last ? (int)(my_last - lasts) : -1,
 		        name, c->r[0], c->r[1], c->r[2], c->r[3], c->r[14], fn ? "" : "  (stub)");
-	if (k >= budget) { summary("budget reached"); exit(0); }
+	if (k >= budget) { summary("budget reached"); prof_report(); exit(0); }   /* N01b-11 diagnostic: report the profile on the budget exit too */
 	pthread_mutex_unlock(&host_lock);
 	uint32_t a0 = c->r[0], a1 = c->r[1], a2 = c->r[2], a3 = c->r[3];
 	/* no implementation and no module export: the call returns 0 -- or, for the device/network
@@ -427,7 +429,12 @@ void recomp_call_external(Cpu *c, uint32_t addr) {
 		}
 	}
 	uint32_t wv[4]; watch_snap(wv);
-	if (fn) fn(c); else c->r[0] = stub_ret;
+	if (fn) {
+		extern void kernel_hle_in(const char *);
+		recomp_excl_valid = 0;   /* the import is an exception: on its return the firmware's exclusive monitor is cleared -- a strex across a call must fail and retry with fresh data */
+		kernel_hle_in(name); fn(c); kernel_hle_in(0);
+	}
+	else c->r[0] = stub_ret;
 	watch_check(wv, name, c);
 	{	/* RECOMP_LOG_IMPORTS=name[,name...]: those imports (any whose name contains one of them) logged as they return -- the
 		 * thread, the arguments, the result, the caller and the frame -- without the millions of the rest (RECOMP_LOG) */
@@ -508,13 +515,13 @@ static __thread int prof_main;
 static int prof_on;
 static uint32_t *prof_hits;            /* per 2-byte instruction slot in the image */
 #define PROF_BASE 0x81000000u
-#define PROF_SIZE 0x00400000u
+#define PROF_SIZE 0x01000000u   /* N01b-11 diagnostic: 4 -> 16 MB, the eboot spans up to 0x81c9xxxx */
 void recomp_trace(Cpu *c, uint32_t addr) {
 #ifdef RECOMP_VERIFY
 	extern void verify_trace(Cpu *c, uint32_t addr);
 	verify_trace(c, addr);
 #endif
-	if (prof_on && prof_main && addr - PROF_BASE < PROF_SIZE) prof_hits[(addr - PROF_BASE) >> 1]++;
+	if (prof_on && addr - PROF_BASE < PROF_SIZE) prof_hits[(addr - PROF_BASE) >> 1]++;   /* N01b-11 diagnostic: count every guest thread (the spinner is not the host main thread) */
 }
 static void *prof_timer(void *arg) {
 	usleep((useconds_t)(atof((char *)arg) * 1e6));
@@ -564,6 +571,67 @@ uint32_t tls_block(void) {
 	return a;
 }
 
+/* RECOMP_STALL_DUMP=<seconds>: every interval, every guest thread's innermost call site and
+ * registers (kernel.c's kernel_report_pcs, the main thread's own here) -- a thread spinning in
+ * pure guest code makes no imports and is otherwise invisible in a build without -DRECOMP_TRACE.
+ * (Not gated on the global call count: a stalled game thread hides behind other threads' calls.) */
+static Cpu *game_cpu;
+static void *stall_dump(void *arg) {
+	double secs = atof((const char *)arg);
+	extern void kernel_report_pcs(void);
+	for (;;) {
+		usleep((useconds_t)(secs * 1e6));
+		fprintf(stderr, "== stall dump: %llu import calls\n", (unsigned long long)ncalls);
+		/* the RECOMP_WATCH words every interval as well: its import-anchored snap/check has a
+		 * blind window between one call's check and the next call's snap -- a guest-side write
+		 * there only shows up here */
+		{
+			static uint32_t wa[4]; static int nw = -1;
+			if (nw < 0) {
+				nw = 0; const char *e = getenv("RECOMP_WATCH");
+				for (const char *p = e; p && *p && nw < 4; ) {
+					char *end; uint32_t av = (uint32_t)strtoul(p, &end, 16);
+					if (end == p) break;
+					wa[nw++] = av & ~3u; p = *end == ',' ? end + 1 : end;
+				}
+			}
+			for (int i = 0; i < nw; i++) fprintf(stderr, "  stall: word %#x = %#x\n", wa[i], RD32(wa[i]));
+		}
+		if (game_cpu) fprintf(stderr, "  stall: main   lr %#x sp %#x r0 %#x r1 %#x r2 %#x r3 %#x r4 %#x r5 %#x r6 %#x r7 %#x r8 %#x r9 %#x r10 %#x r11 %#x r12 %#x\n",
+		        game_cpu->r[14], game_cpu->r[13], game_cpu->r[0], game_cpu->r[1], game_cpu->r[2], game_cpu->r[3],
+		        game_cpu->r[4], game_cpu->r[5], game_cpu->r[6], game_cpu->r[7],
+		        game_cpu->r[8], game_cpu->r[9], game_cpu->r[10], game_cpu->r[11], game_cpu->r[12]);
+		/* the tree nodes the walk is stuck between: their links and keys say which insert wrote what */
+		for (int i = 0; game_cpu && i < 6; i++) {
+			uint32_t a = i == 0 ? game_cpu->r[12] : i == 1 ? game_cpu->r[9] : 0;
+			if (i >= 2) {   /* the stuck node's children and their children */
+				uint32_t *p = (uint32_t *)G(game_cpu->r[12]);
+				uint32_t kid = i == 2 ? p[0] : i == 3 ? p[1] : i == 4 ? ((uint32_t *)G(game_cpu->r[9]))[0] : ((uint32_t *)G(game_cpu->r[9]))[1];
+				a = kid;
+			}
+			if (a && a + 0x28 < (1u << 30) && (a & 3) == 0) {
+				uint32_t *w = (uint32_t *)G(a);
+				fprintf(stderr, "  stall: node %#x: left %#x right %#x parent %#x f4 %#x keylo %#x keyhi %#x f6 %#x f7 %#x fl %02x %02x\n",
+				        a, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], G(a)[32], G(a)[33]);
+			}
+		}
+		kernel_report_pcs();
+		{   /* the A/B watch counts (N01b-7): the loader's completion signal, the render-start event
+			 * and the GXM scene calls counted so far, whatever the log level */
+			static const char *const watch_names[] = {"sceKernelSignalSema", "sceKernelSetEvent", "sceGxmBeginScene", "sceGxmEndScene", 0};
+			for (int w = 0; watch_names[w]; w++)
+				for (int i = 0; i < ncounts; i++)
+					if (counts[i].name == watch_names[w] || !strcmp(counts[i].name, watch_names[w])) {
+						fprintf(stderr, "  stall: count %s %llu\n", watch_names[w], (unsigned long long)counts[i].n);
+						break;
+					}
+		}
+		{ extern void kernel_report_obj_counts(void); kernel_report_obj_counts(); }
+		summary_threads();
+	}
+	return 0;
+}
+
 /* the game's main thread: module_start on a fresh stack */
 static uint32_t game_entry;
 static void *game(void *arg) {
@@ -572,6 +640,8 @@ static void *game(void *arg) {
 	recomp_tpidruro = tls_block();
 	kernel_sched_init();   /* RECOMP_SCHED=vita: the main thread takes the first run slot */
 	static Cpu c;
+	game_cpu = &c;
+	if (getenv("RECOMP_STALL_DUMP")) { pthread_t dt; pthread_create(&dt, 0, stall_dump, (void *)getenv("RECOMP_STALL_DUMP")); }
 	uint32_t stack = guest_alloc(1u << 20, 4096);   /* main thread: 1 MiB */
 	c.r[13] = stack + (1u << 20) - 16;
 	c.r[14] = 0xfffffffe;
