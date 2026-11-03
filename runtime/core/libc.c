@@ -26,8 +26,13 @@ static void h_realloc(Cpu *c) {
 }
 
 /* ---- strings and memory */
-static void h_memset(Cpu *c) { memset(G(A0), A1 & 0xff, A2); RET(A0); }
-static void h_memcpy(Cpu *c) { memmove(G(A0), G(A1), A2); RET(A0); }
+/* P0b: a bulk copy/set overlapping the armed store-trace window logs the window word after the write (width 10) */
+static void watch_bulk(uint32_t a, uint32_t n) {
+	if (recomp_watch_hi && n && a < recomp_watch_lo + recomp_watch_hi && recomp_watch_lo < a + n)
+		recomp_watch_write(recomp_watch_lo, RD32(recomp_watch_lo), 10);
+}
+static void h_memset(Cpu *c) { memset(G(A0), A1 & 0xff, A2); watch_bulk(A0, A2); RET(A0); }
+static void h_memcpy(Cpu *c) { memmove(G(A0), G(A1), A2); watch_bulk(A0, A2); RET(A0); }
 static void h_memcmp(Cpu *c) { RET(memcmp(G(A0), G(A1), A2)); }
 static void h_memchr(Cpu *c) { uint8_t *p = memchr(G(A0), A1 & 0xff, A2); RET(p ? (uint32_t)(p - recomp_mem) : 0); }
 static void h_strlen(Cpu *c) { RET(strlen((char *)G(A0))); }

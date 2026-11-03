@@ -138,7 +138,9 @@ static inline uint32_t STREX(uint32_t a, uint32_t v) {
 	if (!recomp_excl_valid || recomp_excl_addr != a) return 1;
 	recomp_excl_valid = 0;
 	uint32_t expect = recomp_excl_val;
-	return __atomic_compare_exchange_n((uint32_t *)G(a), &expect, v, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST) ? 0 : 1;
+	int ok = __atomic_compare_exchange_n((uint32_t *)G(a), &expect, v, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST) ? 0 : 1;
+	if (ok == 0 && a - recomp_watch_lo < recomp_watch_hi) recomp_watch_write(a, v, 5);   /* 5 = the STREX store */
+	return ok;
 }
 static inline void CLREX(void) { recomp_excl_valid = 0; }
 /* 64-bit exclusive pair (ldrexd/strexd): the same monitor over a doubleword */
@@ -157,7 +159,7 @@ static inline uint32_t STREXD(uint32_t a, uint64_t v) {
 	return ok;
 }
 /* byte and halfword exclusives (ldrexb/strexb, ldrexh/strexh): the same monitor over 1 or 2 bytes */
-#define RECOMP_EXCL_NARROW(N, T, K) \
+#define RECOMP_EXCL_NARROW(N, T, K, W) \
 static inline uint32_t LDREX##N(uint32_t a) { \
 	T v = __atomic_load_n((T *)G(a), __ATOMIC_SEQ_CST); \
 	recomp_excl_addr = a; recomp_excl_val = v; recomp_excl_valid = K; \
@@ -167,10 +169,12 @@ static inline uint32_t STREX##N(uint32_t a, uint32_t v) { \
 	if (recomp_excl_valid != K || recomp_excl_addr != a) return 1; \
 	recomp_excl_valid = 0; \
 	T expect = (T)recomp_excl_val; \
-	return __atomic_compare_exchange_n((T *)G(a), &expect, (T)v, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST) ? 0 : 1; \
+	int ok = __atomic_compare_exchange_n((T *)G(a), &expect, (T)v, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST) ? 0 : 1; \
+	if (ok == 0 && a - recomp_watch_lo < recomp_watch_hi) recomp_watch_write(a, v, W);   /* W = the narrow STREX store */ \
+	return ok; \
 }
-RECOMP_EXCL_NARROW(B, uint8_t, 3)
-RECOMP_EXCL_NARROW(H, uint16_t, 4)
+RECOMP_EXCL_NARROW(B, uint8_t, 3, 6)
+RECOMP_EXCL_NARROW(H, uint16_t, 4, 7)
 /* NEON floating point always runs in the "standard FPSCR" mode: denormals flushed to zero */
 static inline float FZF(float x) {   /* and NaNs become the default NaN (NEON's DN) */
 	uint32_t b; memcpy(&b, &x, 4);
