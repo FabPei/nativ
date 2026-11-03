@@ -77,11 +77,10 @@ static uint32_t a_check_result;           /* what A saw in its canary slot befor
 
 /* strand A: its frames carry a canary; it ends (its frames die) only after B had its chance */
 static void fentry_a(Cpu *c) {
-	(void)c;
-	WR32(X - 0x58, CANARY);               /* the saved register of A's deeper frame (the measured slot) */
+	WR32(c->r[13] - 0x58, CANARY);       /* the saved register of A's deeper frame (the measured slot) */
 	a_ready = 1;
 	usleep(300000);                        /* B is started meanwhile: it must NOT touch A's frames */
-	a_check_result = RD32(X - 0x58);
+	a_check_result = RD32(c->r[13] - 0x58);
 }                                          /* returns from the entry: the strand ends */
 /* strand B: carved 568 bytes above A's top; a 0x400-byte chain (like fn_8c00bd28's walk) */
 static void fentry_b(Cpu *c) {

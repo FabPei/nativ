@@ -40,3 +40,15 @@ N02d reference gate stays OPEN (0/2 attempts; frame 230 + framediff pending a cl
   the ctx-restore/resume path (a fiber's live sp comes from the game's ctx, not from sp0).
   Test build/run: wsl Ubuntu `cc -O1 -g -Wall -D_GNU_SOURCE $INC fiber_stack_test.c
   ../debug/waitstats.c` (the suite needs waitstats.c linked; see the ledger).
+- [~] **P0c-3** FIX APPLIED (2026-11-03): context-less fibers now run on their OWN private guest
+  stack (64KB, one per guest fiber address) instead of a 512-byte carve below the caller
+  (kernel.c `fiber_stack_private`). The carve placed the fiber's frames inside a neighbouring
+  strand's live stack region (measured: the worker's frames at 0x12017178 inside the ULT_Thr
+  fiber's 64KB ctx [0x12007590,0x12017590), clobbered by the ctx-ful scheduler strand's chain) --
+  the game cannot observe a context-less fiber's stack location (sceFiberInfo reports ctx 0/0).
+  An exclusivity/resume-gate variant was measured WRONG (it hung kernel_test on the legitimate
+  nested-switch pattern) and reverted. Gates on the fix: fiber_stack_test pass-after 9/0
+  (fail-before was 9/1), kernel_test 681/681 + scheduler 103/0, input_rec_test 116/116,
+  monitor_test 16/16. Open: P0c-4 campaign (20 cold starts vs the p0b3 6/20 baseline + owner
+  replay), residual risk: the context-less restart shares the per-address stack with the dying
+  incarnation (short window; design (a) wait-for-exit if corruption persists).
