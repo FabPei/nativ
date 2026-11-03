@@ -27,7 +27,7 @@ PY = os.path.join(NATIV, ".venv", "Scripts", "python.exe")
 VITARECOMP = os.path.join(NATIV, "pipeline", "vitarecomp.py")
 PACK = os.path.join(NATIV, "packs", "PCSF00532", "pack.toml")
 
-KEEP_SHOTS = ("shot_00215.ppm", "shot_00230.ppm")   # title / menu evidence for this pack
+KEEP_SHOTS = ("shot_00210.ppm", "shot_00230.ppm")   # title / menu evidence for this pack (SHOT_EVERY=10 series)
 
 
 def pack_frames():
