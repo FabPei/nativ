@@ -1742,7 +1742,9 @@ static void fiber_identity(Fiber *f) {   /* the fiber's host thread is the threa
 	cur_tid = t->uid; cur_thread = t == &main_thread ? 0 : t; recomp_tpidruro = t->tls; cur_fiber = f;
 }
 static void fiber_park(Fiber *f) {   /* flock held: until a Run/Switch resumes it; a finalize ends the host thread (its guest stack is abandoned) */
-	extern __thread uint32_t recomp_switch_seq; recomp_switch_seq++;   /* P0b diag: a fiber context switch -- rt.h's staleness check flags an strex that succeeds across it (the firmware's monitor would have been cleared) */
+	extern __thread uint32_t recomp_switch_seq; extern __thread int recomp_excl_valid; extern __thread int recomp_excl_drop_reason;
+	recomp_switch_seq++;   /* P0b diag: a fiber context switch -- rt.h's staleness check flags an strex that succeeds across it (the firmware's monitor would have been cleared) */
+	recomp_excl_valid = 0; recomp_excl_drop_reason = 3;   /* P0b-2 fix B: the firmware's exclusive monitor does not survive a context switch (fiber or thread) -- a strex after this park must fail and its loop retry (monitor_test case 3 fail-before/pass-after) */
 	while (!f->go && !f->finalize) pthread_cond_wait(&f->cv, &flock);
 	f->go = 0;
 	if (f->finalize) { pthread_mutex_unlock(&flock); pthread_cond_destroy(&f->cv); free(f); pthread_exit(0); }
