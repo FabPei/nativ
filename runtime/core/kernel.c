@@ -541,7 +541,7 @@ static void h_create_thread(Cpu *c) {   /* (name, entry, priority, stack size, a
 	t->attr = STK(0); t->affinity = STK(1);
 	snprintf(t->name, sizeof t->name, "%s", A0 ? (char *)G(A0) : "?");
 	klock_give();
-	fprintf(stderr, "    thread '%s' uid %#x entry %#x stack %#x prio %d affinity %#x\n", t->name, t->uid, t->entry, t->stack_size, t->prio, t->affinity);
+	fprintf(stderr, "    thread '%s' uid %#x entry %#x stack %#x+%#x prio %d affinity %#x\n", t->name, t->uid, t->entry, t->stack, t->stack_size, t->prio, t->affinity);
 	RET(t->uid);
 }
 static void thread_done(Thread *t, uint32_t status) {
@@ -1768,6 +1768,7 @@ static void *fiber_main(void *p) {
 	memset(c, 0, sizeof *c);
 	c->r[0] = f->arg_init; c->r[1] = f->run_arg;
 	c->r[13] = f->ctx ? (f->ctx + f->ctx_size) & ~7u : f->sp0; c->r[14] = 0xfffffffe; c->fpscr = 0x03000000;
+	fprintf(stderr, "    fiber '%s' start addr %#x ctx %#x+%#x sp0 %#x sp %#x\n", f->name, f->addr, f->ctx, f->ctx_size, f->sp0, c->r[13]);
 	pthread_mutex_unlock(&flock);
 	extern GuestFn guest_lookup(uint32_t a);
 	GuestFn fn = guest_lookup(f->entry & ~1u);

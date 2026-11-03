@@ -33,3 +33,10 @@ N02d reference gate stays OPEN (0/2 attempts; frame 230 + framediff pending a cl
   instead of the SDK's whole remaining thread stack; the ULT tree-walk chain overflowed it and
   clobbered a neighbouring flow's saved r4 (measured). Fix hypothesis: private sized stack per
   context-less fiber. See SeelenOpferungRecomp docs/progress.md "P0c-2 audit result".
+- [~] **P0c-3** regression test `runtime/tests/fiber_stack_test.c` WRITTEN + FAIL-BEFORE VERIFIED
+  (9 checks, 1 failed: strand B's 0x400-byte chain smashes strand A's live canary at the measured
+  568-byte carve gap -- the exact P0c-1 mechanism, deterministic). Fix (per-stack-region strand
+  ownership, see ledger "P0c-3 fix-selection analysis") NOT yet applied: the acquire point must be
+  the ctx-restore/resume path (a fiber's live sp comes from the game's ctx, not from sp0).
+  Test build/run: wsl Ubuntu `cc -O1 -g -Wall -D_GNU_SOURCE $INC fiber_stack_test.c
+  ../debug/waitstats.c` (the suite needs waitstats.c linked; see the ledger).
