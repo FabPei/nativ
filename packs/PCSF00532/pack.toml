@@ -18,7 +18,11 @@ sha256 = "a4c2712ff93e746e07c6e50a1495872de0e7a303cda7b3ac099677f1eac51178"
 status = "recommended"
 
 # The scripted regression test (N02): the boot runs unattended to the title screen
-# ("Soul Sacrifice DELTA / PRESS ANY BUTTON") and the test frame captures it.
-TEST_INPUT = "0-240:0"     # scripted, but the title needs no input: the script holds no buttons and the title must appear on its own
-TEST_FRAMES = 235          # the title screen (appears around frame 210 after the MarvelousAQL splash); 235 sits before the ULT worker spawn phase (~frame 250), whose attach race is a known limitation
-TEST_TOLERANCE = 5         # the "PRESS ANY BUTTON" prompt blinks: under the fixed test clock the phase is deterministic, but 5% covers drift and still fails a broken frame
+# ("Soul Sacrifice DELTA / PRESS ANY BUTTON", ~frame 210, arrival jitters ~208-215), a
+# scripted cross press at frames 218-226 triggers the measured title -> menu transition
+# (CONTINUE/DOWNLOAD, within ~6 frames of the press edge), and the test frame captures
+# that menu. The press starts after the title's prompt state has polled with no button:
+# a press held from the state's first poll is read but not acted on (no observed edge).
+TEST_INPUT = "0-217:0,218-226:4000"   # cross (Vita mask 0x4000) held over frames 218-226: a press EDGE inside the title state
+TEST_FRAMES = 230          # the post-transition menu (transition completes within ~6 frames of the press edge; 230 sits before the ULT worker spawn phase, whose attach race is a known limitation)
+TEST_TOLERANCE = 5         # the menu animates (prompt/glow); under the fixed test clock the phase is deterministic, 5% covers drift and still fails a broken frame
