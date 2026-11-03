@@ -124,7 +124,7 @@ def main(argv):
         WT = ENV.get("ATIV_WIN_TOOLCHAIN") or next((d for d in (os.path.join(ROOT, "toolchain"),) if os.path.isdir(d)), os.path.join(os.path.expanduser("~"), "toolchains", "ativ-win"))
         cc = os.path.join(WT, "llvm-mingw", "bin", "x86_64-w64-mingw32-clang" + exe)
         if not os.path.isfile(cc): die(f"no Windows toolchain at {WT}: run runtime/platform/win/setup-toolchain.sh")
-        if VERIFY or PROFILE: die("VERIFY/PROFILE builds: macOS and Linux only")
+        if VERIFY: die("VERIFY builds: macOS and Linux only")   # N01b-11 diagnostic: PROFILE allowed on Windows (the counter hook is plain C)
         CC = cc; CXX = os.path.join(WT, "llvm-mingw", "bin", "x86_64-w64-mingw32-clang++" + exe)
         SDLW = os.path.join(WT, "SDL3", "x86_64-w64-mingw32")
         # win32_compat.h: the POSIX names Windows spells differently (mkdir's mode, pread, realpath); 64-bit off_t;

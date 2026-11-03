@@ -1,0 +1,24 @@
+# Soul Sacrifice Delta (PCSF00532, EU). Only facts about the game (the format: pipeline/packconf.py).
+NAME = "Soul Sacrifice Delta"
+# REGION: the release this pack plays (its content id: PCSF..., Europe); another region's release is another build,
+# not played yet -- a search names it and says this release is the one Ativ plays
+REGION = "EU"
+SPLIT = 32                # recompiled C split into this many part files (the eboot is 13.3 MB)
+# The game's own sce_module (libc: C runtime, libm, the C++ library; libfios2: Sony's FIOS scheduler/dearchiver;
+# libult: Sony's ULT task scheduler) and the firmware's GXM + GPU services (GXM runs as Sony's code) and the
+# modules the game loads for fonts (libpvf, libSceFt2), movies (libscemp4, libsceavplayer) and Ad Hoc Play
+# (adhoc_matching). libsmart ships in the game's sce_module but is not recompiled (as in the ss-delta toolchain).
+MODULES = "libc libgxm_es4 libgpu_es4 libfios2 libult libSceFt2 libpvf libscemp4 libsceavplayer adhoc_matching"
+
+# The build of the game this pack plays: [versions."<version>"], the SHA-256 of its eboot.bin.elf and its status
+# (vitarecomp import refuses another version or region). "EU" is this repo's own dump's eboot, converted by
+# vitarecomp import 2026-11-01; its update level is not established (no version string checked).
+[versions."EU"]
+sha256 = "a4c2712ff93e746e07c6e50a1495872de0e7a303cda7b3ac099677f1eac51178"
+status = "recommended"
+
+# The scripted regression test (N02): the boot runs unattended to the title screen
+# ("Soul Sacrifice DELTA / PRESS ANY BUTTON") and the test frame captures it.
+TEST_INPUT = "0-240:0"     # scripted, but the title needs no input: the script holds no buttons and the title must appear on its own
+TEST_FRAMES = 235          # the title screen (appears around frame 210 after the MarvelousAQL splash); 235 sits before the ULT worker spawn phase (~frame 250), whose attach race is a known limitation
+TEST_TOLERANCE = 5         # the "PRESS ANY BUTTON" prompt blinks: under the fixed test clock the phase is deterministic, but 5% covers drift and still fails a broken frame
