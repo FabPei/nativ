@@ -39,19 +39,24 @@ extern GuestFn recomp_lookup(uint32_t addr);
 extern const char *recomp_import_name(uint32_t addr);   /* the import a stub address stands for */
 
 #define G(a) (recomp_mem + (uint32_t)(a))
-static inline uint32_t RD32(uint32_t a) { uint32_t v; memcpy(&v, G(a), 4); return v; }
-static inline uint16_t RD16(uint32_t a) { uint16_t v; memcpy(&v, G(a), 2); return v; }
-static inline uint8_t RD8(uint32_t a) { return *G(a); }
+/* volatile: other guest threads change guest memory concurrently, so the compiler must neither
+ * cache a load (a spin-wait would never end) nor drop or merge stores -- the same requirement
+ * vita-recomp-kit documents in its armrecomp.h rdv/wrv accessors. These are typed volatile
+ * accesses, not memcpy: memcpy lets the optimizer cache and hoist. Bulk NEON copies still go
+ * through memcpy on G(a). (N01b-10 difference 1.) */
+static inline uint32_t RD32(uint32_t a) { return *(volatile uint32_t *)(G(a)); }
+static inline uint16_t RD16(uint32_t a) { return *(volatile uint16_t *)(G(a)); }
+static inline uint8_t RD8(uint32_t a) { return *(volatile uint8_t *)(G(a)); }
 /* ordered loads (recomp.py SYNC_MN: in lock-free code): no later load is satisfied before this one -- an acquire load
  * (LDAPR on an Apple core, a plain mov on x86); an unaligned address takes a plain load and a load fence */
 static inline uint32_t RD32A(uint32_t a) { if (a & 3) { uint32_t v = RD32(a); __atomic_thread_fence(__ATOMIC_ACQUIRE); return v; } return __atomic_load_n((uint32_t *)G(a), __ATOMIC_ACQUIRE); }
 static inline uint16_t RD16A(uint32_t a) { if (a & 1) { uint16_t v = RD16(a); __atomic_thread_fence(__ATOMIC_ACQUIRE); return v; } return __atomic_load_n((uint16_t *)G(a), __ATOMIC_ACQUIRE); }
 static inline uint8_t RD8A(uint32_t a) { return __atomic_load_n(G(a), __ATOMIC_ACQUIRE); }
-static inline void WR32(uint32_t a, uint32_t v) { memcpy(G(a), &v, 4); }
-static inline void WR16(uint32_t a, uint16_t v) { memcpy(G(a), &v, 2); }
-static inline void WR8(uint32_t a, uint8_t v) { *G(a) = v; }
-static inline uint64_t RD64(uint32_t a) { uint64_t v; memcpy(&v, G(a), 8); return v; }
-static inline void WR64(uint32_t a, uint64_t v) { memcpy(G(a), &v, 8); }
+static inline void WR32(uint32_t a, uint32_t v) { *(volatile uint32_t *)(G(a)) = v; }
+static inline void WR16(uint32_t a, uint16_t v) { *(volatile uint16_t *)(G(a)) = v; }
+static inline void WR8(uint32_t a, uint8_t v) { *(volatile uint8_t *)(G(a)) = v; }
+static inline uint64_t RD64(uint32_t a) { return *(volatile uint64_t *)(G(a)); }
+static inline void WR64(uint32_t a, uint64_t v) { *(volatile uint64_t *)(G(a)) = v; }
 
 /* condition codes (capstone's ARM_CC_*: EQ=1 .. LE=14, AL=15) */
 static inline int COND(Cpu *c, int cc) {
@@ -112,10 +117,12 @@ static inline void VMRS_APSR(Cpu *c) {
 static inline int32_t F2S(double x) { if (x != x) return 0; if (x >= 2147483647.0) return 0x7fffffff; if (x <= -2147483648.0) return (int32_t)0x80000000; return (int32_t)x; }
 static inline uint32_t F2U(double x) { if (x != x || x <= 0) return 0; if (x >= 4294967295.0) return 0xffffffffu; return (uint32_t)x; }
 
-/* exclusive access (ldrex/strex): a per-thread monitor holding the address and the value the
+/* exclusive access (ldrex/strexd): a per-thread monitor holding the address and the value the
  * load saw; the store is a compare-and-swap against that value (fails if another thread changed it
  * meanwhile, as the hardware monitor would; an ABA change in between goes unnoticed, which the
- * lock-free code compilers emit for atomics tolerates) */
+ * lock-free code compilers emit for atomics tolerates). The firmware's monitor is also cleared by
+ * a context switch -- the runtime drops the monitor at every HLE import call and at every scheduler
+ * park (main.c / kernel.c), so a strex across either fails and the guest's retry loop re-reads. */
 extern __thread uint32_t recomp_excl_addr, recomp_excl_val;
 extern __thread int recomp_excl_valid;
 static inline uint32_t LDREX(uint32_t a) {
