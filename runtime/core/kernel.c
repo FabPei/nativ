@@ -288,7 +288,9 @@ static void sched_hand(int slot, Thread *from, int why) {
 static void sched_release(Thread *t, int why) { int slot = t->s_slot; sched_slot[slot] = 0; sched_hand(slot, t, why); }   /* sched_m held, t in S_RUN */
 static void sched_wait_turn(Thread *t) {   /* sched_m held */
 	extern __thread int recomp_excl_valid;
+	extern __thread uint32_t recomp_switch_seq; extern __thread int recomp_excl_drop_reason;
 	recomp_excl_valid = 0;   /* the thread is about to yield the CPU: the firmware's scheduler clears the exclusive monitor on a context switch, so a strex after this point must fail and its loop retry (a stale ldrex value must never publish) */
+	recomp_excl_drop_reason = 2; recomp_switch_seq++;   /* P0b diag: this drop site's tag + the switch sequence rt.h's staleness check compares */
 	while (t->s_state != S_RUN) pthread_cond_wait(&t->s_cv, &sched_m);
 }
 static void sched_get_slot(Thread *t, int front) {   /* sched_m held: a free slot it may use (nobody waiting can use it), else the list */
@@ -1740,6 +1742,7 @@ static void fiber_identity(Fiber *f) {   /* the fiber's host thread is the threa
 	cur_tid = t->uid; cur_thread = t == &main_thread ? 0 : t; recomp_tpidruro = t->tls; cur_fiber = f;
 }
 static void fiber_park(Fiber *f) {   /* flock held: until a Run/Switch resumes it; a finalize ends the host thread (its guest stack is abandoned) */
+	extern __thread uint32_t recomp_switch_seq; recomp_switch_seq++;   /* P0b diag: a fiber context switch -- rt.h's staleness check flags an strex that succeeds across it (the firmware's monitor would have been cleared) */
 	while (!f->go && !f->finalize) pthread_cond_wait(&f->cv, &flock);
 	f->go = 0;
 	if (f->finalize) { pthread_mutex_unlock(&flock); pthread_cond_destroy(&f->cv); free(f); pthread_exit(0); }

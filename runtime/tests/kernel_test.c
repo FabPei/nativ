@@ -16,6 +16,8 @@ uint8_t *recomp_mem;
 __thread uint32_t recomp_excl_addr, recomp_excl_val;
 __thread int recomp_excl_valid;
 __thread uint64_t recomp_excl_val64;
+__thread uint32_t recomp_switch_seq, recomp_excl_seq;
+__thread int recomp_excl_drop_reason;
 __thread uint32_t recomp_tpidruro;
 char hle_last_format[1024];
 static uint32_t heap = 0x81000000;

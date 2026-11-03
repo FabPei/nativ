@@ -32,6 +32,8 @@ uint32_t tls_template[3];   /* the module's TLS: template address, template size
 __thread uint32_t recomp_excl_addr, recomp_excl_val;   /* rt.h's exclusive monitor */
 __thread int recomp_excl_valid;
 __thread uint64_t recomp_excl_val64;   /* ldrexd/strexd */
+__thread uint32_t recomp_switch_seq, recomp_excl_seq;   /* P0b diag: context switches since thread start / at the ldrex */
+__thread int recomp_excl_drop_reason;                   /* P0b diag: the last monitor drop site's tag (rt.h) */
 __thread uint32_t recomp_tpidruro;      /* the guest thread's TLS pointer */
 static pthread_mutex_t host_lock = PTHREAD_MUTEX_INITIALIZER;   /* the allocator and the call log */
 static void prof_report(void);   /* N01b-11 diagnostic: defined with the profiler (or empty) below */
@@ -435,6 +437,7 @@ void recomp_call_external(Cpu *c, uint32_t addr) {
 	if (fn) {
 		extern void kernel_hle_in(const char *);
 		recomp_excl_valid = 0;   /* the import is an exception: on its return the firmware's exclusive monitor is cleared -- a strex across a call must fail and retry with fresh data */
+		recomp_excl_drop_reason = 1;   /* P0b diag: this drop site's tag for rt.h's spurious-failure log */
 		kernel_hle_in(name); fn(c); kernel_hle_in(0);
 	}
 	else c->r[0] = stub_ret;

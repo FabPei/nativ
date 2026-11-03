@@ -126,20 +126,40 @@ static inline uint32_t F2U(double x) { if (x != x || x <= 0) return 0; if (x >= 
  * meanwhile, as the hardware monitor would; an ABA change in between goes unnoticed, which the
  * lock-free code compilers emit for atomics tolerates). The firmware's monitor is also cleared by
  * a context switch -- the runtime drops the monitor at every HLE import call and at every scheduler
- * park (main.c / kernel.c), so a strex across either fails and the guest's retry loop re-reads. */
+ * park (main.c / kernel.c), so a strex across either fails and the guest's retry loop re-reads.
+ * P0b diag (race ledger): every drop site tags WHY the monitor went (1 import, 2 scheduler park,
+ * 3 fiber park); an ldrex records the per-thread switch sequence it ran under. A strex that fails
+ * only because the monitor was dropped while the value is untouched (w=10+reason) and a strex that
+ * SUCCEEDS although a switch happened since its ldrex (w=20) are the two ways a lost bookkeeping
+ * update shows up in the watched words. */
 extern __thread uint32_t recomp_excl_addr, recomp_excl_val;
 extern __thread int recomp_excl_valid;
+extern __thread uint32_t recomp_switch_seq, recomp_excl_seq;   /* P0b: switches since thread start / at the ldrex */
+extern __thread int recomp_excl_drop_reason;                   /* P0b: the last drop site's tag */
 static inline uint32_t LDREX(uint32_t a) {
 	uint32_t v = __atomic_load_n((uint32_t *)G(a), __ATOMIC_SEQ_CST);
 	recomp_excl_addr = a; recomp_excl_val = v; recomp_excl_valid = 1;
+	recomp_excl_seq = recomp_switch_seq;
 	return v;
 }
+/* P0b: a strex whose monitor was dropped while the value is still the ldrex's snapshot would have
+ * succeeded on hardware -- log it against the watch window with the drop site's tag. */
+static inline void recomp_excl_spurious(uint32_t a, uint32_t v, int width) {
+	if (recomp_excl_addr == a && !recomp_excl_valid &&
+	    __atomic_load_n((uint32_t *)G(a), __ATOMIC_SEQ_CST) == recomp_excl_val)
+		recomp_watch_write(a, v, 10 + (recomp_excl_drop_reason > 0 && recomp_excl_drop_reason < 4 ? recomp_excl_drop_reason : 0));
+	(void)width;
+}
 static inline uint32_t STREX(uint32_t a, uint32_t v) {
-	if (!recomp_excl_valid || recomp_excl_addr != a) return 1;
+	if (!recomp_excl_valid || recomp_excl_addr != a) { recomp_excl_spurious(a, v, 4); return 1; }
 	recomp_excl_valid = 0;
 	uint32_t expect = recomp_excl_val;
 	int ok = __atomic_compare_exchange_n((uint32_t *)G(a), &expect, v, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST) ? 0 : 1;
-	if (ok == 0 && a - recomp_watch_lo < recomp_watch_hi) recomp_watch_write(a, v, 5);   /* 5 = the STREX store */
+	if (ok == 0) {
+		if (a - recomp_watch_lo < recomp_watch_hi) recomp_watch_write(a, v, 5);   /* 5 = the STREX store */
+		if (recomp_excl_seq != recomp_switch_seq)
+			recomp_watch_write(a, v, 20);   /* 20 = the stale-monitor success: a switch happened since the ldrex */
+	}
 	return ok;
 }
 static inline void CLREX(void) { recomp_excl_valid = 0; }
@@ -148,14 +168,24 @@ extern __thread uint64_t recomp_excl_val64;
 static inline uint64_t LDREXD(uint32_t a) {
 	uint64_t v = __atomic_load_n((uint64_t *)G(a), __ATOMIC_SEQ_CST);
 	recomp_excl_addr = a; recomp_excl_val64 = v; recomp_excl_valid = 2;
+	recomp_excl_seq = recomp_switch_seq;
 	return v;
 }
 static inline uint32_t STREXD(uint32_t a, uint64_t v) {
-	if (recomp_excl_valid != 2 || recomp_excl_addr != a) return 1;
+	if (recomp_excl_valid != 2 || recomp_excl_addr != a) {
+		if (recomp_excl_addr == a && !recomp_excl_valid &&
+		    __atomic_load_n((uint64_t *)G(a), __ATOMIC_SEQ_CST) == recomp_excl_val64)
+			recomp_watch_write(a, (uint32_t)v, 10 + (recomp_excl_drop_reason > 0 && recomp_excl_drop_reason < 4 ? recomp_excl_drop_reason : 0));
+		return 1;
+	}
 	recomp_excl_valid = 0;
 	uint64_t expect = recomp_excl_val64;
 	int ok = __atomic_compare_exchange_n((uint64_t *)G(a), &expect, v, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST) ? 0 : 1;
-	if (ok == 0 && a - recomp_watch_lo < recomp_watch_hi) recomp_watch_write(a, (uint32_t)v, 9);   /* 9 = the STREXD store */
+	if (ok == 0) {
+		if (a - recomp_watch_lo < recomp_watch_hi) recomp_watch_write(a, (uint32_t)v, 9);   /* 9 = the STREXD store */
+		if (recomp_excl_seq != recomp_switch_seq)
+			recomp_watch_write(a, (uint32_t)v, 20);   /* 20 = the stale-monitor success */
+	}
 	return ok;
 }
 /* byte and halfword exclusives (ldrexb/strexb, ldrexh/strexh): the same monitor over 1 or 2 bytes */
@@ -163,14 +193,24 @@ static inline uint32_t STREXD(uint32_t a, uint64_t v) {
 static inline uint32_t LDREX##N(uint32_t a) { \
 	T v = __atomic_load_n((T *)G(a), __ATOMIC_SEQ_CST); \
 	recomp_excl_addr = a; recomp_excl_val = v; recomp_excl_valid = K; \
+	recomp_excl_seq = recomp_switch_seq; \
 	return v; \
 } \
 static inline uint32_t STREX##N(uint32_t a, uint32_t v) { \
-	if (recomp_excl_valid != K || recomp_excl_addr != a) return 1; \
+	if (recomp_excl_valid != K || recomp_excl_addr != a) { \
+		if (recomp_excl_addr == a && !recomp_excl_valid && \
+		    __atomic_load_n((T *)G(a), __ATOMIC_SEQ_CST) == (T)recomp_excl_val) \
+			recomp_watch_write(a, v, 10 + (recomp_excl_drop_reason > 0 && recomp_excl_drop_reason < 4 ? recomp_excl_drop_reason : 0)); \
+		return 1; \
+	} \
 	recomp_excl_valid = 0; \
 	T expect = (T)recomp_excl_val; \
 	int ok = __atomic_compare_exchange_n((T *)G(a), &expect, (T)v, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST) ? 0 : 1; \
-	if (ok == 0 && a - recomp_watch_lo < recomp_watch_hi) recomp_watch_write(a, v, W);   /* W = the narrow STREX store */ \
+	if (ok == 0) { \
+		if (a - recomp_watch_lo < recomp_watch_hi) recomp_watch_write(a, v, W);   /* W = the narrow STREX store */ \
+		if (recomp_excl_seq != recomp_switch_seq) \
+			recomp_watch_write(a, v, 20);   /* 20 = the stale-monitor success */ \
+	} \
 	return ok; \
 }
 RECOMP_EXCL_NARROW(B, uint8_t, 3, 6)
