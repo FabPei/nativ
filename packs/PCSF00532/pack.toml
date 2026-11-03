@@ -23,6 +23,6 @@ status = "recommended"
 # (CONTINUE/DOWNLOAD, within ~6 frames of the press edge), and the test frame captures
 # that menu. The press starts after the title's prompt state has polled with no button:
 # a press held from the state's first poll is read but not acted on (no observed edge).
-TEST_INPUT = "0-217:0,218-226:4000"   # cross (Vita mask 0x4000) held over frames 218-226: a press EDGE inside the title state
-TEST_FRAMES = 230          # the post-transition menu (transition completes within ~6 frames of the press edge; 230 sits before the ULT worker spawn phase, whose attach race is a known limitation)
+TEST_INPUT = "0-217:0,218-226:4000,227-279:0,280-288:4000"   # cross press edge in the title state (218-226), then a second edge selecting CONTINUE on the menu (280-288)
+TEST_FRAMES = 1500         # P0c-5 probe: past the menu into the CONTINUE/save/quest flow (230 was the pre-fix limit before the ULT worker spawn phase)
 TEST_TOLERANCE = 5         # the menu animates (prompt/glow); under the fixed test clock the phase is deterministic, 5% covers drift and still fails a broken frame

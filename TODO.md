@@ -52,3 +52,11 @@ N02d reference gate stays OPEN (0/2 attempts; frame 230 + framediff pending a cl
   monitor_test 16/16. Open: P0c-4 campaign (20 cold starts vs the p0b3 6/20 baseline + owner
   replay), residual risk: the context-less restart shares the per-address stack with the dying
   incarnation (short window; design (a) wait-for-exit if corruption persists).
+- [x] **P0c-4** STABLE GATE MET (2026-11-03): 20/20 cold starts clean (title+menu at frame 230,
+  zero assertions; p0b3 baseline was 6/20) + owner-trace replay owner-play.rec 6/6 served and
+  clean. Binary sha256 e072d588c7325fc14a92a42fd53f2fe843c04971178210de7c8a939280c63357
+  (artifacts: recomp/batch/p0c4, p0c4replay).
+- [~] **P0c-5** probe started: pack.toml TEST_INPUT gained a second cross edge (280-288,
+  selecting CONTINUE on the menu) and TEST_FRAMES 230 -> 1500 to enter the CONTINUE/save/quest
+  flow past the former pre-ULT-spawn cutoff. Hypothesis + expected outcomes in the ledger
+  ("P0c-5 hypothesis"); one bounded probe run, screenshots every 10 frames.
