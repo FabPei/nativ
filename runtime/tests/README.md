@@ -48,6 +48,23 @@ function lookup.
 It prints `scheduler (RECOMP_SCHED=vita): N checks, 0 failed`, then `N checks, 0 failed`, and exits 0. A failed check
 names its line. Waiter tests use short sleeps to order threads, so a run takes about three seconds.
 
+## Input recording/replay: `input_rec_test.c`
+
+Checks `runtime/gfx/input_rec.c` -- the `# nativ-input v2` trace format behind
+`RECOMP_INPUT_RECORD`/`RECOMP_INPUT_REPLAY` (docs/input-recording.md) -- as pure logic with no game
+and no SDL: the header/version check, encode/decode round trip, change-only rows (neutral spans and
+quick taps resolving to exact down/up edges, a hold spanning frames as one row with the poll
+counter moving on), malformed traces (short rows, missing v2 columns, out-of-range analog, trailing
+"unsupported" columns, bad hex, masks over 32 bits, frame/poll/ms going backwards), the replay's
+EOF lookup (hold the last state past the end), record+replay exclusivity, and the N02g-7 checkpoint
+fingerprint (repeatable state matches, a deliberately changed stable field is detected, an
+unreached checkpoint reports unknown rather than a mismatch).
+
+    cc -O1 -g -Wall -Wno-unused-function $INC input_rec_test.c ../gfx/input_rec.c -o /tmp/input_rec_test && /tmp/input_rec_test
+
+It prints `N checks, 0 failed`, then the `  checkpoint:` line the fingerprint test renders, and
+exits 0. A failed check names its line.
+
 ## Touch gestures: `gesture_test.c`
 
 Checks `runtime/input/gesture.c`, the Vita's gesture library (SceSystemGesture): its touch tracker and its tap, drag,

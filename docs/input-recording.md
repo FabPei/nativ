@@ -60,9 +60,10 @@ anchoring + rerecord counter), no code consulted.
    injected script/replay presses merge into the same delivered
    stream, as they must to reproduce what the game saw.
 2. **Keep the existing flags and line shapes** (`RECOMP_INPUT_RECORD`
-   /`RECOMP_INPUT_PLAY`, `C frame buttons lx ly rx ry`): the loader
-   (`display.c:556-600`) already ignores unknown lines and
-   `play_ctrl`'s "latest at or before the frame" semantics already
+   /`RECOMP_INPUT_REPLAY` -- the old `RECOMP_INPUT_PLAY` name stays as
+   an alias, `C frame buttons lx ly rx ry`): the loader
+   (display.c `input_rec_init`) already ignores unknown lines and
+   `play_ctrl`'s "latest record at or before the frame" semantics already
    serves change-only rows correctly. The recorder becomes
    change-only (a row when buttons/sticks change, plus a final row at
    exit) and gains a `# nativ-input v2` header: format version,
@@ -168,3 +169,43 @@ C <frame> <buttons hex> <lx> <ly> <rx> <ry> <poll> <ms>
 - Tests: `runtime/tests/` -- encode/decode round-trip, neutral
   spans, quick taps, held buttons, frame gaps, malformed traces,
   replay EOF, mask edges, exclusivity (N02g-5).
+
+## N02g-6 — local usage guide (owner play session)
+
+The play session itself belongs to the owner: this section is the
+short guide. (Built from the current local build; commands run from
+the Nativ checkout on Windows.)
+
+```bat
+:: 1. Build the current state (WSL cross build, ~3 min)
+wsl -d Ubuntu -- bash -lc 'cd /mnt/c/Users/fabia/Documents/GitHub/nativ && ATIV_DUMP=/mnt/c/Users/fabia/Documents/GitHub/SeelenOpferungRecomp/outputs.local/nativ-library TARGET=windows python3 pipeline/vitarecomp.py build PCSF00532'
+
+:: 2. Play with recording on (windowed, keyboard/controller live)
+cd C:\Users\fabia\Documents\GitHub\nativ
+set ATIV_DUMP=C:\Users\fabia\Documents\GitHub\SeelenOpferungRecomp\outputs.local\nativ-library
+set RECOMP_INPUT_RECORD=C:\Users\fabia\AppData\Local\hermes\cache\scratch\owner-play.rec
+.venv\Scripts\python.exe pipeline\vitarecomp.py run PCSF00532
+
+:: 3. Replay the same session (headless test mode)
+set RECOMP_INPUT_REPLAY=C:\Users\fabia\AppData\Local\hermes\cache\scratch\owner-play.rec
+.venv\Scripts\python.exe pipeline\vitarecomp.py test PCSF00532
+```
+
+- **Trace location**: the path given in `RECOMP_INPUT_RECORD`
+  (a local, gitignored scratch path). The file starts with
+  `# nativ-input v2` and one `C` row per delivered-input change.
+- **Event timeline**: `RECOMP_EVENTS=1` (default on, volume tiny)
+  writes `ev` lines to stderr next to the run's `session.log`
+  (run mode) or `test_win/test.log` (test mode); on any failure the
+  bounded last-N ring is dumped after the stop summary.
+- **Identifying the last successful frame**: in run mode the window
+  title bar carries live counters (`fps | frame (...) | soft N scn N
+  dr ...`); in test mode `test_win/shot_<frame>.ppm` files and the
+  `ev`/hitch lines name the last presented frame. `gfxcov.json`
+  counts frames/scenes/draws of any run that reached its exit.
+- **What to bring back**: the `.rec` file path plus any failure
+  line from the log. Only hashes/paths/metadata go into the ledger;
+  the trace itself stays local (game-derived data, never committed).
+- **Known limit**: replay is input-identical, NOT run-deterministic
+  (the named ULT worker race); a replay may need bounded attempts
+  and will say so.

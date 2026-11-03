@@ -19,6 +19,7 @@
 #include <signal.h>
 #include <unistd.h>
 #include "rt.h"
+#include "events.h"
 #include "platform.h"
 #include "hle.h"
 #include "gfx_coverage.h"
@@ -94,6 +95,8 @@ static void summary_threads(void) {
 }
 void host_summary(const char *why);   /* window.c: the import-call histogram when the window is closed */
 static void summary(const char *why) {
+	ev_log("stop", "%s", why);
+	ev_dump(why);   /* the bounded event tail, correlated with the input timeline (N02g-3) */
 	qsort(counts, ncounts, sizeof *counts, by_n);
 	fprintf(stderr, "\n== %s after %llu import calls; %d distinct:\n", why, (unsigned long long)ncalls, ncounts);
 	for (int i = 0; i < ncounts; i++)
@@ -457,6 +460,7 @@ uint32_t recomp_unimpl_at;
 void recomp_unimplemented(Cpu *c, uint32_t addr) {
 	pthread_mutex_lock(&host_lock);
 	fprintf(stderr, "unimplemented instruction at %#x (lr %#x)\n", addr, c->r[14]);
+	ev_log("assert", "unimplemented instruction at %#x (lr %#x)", addr, c->r[14]);
 	if (*hle_last_format) fprintf(stderr, "last formatted string: %s\n", hle_last_format);
 	summary("stopped"); exit(2);
 }

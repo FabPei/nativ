@@ -22,6 +22,8 @@ static uint32_t heap = 0x81000000;
 uint32_t guest_alloc(uint32_t size, uint32_t align) { heap = (heap + align - 1) & ~(align - 1); uint32_t a = heap; heap += size; return a; }
 uint32_t tls_block(void) { return guest_alloc(0x100, 64); }
 void recomp_runfast(void) {}
+void ev_log(const char *kind, const char *fmt, ...) { (void)kind; (void)fmt; }   /* events.c: not linked here */
+void ev_dump(const char *why) { (void)why; }
 uint64_t guest_time_us(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000 + t.tv_nsec / 1000; }
 int guest_clock_fixed(void) { return 0; }
 void guest_time_slept(uint32_t us) { (void)us; }

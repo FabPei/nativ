@@ -20,6 +20,7 @@
 #define _GNU_SOURCE   /* glibc: pthread_setname_np (thread_main names host threads after guest threads) */
 #endif
 #include <errno.h>
+#include "events.h"
 #include <limits.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -793,6 +794,7 @@ static void h_zero_ok(Cpu *c) { RET(0); }   /* ChangeThreadVfpException, CloseSe
 static void h_exit_process(Cpu *c) { fprintf(stderr, "process exited (sceKernelExitProcess %#x)\n", A0); fflush(stderr); exit(0); }
 static void h_abort_handler(Cpu *c) {   /* libc's abort() ends here; a stub that returned let the program run on past its own abort */
 	fprintf(stderr, "abort (sceKernelCallAbortHandler from lr %#x); last formatted string: %s\n", c->r[14], hle_last_format);
+	ev_log("fail", "abort handler (lr %#x)", c->r[14]);
 	fflush(stderr); exit(1);
 }
 

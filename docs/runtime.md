@@ -132,7 +132,7 @@ Linux and Windows rely on the Vulkan drivers' own caches.
 Each touch keeps its own ID while held. The front panel's coordinates run 0 to 1919 by 0 to 1087; the rear's active
 rows are 108 to 889.
 
-Test aids: `RECOMP_INPUT_RECORD=<file>` records everything the game reads, and `RECOMP_INPUT_PLAY=<file>` plays it
+Test aids: `RECOMP_INPUT_RECORD=<file>` records everything the game reads, and `RECOMP_INPUT_REPLAY=<file>` plays it
 back. `RECOMP_LOG_TOUCH=1` and `RECOMP_LOG_MOTION=1` show touch and motion reads. Without a touchscreen,
 `RECOMP_TOUCH_ANY=1` treats any touch device as one (a Mac trackpad becomes an absolute multi-touch surface), and
 `RECOMP_FINGER_SCRIPT="frame:down|move|up:finger:x,y;..."` pushes finger events into a windowed run.
