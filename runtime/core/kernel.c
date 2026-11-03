@@ -1876,7 +1876,66 @@ static void fiber_attach_context(Fiber *g, uint32_t a, uint32_t sz) {
 uint32_t recomp_watch_lo, recomp_watch_hi;
 void recomp_watch_write(uint32_t a, uint32_t v, int width) {
 	extern const char *recomp_cur_tname(void);
-	fprintf(stderr, "    watch write ea=%#x val=%#x w=%d thread=%s ret=%p\n", a, v, width, recomp_cur_tname(), __builtin_return_address(0));
+	fprintf(stderr, "    watch write ea=%#x val=%#x w=%d pc=%#x thread=%s fib=%#x hf=%p ret=%p\n",
+		a, v, width, cur_fiber ? cur_fiber->cpu.r[15] : (SELF() && SELF()->cpu ? SELF()->cpu->r[15] : 0), recomp_cur_tname(),
+		cur_fiber ? cur_fiber->addr : 0, (void *)cur_fiber, __builtin_return_address(0));
+}
+
+/* P0c-1: the ULT creation/parent-ownership chain trace (RECOMP_ULT_TRACE=1; compiled in always,
+ * quiet when the env is unset). The generated libult code's spawn/adopt/parent-write sites call
+ * this with an event tag and four values (per site's meaning: adopt carries the thread's current
+ * parent in d, parent-* writers the value they write in b). The record table remembers each
+ * object's parent as last WRITTEN by a traced writer and flags any observed change with no
+ * writer in between (ULT-DIVERGENCE: the "corrupted parent" discriminator -- a producer outside
+ * the traced chain, e.g. a host-side bulk copy or the fn_8c0071ae link write). Logged per event:
+ * the host thread (name/uid), its fiber and scheduler slot state at the moment of the event. */
+static int ult_tr_on(void) { static int on = -1; if (on < 0) on = getenv("RECOMP_ULT_TRACE") != 0; return on; }
+static void ult_tr_arm_watch(void) {  /* RECOMP_WATCH_FIXED=<addr>,<len>: write-watch on a fixed window */
+	static int done;
+	if (done) return;
+	done = 1;
+	const char *wf = getenv("RECOMP_WATCH_FIXED");
+	if (wf && *wf) {
+		recomp_watch_lo = (uint32_t)strtoul(wf, NULL, 0);
+		const char *cma = strchr(wf, ',');
+		recomp_watch_hi = cma ? (uint32_t)strtoul(cma + 1, NULL, 0) : 8u;
+		fprintf(stderr, "watch-fixed lo=%#x hi=%#x\n", recomp_watch_lo, recomp_watch_hi);
+	}
+}
+#define ULT_TR_MAX 96
+static struct { uint32_t obj, parent; unsigned seq; const char *writer; } ult_tr_objs[ULT_TR_MAX];
+static unsigned ult_tr_seq;
+void recomp_ult_trace(const char *tag, uint32_t a, uint32_t b, uint32_t d, uint32_t e, uint32_t f, uint32_t g) {
+	ult_tr_arm_watch();
+	if (!ult_tr_on()) return;
+	unsigned seq = ++ult_tr_seq;
+	int is_writer = !strncmp(tag, "parent-", 7),
+	    is_adopt = tag[0] == 'a' && tag[1] == 'd';   /* adopt-A..D */
+	if (a && (is_writer || is_adopt)) {
+		int slot = -1;
+		for (int i = 0; i < ULT_TR_MAX; i++) {
+			if (ult_tr_objs[i].obj == a) { slot = i; break; }
+			if (slot < 0 && !ult_tr_objs[i].obj) slot = i;
+		}
+		if (slot >= 0) {
+			if (is_writer) {
+				ult_tr_objs[slot].obj = a; ult_tr_objs[slot].parent = b;
+				ult_tr_objs[slot].seq = seq; ult_tr_objs[slot].writer = tag;
+			} else if (!ult_tr_objs[slot].obj) {
+				ult_tr_objs[slot].obj = a; ult_tr_objs[slot].parent = d;
+				ult_tr_objs[slot].seq = seq; ult_tr_objs[slot].writer = "first-seen";
+			} else if (ult_tr_objs[slot].parent != d) {
+				fprintf(stderr, "ULT-DIVERGENCE obj=%#x parent now %#x (last written %#x by %s at seq %u) at %s seq %u\n",
+					a, d, ult_tr_objs[slot].parent, ult_tr_objs[slot].writer, ult_tr_objs[slot].seq, tag, seq);
+				ult_tr_objs[slot].parent = d; ult_tr_objs[slot].seq = seq; ult_tr_objs[slot].writer = "observed-change";
+			}
+		}
+	}
+	uint32_t ultid = 0;   /* the ULT current-thread slot (key 0x43): distinguishes ULT streams on one fiber */
+	if (SELF()->tls_keys) ultid = RD32(SELF()->tls_keys + 4 * 0x43);
+	fprintf(stderr, "ult-trace %u %s a=%#x b=%#x d=%#x e=%#x f=%#x g=%#x thr=%s tid=%#x fib=%#x hf=%p ult=%#x s=%d\n",
+		seq, tag, a, b, d, e, f, g, recomp_cur_tname(), cur_tid, cur_fiber ? cur_fiber->addr : 0,
+		(void *)cur_fiber, ultid, SELF()->s_state);
 }
 
 static void h_fiber_attach_and_switch(Cpu *c) {   /* (fiber, addrContext, sizeContext, argOnRunTo, *argOnRun) */

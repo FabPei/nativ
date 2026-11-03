@@ -16,3 +16,14 @@ ledger TODO stays authoritative.
 
 Gates: kernel_test 681/681, input_rec_test 116/116 (both green on `43d7a35`).
 N02d reference gate stays OPEN (0/2 attempts; frame 230 + framediff pending a clean run).
+
+## P0c (2026-11-03) — ULT double-spawn 0x8c009380 lifecycle
+- [x] **P0c-1** first incorrect state transition + producer identified (parent-set 0x8c0093d8 on a
+  phantom thread from a corrupted saved r4: `fn_8c000000` pop restored a guest-stack slot overwritten
+  by a concurrent flow during sceKernelGetTLSAddr; push/pop probes measured it directly). Named gap:
+  the concurrent stack writer's site. Full evidence in SeelenOpferungRecomp `docs/progress.md`.
+- [ ] **P0c-2** LwCond/LwMutex edge: `h_signal_lwcond` wakes a fiber with no per-stack exclusivity
+  (context-less fiber stack = caller_sp-512, no guard) — audit + fix hypothesis next.
+- [ ] **P0c-3** synthetic fail-before/pass-after regression + minimal fix (pending P0c-2).
+- [ ] **P0c-4** 20 same-build cold starts + owner replay (pending P0c-3).
+- [ ] **P0c-5** owner CONTINUE -> first quest (pending P0c-4).
