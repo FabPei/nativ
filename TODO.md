@@ -27,3 +27,9 @@ N02d reference gate stays OPEN (0/2 attempts; frame 230 + framediff pending a cl
 - [ ] **P0c-3** synthetic fail-before/pass-after regression + minimal fix (pending P0c-2).
 - [ ] **P0c-4** 20 same-build cold starts + owner replay (pending P0c-3).
 - [ ] **P0c-5** owner CONTINUE -> first quest (pending P0c-4).
+- [x] **P0c-2** audit result: LwCond/LwMutex wait/wake queue is SOUND (explicit negative: predicate
+  lock held into the sleep, no missed/spurious wakes, timeout race handled). The mismatch is the
+  fiber handoff stack model: a context-less fiber gets 512 bytes (sp0=caller_sp-512, kernel.c:1829)
+  instead of the SDK's whole remaining thread stack; the ULT tree-walk chain overflowed it and
+  clobbered a neighbouring flow's saved r4 (measured). Fix hypothesis: private sized stack per
+  context-less fiber. See SeelenOpferungRecomp docs/progress.md "P0c-2 audit result".
