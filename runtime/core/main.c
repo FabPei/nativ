@@ -419,6 +419,16 @@ void recomp_call_external(Cpu *c, uint32_t addr) {
 		if (!seen && nsaid < 512) said[nsaid++] = name;
 		pthread_mutex_unlock(&host_lock);
 		if (!seen) fprintf(stderr, "    import %s: not implemented -- returns %#x (first call from lr %#x, r0 %#x r1 %#x)\n", name, stub_ret, c->r[14], a0, a1);
+		/* diagnostic: every unimplemented import call is counted per name; the 2nd/100th/10000th
+		 * report shows repeat-call loops the once-only line above cannot see (probe: save check) */
+		{	static const char *n2[64]; static int c2[64]; static int n_n2; int k = -1;
+			pthread_mutex_lock(&host_lock);
+			for (int i = 0; i < n_n2; i++) if (n2[i] == name) { k = i; break; }
+			if (k < 0 && n_n2 < 64) { k = n_n2++; n2[k] = name; c2[k] = 0; }
+			if (k >= 0) c2[k]++;
+			int cc = k >= 0 ? c2[k] : 0;
+			pthread_mutex_unlock(&host_lock);
+			if (cc == 2 || cc == 100 || cc == 10000) fprintf(stderr, "    import %s: call #%d (repeat-call diagnostic)\n", name, cc); }
 	}
 	{	/* RECOMP_IMPORT_BT=name[,name...]: the host's stack at the first call of each (its fn_<addr> frames are the guest's
 		 * calls) -- who reaches an import, through virtual calls a static search can't follow */

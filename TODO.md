@@ -75,3 +75,11 @@ N02d reference gate stays OPEN (0/2 attempts; frame 230 + framediff pending a cl
   changed vs 13-28% same-run inter-frame). Findings kept open in the ledger: the ISA
   doc/Vita3K word semantics diverge from this title's byte-0 contract, and replay shot
   numbers are not game states (state drift) -- compare at matched states.
+
+- [x] **Q12-12 diagnostic** (2026-11-04): repeat-call counter in the unimplemented-import
+  stub (`runtime/core/main.c`): the once-per-import log is blind to repeat-call loops; the
+  counter reports each name at call #2/#100/#10000. Evidence: bounded run q12-11diag
+  (synthetic confirm trace, 1200 frames, clean 1/1) showed the save-check pipeline calls
+  sceAppUtilSaveDataMount/Umount exactly twice each (loop ruled out) and no unimplemented
+  import fires after the six check threads start. Exact command: dev/run_batch.py --runs 1
+  --replay <synthetic-menu.rec> --tag q12-11diag --frames 600 -> PASS 1/1.
