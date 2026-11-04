@@ -121,3 +121,11 @@ matched EU Vita3K break/trace at fn_812c0642 entry (guest 0x812c0642) around New
 PR-AUDIT complete: docs/research/pr-audit-candidates.md in the ledger (25 rows, upstream
 4b1c428, PR-03/04/05/06 ranked READY, PR-08 HOLD). Full evidence in ledger
 docs/progress.md "CAUSE-01 cycle result" and "PR-AUDIT complete".
+
+2026-11-04 — PR lane (TODO reviewed): PR-03 (cross-host _python() venv fix) delivered as
+upstream PR https://github.com/TheLostPantheon/nativ/pull/39 (open/mergeable, head
+FabPei:codex/n05-python-venv@a7157f1 -> base 4b1c428) from the nativ-upstream PR checkout;
+focused topic diff only (no TODO in the public branch by design). Tests: 8 checks/0 failed
+post-fix, 8 checks/3 failed --old control against the real pre-fix source. PR-AUDIT table +
+full evidence in the ledger (docs/research/pr-audit-candidates.md, docs/progress.md). Next
+prepared candidate per board order: PR-04 (monitor park/yield clear).
