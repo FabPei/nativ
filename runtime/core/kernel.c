@@ -119,6 +119,7 @@ typedef struct Thread {
 	struct Thread *s_next;       /* the wait list */
 	const char *in_hle;         /* the kernel handler it is inside right now (the stall dump) */
 	unsigned lw_phase;          /* its lwmutex-handler phase (the stall dump; written through the lwm_ph macro) */
+	uint64_t lw_lookup_enter, lw_lookup_return; /* opt-in lookup progress, read atomically by the stall dump */
 } Thread;
 #define MAX_THREADS 1024
 static Thread threads[MAX_THREADS];
@@ -141,6 +142,7 @@ static __thread uint32_t cur_tid = 0x40010003;              /* the main thread's
 #define lwm_ph (SELF()->lw_phase)
 static int lwm_log_on(void) { static int on = -1; if (on < 0) on = getenv("RECOMP_LOG_LWMUTEX") != 0; return on; }
 static uint32_t klock_held;                                 /* whose handler holds klock right now (the stall dump) */
+static int lwm_count_on;                                    /* enabled once before guest threads start */
 static void klock_take(void) { pthread_mutex_lock(&klock); klock_held = cur_tid; }
 static void klock_give(void) { klock_held = 0; pthread_mutex_unlock(&klock); }
 /* kernel-object event counts (N01b-7's A/B evidence), exact and always on: one count per
@@ -458,6 +460,7 @@ extern uint32_t process_param;
  * ask for (SceProcessParam +0x14 sceUserMainThreadPriority, +0x28 sceUserMainThreadCpuAffinityMask:
  * pointers to the values, 0 for the defaults) and admits it */
 void kernel_sched_init(void) {
+	lwm_count_on = getenv("RECOMP_LWM_COUNT") != NULL;
 	const char *e = getenv("RECOMP_SCHED");
 	/* the main thread's priority and affinity are the process parameters' (sceUserMainThreadPriority
 	 * / ...CpuAffinityMask), scheduler or not: Unit 13 asks for 144 and the host ran it at 160, so
@@ -1124,7 +1127,9 @@ static void h_lock_lwmutex(Cpu *c) {
 	uint32_t w = A0;
 	lwm_ph = 1;
 	if (lwm_log_on()) fprintf(stderr, "    lwm-lock enter work %#x n %#x tid %#x lr %#x\n", w, A1, cur_tid, c->r[14]);
+	if (lwm_count_on) __atomic_add_fetch(&SELF()->lw_lookup_enter, 1, __ATOMIC_RELAXED);
 	Obj *o = lwmutex(w);
+	if (lwm_count_on) __atomic_add_fetch(&SELF()->lw_lookup_return, 1, __ATOMIC_RELAXED);
 	lwm_ph = 2;
 	if (lwm_log_on()) fprintf(stderr, "    lwm-lock obj %#x owner %#x count %d\n", o->uid, o->owner, o->count);
 	uint32_t r = mutex_lock(o, (int)A1, A2, 0, 1);
@@ -1444,6 +1449,9 @@ void kernel_report_pcs(void) {
 		        t->cpu->r[4], t->cpu->r[5], t->cpu->r[6], t->cpu->r[7],
 		        t->cpu->r[8], t->cpu->r[9], t->cpu->r[10], t->cpu->r[11], t->cpu->r[12], t->in_hle ? t->in_hle : "-");
 		fprintf(stderr, "  stall: lwm-phas tid %#x ph %u\n", t->uid, t->lw_phase);
+		if (lwm_count_on) fprintf(stderr, "  stall: lwm-lookup-count tid %#x entered %llu returned %llu\n", t->uid,
+		    (unsigned long long)__atomic_load_n(&t->lw_lookup_enter, __ATOMIC_RELAXED),
+		    (unsigned long long)__atomic_load_n(&t->lw_lookup_return, __ATOMIC_RELAXED));
 		if (!t->in_hle) {   /* N01b-12 diagnostic: the guest call-frame chain (each frame's saved lr) for threads in pure guest code */
 			fprintf(stderr, "  stall: stack tid %#x", t->uid);
 			for (int w = 0; w < 40; w++) fprintf(stderr, " %08x", ((uint32_t *)G(t->cpu->r[13]))[w]);

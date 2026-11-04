@@ -103,3 +103,7 @@ q12-34stab (RECOMP_SAVE_DIALOG=auto RECOMP_SCHED=vita) classified 9/20 game worl
 art, 2/20 boot hangs from the kept frames. Exact test: dev/run_batch.py --runs 20 --replay
 <owner-ng3.rec> --tag q12-34stab -> 18/20 clean rc=0, per-run end frames present in
 batch/q12-34stab/run-N/shot_01200.ppm.
+
+## N03a — pending save warning and lookup-progress instrumentation (2026-11-04)
+
+- TODO reviewed — status unchanged. OWNER_IDENTIFIED_SCREEN: owner reports save warning absent after New Game; next expected is the warning followed by the opening cutscene. RUNTIME_STATE_VERIFIED: a live watched gate showed no clear, but its cause is unknown. One timing-adjusted diagnostic replay with an extra synthetic press reached a visually similar pre-dialog image; opt-in lookup counters show LoaderThread and LoaderIO completed many lookups between snapshots, so phase-1 samples do not prove one continuously blocked call. GAMEPLAY_CONTROL_VERIFIED: not reached. Synthetic contention/counter fixture: four workers 250000 lookups each, no incorrect results; counter off 0/0, on 1/1; kernel 681/0 and scheduler 103/0 on Linux/WSL. Windows diagnostic binary hash, exact commands and limitations are in ledger `docs/progress.md`. Next: identify the pending task/queue completion path; after a proven fix, ask owner whether New Game displays the warning.
