@@ -192,3 +192,18 @@ nv15-v0.1.5-upstream; please re-pin the local tag when convenient. Central ledge
 0502cf52f3f0b665daa610ead0415e153ed30783 (was wrongly at 36c2a74 = v0.1.4; verified after the
 force-fetch; v0.1.4 unchanged). NV15 bookkeeping closed: NV15-1..5 each checked with its own
 result in the central TODO. No source change.
+
+2026-11-04 — CAUSE-01 EU reference trace + P1 dialog-Term contract fix (TODO reviewed):
+owner-provided Vita3K trace of the same EU title matched against the Nativ replay classes at the
+API/FS level (working transition: system.bin/bak -> own-mount + savedata1 poll ->
+sceSaveDataDialogInit -> Continue -> datag0001.bin+SlotParam_1.bin -> backup; Nativ diverges after
+system.bak in BOTH classes: no own-mount/poll/Init/save chain). The guest-internal request
+condition for the phase-object construction is still unnamed -> next measurement = EU debugger
+break at 0x812c0643 with caller/LR (owner-assisted). Fix: dialog Term handlers (save + simple
+dialogs) now return SCE_COMMON_DIALOG_ERROR_NOT_IN_USE (0x80020411) with no dialog in use (was
+bare 0; the reference returns 0x80020411 pre-init, directly measured). Per FLOW-03's static
+finding (both generated call sites ignore Term's return) this is fidelity-only and NOT the
+missing-dialog cause. New synthetic fixture runtime/tests/dlg_term_test.c: fail-before 6 checks /
+3 failed -> pass-after 6/0; regressions kernel 103/0+681/0, monitor 16/0, fiber 9/0, input_rec
+116/0; rebuilt game_host.exe; smoke replay PASS 1/1. Upstream classification (PR-REUSE-GATE):
+generic, PR-suitable with the fixture's synthetic content (comment wording generic already).
