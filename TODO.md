@@ -95,3 +95,11 @@ q12-24fix (owner navigation trace, 1200 frames, clean 1/1) — all six bonus mou
 neither unregisters nor sets the parent flags; state 32 (the bonus scan -> message window
 -> parent flags) is gated on ctx+0x3f1/ctx+0x3f4. Exact test: dev/run_batch.py --runs 1
 --replay <owner-ng3.rec> --tag q12-24fix -> PASS 1/1, mount returns verified in test.log.
+
+2026-11-04 — dev/run_batch.py: keep each run's end frame (shot_01200.ppm) in KEEP_SHOTS: the
+stability campaign classifies each run's final state offline (game world vs the bare-art dead
+end) by diffing the kept end frame against the baseline. Evidence: the N03 20-run measure
+q12-34stab (RECOMP_SAVE_DIALOG=auto RECOMP_SCHED=vita) classified 9/20 game world, 9/20 bare
+art, 2/20 boot hangs from the kept frames. Exact test: dev/run_batch.py --runs 20 --replay
+<owner-ng3.rec> --tag q12-34stab -> 18/20 clean rc=0, per-run end frames present in
+batch/q12-34stab/run-N/shot_01200.ppm.

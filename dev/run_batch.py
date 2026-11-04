@@ -28,6 +28,9 @@ VITARECOMP = os.path.join(NATIV, "pipeline", "vitarecomp.py")
 PACK = os.path.join(NATIV, "packs", "PCSF00532", "pack.toml")
 
 KEEP_SHOTS = ("shot_00210.ppm", "shot_00230.ppm")   # title / menu evidence for this pack (SHOT_EVERY=10 series)
+# plus the end frame: the stability campaign classifies each run's final state (game world vs the
+# bare-art dead end) by diffing it against the known baseline -- 2026-11-04, N03 sched measure
+KEEP_SHOTS += ("shot_01200.ppm",)
 
 
 def pack_frames():
