@@ -860,6 +860,78 @@ static uint32_t test_lane_spv(Spv *s, uint32_t raw, int type, int cmpsel) {
 	default: return result2(s, &s->func, SpvOpLogicalOr, t_bool(s), isneg, iszero);
 	}
 }
+/* the word-level helpers below (read_word/write_word/ubits) are defined further down with the
+ * integer-MAD family; declared here for emit_sop2 */
+static uint32_t read_word(Gen *g, const UOperand *o, int off, int *ok);
+static void write_word(Gen *g, const UOperand *o, int off, uint32_t v, int *ok);
+static uint32_t ubits(Spv *s, uint32_t w, int shift, int bits);
+/* SOP2 (usse.c's exec_sop2, docs/usse-isa.md §3.11): blend-style sum of products -- read as
+ * usse.c's read_i32(.., 0): component 0 of the U8 operand words (with src1_mod's raw negate on
+ * the read, then the float complement below -- exec_sop2's double modification, mirrored), the
+ * read value's four bytes unpacked to 0..1 floats (u8_unpack), csel/cmod-selected factors times
+ * each own source, combined by cop (0 add, 1 sub, 2 min, 3 max), alpha likewise with asel/amod
+ * and aop, packed (u8_pack4's clamp01(v) * 255 + 0.5 truncated) and written as byte 0 of the
+ * destination word only (write_raw_lane's insert_lane lane 0), bytes 1-3 preserved.
+ *
+ * Byte 0 only is the OBSERVED working contract: Q12-05's synthetic oracle (runtime/tests/
+ * usse_sop2_test.c) and an A/B on the real title measured that writing the packed word's bytes
+ * 1-3 (the ISA doc's and Vita3K's SOP2 handler reading) corrupts this title's rendering (a
+ * full-screen green overlay; the same change through the interpreter), while byte-0 writes render
+ * the accepted reference. The wider per-lane read/write convention divergence is an open
+ * investigation (docs/progress.md, Q12-05), not settled here. */
+static uint32_t sop2_cop(Spv *s, int cop, uint32_t x, uint32_t y) {
+	switch (cop & 3) {
+	case 0: return fop2(s, SpvOpFAdd, x, y);
+	case 1: return fop2(s, SpvOpFSub, x, y);
+	case 2: return glsl2(s, GLSLFMin, x, y);
+	default: return glsl2(s, GLSLFMax, x, y);
+	}
+}
+static uint32_t sop2_pack(Spv *s, uint32_t v) {
+	return f_to_u(s, fop2(s, SpvOpFAdd, fop2(s, SpvOpFMul, fclamp(s, v, 0.0f, 1.0f), c_float(s, 255.0f)), c_float(s, 0.5f)));
+}
+static void emit_sop2(Gen *g, const UOp *op, int *ok) {
+	Spv *s = &g->s;
+	static const int unit[4] = {1, 1, 1, 1};
+	for (int r = 0; r < op->reps; r++) {
+		int off1 = slot_off(g, op->repmode, op->s1.bank, r, unit, 1, ok);
+		int off2 = slot_off(g, op->repmode, op->s2.bank, r, unit, 2, ok);
+		int offd = slot_off(g, op->repmode, op->dst.bank, r, unit, 3, ok);
+		uint32_t w1 = read_word(g, &op->s1, off1, ok), w2 = read_word(g, &op->s2, off2, ok);   /* read_i32(.., 0): byte 0, src1_mod's raw negate included */
+		if (!*ok) return;
+		uint32_t c1[3], c2[3], a1, a2;
+		for (int k = 0; k < 3; k++) {
+			c1[k] = fop2(s, SpvOpFDiv, result1(s, &s->func, SpvOpConvertUToF, t_float(s), ubits(s, w1, 8 * k, 8)), c_float(s, 255.0f));
+			c2[k] = fop2(s, SpvOpFDiv, result1(s, &s->func, SpvOpConvertUToF, t_float(s), ubits(s, w2, 8 * k, 8)), c_float(s, 255.0f));
+		}
+		a1 = fop2(s, SpvOpFDiv, result1(s, &s->func, SpvOpConvertUToF, t_float(s), ubits(s, w1, 24, 8)), c_float(s, 255.0f));
+		a2 = fop2(s, SpvOpFDiv, result1(s, &s->func, SpvOpConvertUToF, t_float(s), ubits(s, w2, 24, 8)), c_float(s, 255.0f));
+		if (op->s1.negabs & 1) {
+			for (int k = 0; k < 3; k++) c1[k] = fop2(s, SpvOpFSub, c_float(s, 1.0f), c1[k]);
+			a1 = fop2(s, SpvOpFSub, c_float(s, 1.0f), a1);
+		}
+		int csel1 = op->args[0] & 0xFF, cmod1 = op->args[0] & 0x100, csel2 = op->args[1] & 0xFF, cmod2 = op->args[1] & 0x100;
+		int asel1 = op->args[2] & 0xFF, amod1 = op->args[2] & 0x100, asel2 = op->args[3] & 0xFF, amod2 = op->args[3] & 0x100;
+		uint32_t out = c_uint(s, 0);
+		for (int k = 0; k < 3; k++) {
+			uint32_t f1 = csel1 == 1 ? c1[k] : csel1 == 2 ? c2[k] : csel1 == 3 ? a1 : csel1 == 4 ? a2 : c_float(s, 0.0f);
+			uint32_t f2 = csel2 == 1 ? c1[k] : csel2 == 2 ? c2[k] : csel2 == 3 ? a1 : csel2 == 4 ? a2 : c_float(s, 0.0f);
+			if (cmod1) f1 = fop2(s, SpvOpFSub, c_float(s, 1.0f), f1);
+			if (cmod2) f2 = fop2(s, SpvOpFSub, c_float(s, 1.0f), f2);
+			uint32_t v = sop2_cop(s, op->sub, fop2(s, SpvOpFMul, f1, c1[k]), fop2(s, SpvOpFMul, f2, c2[k]));
+			out = uop2(s, SpvOpBitwiseOr, out, uop2(s, SpvOpShiftLeftLogical, sop2_pack(s, v), c_uint(s, (uint32_t)(8 * k))));
+		}
+		{
+			uint32_t f1 = asel1 == 1 ? a1 : asel1 == 2 ? a2 : c_float(s, 0.0f);
+			uint32_t f2 = asel2 == 1 ? a1 : asel2 == 2 ? a2 : c_float(s, 0.0f);
+			if (amod1) f1 = fop2(s, SpvOpFSub, c_float(s, 1.0f), f1);
+			if (amod2) f2 = fop2(s, SpvOpFSub, c_float(s, 1.0f), f2);
+			uint32_t v = sop2_cop(s, op->sub2, fop2(s, SpvOpFMul, f1, a1), fop2(s, SpvOpFMul, f2, a2));
+			out = uop2(s, SpvOpBitwiseOr, out, uop2(s, SpvOpShiftLeftLogical, sop2_pack(s, v), c_uint(s, 24)));
+		}
+		write_word(g, &op->dst, offd, out, ok);   /* byte 0 only: write_raw_comp's lane-0 insert, bytes 1-3 preserved */
+	}
+}
 /* VMOV: raw lanes, as usse.c's exec_vmov -- sub==0 a plain move, otherwise a conditional select
  * on s0 (sub==2 tests s0 as U8) */
 static void emit_vmov(Gen *g, const UOp *op, int *ok) {
@@ -2313,6 +2385,7 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 			case OP_VTST: emit_vtst(&g, op, &ok); break;
 			case OP_VTSTMSK: emit_vtstmsk(&g, op, &ok); break;
 			case OP_VBW: emit_vbw(&g, op, &ok); break;
+			case OP_SOP2: emit_sop2(&g, op, &ok); break;
 			case OP_I8MAD: emit_i8mad(&g, op, &ok); break;
 			case OP_I16MAD: emit_i16mad(&g, op, &ok); break;
 			case OP_I32MAD: emit_i32mad(&g, op, &ok); break;

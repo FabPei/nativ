@@ -60,3 +60,18 @@ N02d reference gate stays OPEN (0/2 attempts; frame 230 + framediff pending a cl
   selecting CONTINUE on the menu) and TEST_FRAMES 230 -> 1500 to enter the CONTINUE/save/quest
   flow past the former pre-ULT-spawn cutoff. Hypothesis + expected outcomes in the ledger
   ("P0c-5 hypothesis"); one bounded probe run, screenshots every 10 frames.
+
+- [ ] **N05-PRE1 / N05-PR1** (2026-11-03): public fork access and the separate PR checkout
+  are established. The SSD checkout has ordinary pushes disabled. The preliminary LR topic
+  needs SETJMP and behavioral regression tests, publication review, a topic commit and a real
+  upstream PR. The authoritative gates and workflow are in the ledger repository.
+
+- [x] **Q12-05** (2026-11-03): OP_SOP2 GPU translation implemented (`usse_spirv.c`
+  emit_sop2, the interpreter's observed byte-0 contract) with synthetic fixture
+  `runtime/tests/usse_sop2_test.c` (fail-before "unsupported ... (op 12)", pass-after
+  41 checks, 0 failed). Replay wall time per presented frame 54-77 ms vs the 427 ms
+  software baseline (5.5-7.9x), 84/84 shaders on the GPU. Menu-state render matches the
+  accepted software reference within the scene's animation noise (best pair 7.0% bytes
+  changed vs 13-28% same-run inter-frame). Findings kept open in the ledger: the ISA
+  doc/Vita3K word semantics diverge from this title's byte-0 contract, and replay shot
+  numbers are not game states (state drift) -- compare at matched states.
