@@ -145,3 +145,10 @@ dda15ca/0969b11 with the fixture comment scrubbed (game assert addresses + inter
 Fail-before/pass-after on the upstream base: 9 checks/1 failed -> 9/0; kernel_test 103/0+681/0;
 combined PR-40+PR-41 tree: monitor 16/0, fiber 9/0, kernel 103/0+681/0. Next: PR-06 (Thumb-2
 image-block mode precedence; the fixture must first be rewritten fully synthetic per audit R2).
+
+2026-11-04 — PR lane (TODO reviewed): PR-06 (Thumb-2 image-block mode precedence) delivered
+as upstream PR https://github.com/TheLostPantheon/nativ/pull/42 (open/mergeable, head
+FabPei:codex/n05-thumb-mode@ab0dd8b -> base 4b1c428); fixture rewritten fully synthetic
+(synthetic addresses/bytes/BLX T2 encoder self-verified via capstone), fresh old/new run
+6 checks/2 failed -> 6/0. READY PR lane now complete: PR-03 -> #39, PR-04 -> #40, PR-05 -> #41,
+PR-06 -> #42. PR-08 stays HOLD per audit.
