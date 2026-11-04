@@ -90,6 +90,18 @@ static int slot_write(uint32_t id, uint32_t param) {   /* param: a guest SceAppU
 	fwrite(p, 1, SLOT_PARAM_SIZE, f); fclose(f);
 	return 0;
 }
+/* sceAppUtilSaveDataMount(SceAppUtilSaveDataMount * (title id +0, +0x10 scratch), const char *passphrase,
+ * ...) mounts ANOTHER title's saved data -- the saved-data bonus check (SSD probes four other Soul
+ * Sacrifice titles). A host holding no such saved data must report SLOT_NOT_FOUND, the console's answer
+ * for missing saved data: the game then skips the bonus. The former unimplemented stub returned success
+ * for every call, so the game treated a mounted-but-empty directory as corrupt saved data and its save
+ * flow dead-locked behind the error window's task. Mounting real foreign saved data stays unimplemented
+ * and fails loudly here. */
+static void h_save_data_mount(Cpu *c) {
+	if (A0) { char id[10]; memcpy(id, G(A0), 9); id[9] = 0; fprintf(stderr, "    apputil: SaveDataMount foreign title %s -> SLOT_NOT_FOUND (no such saved data)\n", id); }
+	RET(0x80100641u);   /* SCE_APPUTIL_ERROR_SAVEDATA_SLOT_NOT_FOUND */
+}
+static void h_save_data_umount(Cpu *c) { (void)c; RET(0); }   /* (mount point): nothing was mounted */
 static void h_save_slot_create(Cpu *c) { RET(slot_write(A0, A1) == 0 ? 0 : 0x80100600u); }   /* (slot id, SceAppUtilSaveDataSlotParam *, mount point) */
 static void h_save_slot_delete(Cpu *c) { char m[1024]; slot_marker(A0, m, sizeof m); RET(unlink(m) == 0 ? 0 : 0x80100641u); }   /* SLOT_NOT_FOUND */
 static void h_save_slot_param(Cpu *c) {   /* (slot id, SceAppUtilSaveDataSlotParam *, mount point) */
@@ -528,6 +540,7 @@ const HleEntry hle_apputil[] = {
 	{"sceAppMgrIsGameProgram", h_is_game},   /* 1: a game -- libfios2 picks its default file mode by it */
 	{"sceAppUtilSaveDataSlotGetParam", h_save_slot_param}, {"sceAppUtilSaveDataSlotCreate", h_save_slot_create}, {"sceAppUtilSaveDataSlotDelete", h_save_slot_delete}, {"sceAppUtilSaveDataSlotSetParam", h_save_slot_set_param},
 	{"sceAppUtilSaveDataDataSave", h_save_data_save},
+	{"sceAppUtilSaveDataMount", h_save_data_mount}, {"sceAppUtilSaveDataUmount", h_save_data_umount},
 	{"sceAppUtilSaveDataDataRemove", h_save_data_remove},
 	{"sceNpTrophyCreateContext", h_trophy_create},
 	{"sceNpTrophyCreateHandle", h_trophy_create},

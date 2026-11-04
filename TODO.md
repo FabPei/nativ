@@ -83,3 +83,15 @@ N02d reference gate stays OPEN (0/2 attempts; frame 230 + framediff pending a cl
   sceAppUtilSaveDataMount/Umount exactly twice each (loop ruled out) and no unimplemented
   import fires after the six check threads start. Exact command: dev/run_batch.py --runs 1
   --replay <synthetic-menu.rec> --tag q12-11diag --frames 600 -> PASS 1/1.
+
+2026-11-04 — sceAppUtilSaveDataMount/Umount implemented (foreign saved-data bonus check):
+the imports were unregistered and fell through to the unimplemented stub, which silently
+returned success for every call — including missing slots — so the game classified an
+empty memory card as corrupt saved data and its save flow dead-locked behind the error
+window's task. The handlers now report SLOT_NOT_FOUND (0x80100641) for missing saved
+data (SlotGetParam's own contract) and log each probe loudly; umount returns 0. Evidence:
+q12-24fix (owner navigation trace, 1200 frames, clean 1/1) — all six bonus mounts return
+0x80100641 (previously 0). Remaining: the flow's no-bonus path completes its status but
+neither unregisters nor sets the parent flags; state 32 (the bonus scan -> message window
+-> parent flags) is gated on ctx+0x3f1/ctx+0x3f4. Exact test: dev/run_batch.py --runs 1
+--replay <owner-ng3.rec> --tag q12-24fix -> PASS 1/1, mount returns verified in test.log.
