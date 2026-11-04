@@ -129,3 +129,11 @@ focused topic diff only (no TODO in the public branch by design). Tests: 8 check
 post-fix, 8 checks/3 failed --old control against the real pre-fix source. PR-AUDIT table +
 full evidence in the ledger (docs/research/pr-audit-candidates.md, docs/progress.md). Next
 prepared candidate per board order: PR-04 (monitor park/yield clear).
+
+2026-11-04 — PR lane (TODO reviewed): PR-04 (exclusive-monitor park/yield clear +
+monitor_test) delivered as upstream PR https://github.com/TheLostPantheon/nativ/pull/40
+(open/mergeable, head FabPei:codex/n05-monitor-park@4d4f236 -> base 4b1c428), extracted
+from eaf25a1/78e4870 semantics without any SSD instrumentation. Fail-before/pass-after on
+the upstream base: 16 checks/3 failed -> 16/0; kernel_test 103/0 + 681/0. Scope decision:
+import-dispatch clear excluded (case 2 pins it); w=10/w=20 tags stay local. Next prepared
+candidate: PR-05 (context-less fiber private stack + fiber_stack_test).
