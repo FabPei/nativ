@@ -137,3 +137,11 @@ from eaf25a1/78e4870 semantics without any SSD instrumentation. Fail-before/pass
 the upstream base: 16 checks/3 failed -> 16/0; kernel_test 103/0 + 681/0. Scope decision:
 import-dispatch clear excluded (case 2 pins it); w=10/w=20 tags stay local. Next prepared
 candidate: PR-05 (context-less fiber private stack + fiber_stack_test).
+
+2026-11-04 — PR lane (TODO reviewed): PR-05 (context-less fiber private stack +
+fiber_stack_test) delivered as upstream PR https://github.com/TheLostPantheon/nativ/pull/41
+(open/mergeable, head FabPei:codex/n05-fiber-stack@b83d79b -> base 4b1c428), extracted from
+dda15ca/0969b11 with the fixture comment scrubbed (game assert addresses + internal IDs gone).
+Fail-before/pass-after on the upstream base: 9 checks/1 failed -> 9/0; kernel_test 103/0+681/0;
+combined PR-40+PR-41 tree: monitor 16/0, fiber 9/0, kernel 103/0+681/0. Next: PR-06 (Thumb-2
+image-block mode precedence; the fixture must first be rewritten fully synthetic per audit R2).
