@@ -180,3 +180,10 @@ this merge — not a v0.1.5 change and not newly broken. Baseline safety: backup
 nv15-backup-20261104 pins the pre-merge state; the uncommitted pack.toml TEST_INPUT/TEST_FRAMES
 (P0c-5 probe-2 config) stayed untouched in the main checkout. Transfer to local-ssd-work follows
 in the next step of this task.
+
+2026-11-04 — NV15 (TODO reviewed): v0.1.5 (0502cf52) merged and IMPORTED to local-ssd-work as
+merge 45a1aa8 (TODO updated in the same commit there). Gates: kernel 103/0+681/0 (waitstats
+link), monitor 16/0, fiber_stack 9/0, input_rec 116/0 (input_rec.c link), Windows game start
+PASS 1/1 clean. Backup: nv15-backup-20261104 (pre-merge c3fd022). Note for the owner: the local
+v0.1.5 tag wrongly points at v0.1.4 (36c2a74) — the verified tag was fetched as
+nv15-v0.1.5-upstream; please re-pin the local tag when convenient. Central ledger synced.
