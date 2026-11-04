@@ -162,3 +162,21 @@ lr/tname instrumentation: stale binary reproduced bare-art, rebuilt binary 4/4 w
 race is build-sensitive); runtime thread UNKNOWN/inferred eflSave. apputil.c instrumentation
 RESTORED to HEAD and game_host.exe rebuilt clean — no local source change kept. STAB-02
 (instrument the post-scan continuation, then targeted fix + 20 runs) is the named next step.
+
+2026-11-04 — NV15 (TODO reviewed): upstream v0.1.5 (tag = 0502cf52f3f0b665daa610ead0415e153ed30783,
+verified literally; NOTE the local `v0.1.5` tag wrongly points at v0.1.4 36c2a74 — fetched under
+`nv15-v0.1.5-upstream`, the stale tag left untouched) merged into `nv15-integration` in the
+separate worktree nativ-nv15. Merge: zero textual conflicts (5 two-sided files auto-merged:
+vitarecomp.py, main.c, display.c, usse_spirv.c, docs/runtime.md); semantic review found both
+sides coherent (main.c: upstream's RF_-flags import refactor coexists with the local
+sched_yield_if_preempted/monitor-clear/repeat-call counter; display.c: upstream's PS-TV-v2 +
+touch-sampling log coexists with the local recorder v2; usse_spirv.c: snap_fetch vs emit_sop2
+different regions). Tests on the merge (WSL, one compile+run each): kernel_test scheduler
+103/0 + 681/0 (link needs ../debug/waitstats.c on this tree), monitor_test 16/0,
+fiber_stack_test 9/0, input_rec_test 116/0 (link needs ../gfx/input_rec.c). Windows game start:
+dev/run_batch.py --runs 1 (owner-ng3.rec, RECOMP_SAVE_DIALOG=auto RECOMP_SCHED=vita, 1200
+frames) -> PASS 1/1 clean. The known context-less fiber stack fix is LOCAL (P0c-3), carried by
+this merge — not a v0.1.5 change and not newly broken. Baseline safety: backup branch
+nv15-backup-20261104 pins the pre-merge state; the uncommitted pack.toml TEST_INPUT/TEST_FRAMES
+(P0c-5 probe-2 config) stayed untouched in the main checkout. Transfer to local-ssd-work follows
+in the next step of this task.
