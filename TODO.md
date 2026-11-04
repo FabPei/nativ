@@ -187,3 +187,8 @@ link), monitor 16/0, fiber_stack 9/0, input_rec 116/0 (input_rec.c link), Window
 PASS 1/1 clean. Backup: nv15-backup-20261104 (pre-merge c3fd022). Note for the owner: the local
 v0.1.5 tag wrongly points at v0.1.4 (36c2a74) — the verified tag was fetched as
 nv15-v0.1.5-upstream; please re-pin the local tag when convenient. Central ledger synced.
+
+2026-11-04 — P1.06 fix (TODO reviewed): local `v0.1.5` tag RE-PINNED to upstream-correct
+0502cf52f3f0b665daa610ead0415e153ed30783 (was wrongly at 36c2a74 = v0.1.4; verified after the
+force-fetch; v0.1.4 unchanged). NV15 bookkeeping closed: NV15-1..5 each checked with its own
+result in the central TODO. No source change.
