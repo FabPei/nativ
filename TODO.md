@@ -152,3 +152,13 @@ FabPei:codex/n05-thumb-mode@ab0dd8b -> base 4b1c428); fixture rewritten fully sy
 (synthetic addresses/bytes/BLX T2 encoder self-verified via capstone), fresh old/new run
 6 checks/2 failed -> 6/0. READY PR lane now complete: PR-03 -> #39, PR-04 -> #40, PR-05 -> #41,
 PR-06 -> #42. PR-08 stays HOLD per audit.
+
+2026-11-04 — STAB-01 (TODO reviewed): first discriminating observation for the 9/20 vs 9/20
+split recorded (ledger docs/progress.md): perfect class marker = the 6-title foreign
+sceAppUtilSaveDataMount scan (present iff bare-art, 9/9 vs 9/9); fork window after the
+replayed confirm f513 before f600; named disputed transition = fn_818927c0's post-scan
+continuation (single mount call site, lr 0x81892807). One bounded probe spent (mount-handler
+lr/tname instrumentation: stale binary reproduced bare-art, rebuilt binary 4/4 world — the
+race is build-sensitive); runtime thread UNKNOWN/inferred eflSave. apputil.c instrumentation
+RESTORED to HEAD and game_host.exe rebuilt clean — no local source change kept. STAB-02
+(instrument the post-scan continuation, then targeted fix + 20 runs) is the named next step.
