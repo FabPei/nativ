@@ -22,7 +22,7 @@ env:
 
 jobs:
   linux-windows:   # the AppImage (made on Linux) and the Windows zip (cross-built on Linux, as upstream makes it)
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04   # (Python 3.12: the pipeline needs tomllib, 3.11+)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with: { fetch-depth: 0 }
@@ -53,6 +53,7 @@ jobs:
           if [[ $GITHUB_REF == refs/tags/* ]]; then echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
           else t=v0.0.0-fp0; git tag -f "$t"; echo "tag=$t" >> "$GITHUB_OUTPUT"; fi   # (a manual run: a throwaway local tag)
       - name: package
+        env: { SHELLOPTS: xtrace }
         run: bash dev/release.sh "${{ steps.tag.outputs.tag }}" linux windows
       - name: smoke
         run: |
@@ -93,6 +94,7 @@ jobs:
           if [[ $GITHUB_REF == refs/tags/* ]]; then echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
           else t=v0.0.0-fp0; git tag -f "$t"; echo "tag=$t" >> "$GITHUB_OUTPUT"; fi
       - name: package
+        env: { SHELLOPTS: xtrace }   # (every script line in the log: the install scripts end quietly on a failure)
         run: bash dev/release.sh "${{ steps.tag.outputs.tag }}" mac
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9   # v7.0.2
         with:
@@ -103,7 +105,7 @@ jobs:
   draft-release:   # only for a pushed tag: every download and SHA256SUMS on a draft release
     if: startsWith(github.ref, 'refs/tags/')
     needs: [linux-windows, mac]
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
