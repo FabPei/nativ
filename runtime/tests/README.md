@@ -122,3 +122,22 @@ compiles the fixture against a different copy of `apputil.c` for a fail-before c
 including `kernel.c` also link `../debug/waitstats.c` on branches carrying the kernel's wait instrumentation.
 
 It prints `all passed` and exits 0. A failed check is named in the output.
+
+## SceSysmodule's IsLoaded contract: `sysmodule_test.c`
+
+Checks `sceSysmoduleIsLoaded` / `LoadModule` / `UnloadModule` in `runtime/core/apputil.c`: a module is loaded (0)
+only after the game loaded it, and `SCE_SYSMODULE_ERROR_UNLOADED` (0x805a1001) before that and after an unload.
+IsLoaded used to answer 0 for every module. Calls go through the `hle_apputil` table by name, so
+`-DAPPUTIL_UNDER_TEST='"<file>"'` compiles it against an older `apputil.c` for a fail-before run. Same shims and
+build line as `dlg_term_test.c`.
+
+## What an unimplemented import returns: `stubret_test.c`
+
+Checks `runtime/core/stubret.h`: the device/network families' "not initialised" errors for operational calls, 0 for
+their set-up/tear-down calls, and 0 (`SCE_COMMON_DIALOG_STATUS_NONE`) for any common dialog's `GetStatus`.
+Header-only, no shims:
+
+    cc -O1 -g -Wall $INC stubret_test.c -o /tmp/stubret_test && /tmp/stubret_test
+
+`-DSTUBRET_UNDER_TEST='"<file>"'` compiles it against another copy of the policy for a fail-before run.
+

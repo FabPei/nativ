@@ -207,3 +207,16 @@ missing-dialog cause. New synthetic fixture runtime/tests/dlg_term_test.c: fail-
 3 failed -> pass-after 6/0; regressions kernel 103/0+681/0, monitor 16/0, fiber 9/0, input_rec
 116/0; rebuilt game_host.exe; smoke replay PASS 1/1. Upstream classification (PR-REUSE-GATE):
 generic, PR-suitable with the fixture's synthetic content (comment wording generic already).
+
+## CAUSE-02 (2026-11-05) — save-data dialog never opened after New Game: two runtime contract fixes
+- [x] **CAUSE-02a** unimplemented `*DialogGetStatus` answered the sceNp family error 0x80550002 (read as "dialog
+  running" by the game's all-dialogs-idle check fn_8188ff2c) -> 0 = STATUS_NONE (`runtime/core/stubret.h`, policy
+  extracted from main.c). Fixture `stubret_test.c`: fail-before 4 FAILED -> pass-after all passed.
+- [x] **CAUSE-02b** `sceSysmoduleIsLoaded` answered 0 for every module; IME (0x11) never loaded -> sceImeUpdate stub 0
+  read as "keyboard open". Now load/unload bookkeeping, UNLOADED 0x805a1001 otherwise. Fixture `sysmodule_test.c`:
+  fail-before 6 FAILED -> pass-after all passed. dlg_term_test still passes.
+- Measured (scripted X at title + X on NEW GAME, empty save, game_host.exe): sceSaveDataDialogInit at ~f574, Continue,
+  slot-1 DataSave, Finish, Term; prologue text then 3D scene. Pre-fix same input: no Init. RUNTIME_STATE_VERIFIED +
+  SCRIPTED_INPUT_DELIVERED only; owner check with RECOMP_SAVE_DIALOG=ask pending. Upstream: both generic, PR-suitable
+  (other-game regression not yet run).
+
