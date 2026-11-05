@@ -1077,31 +1077,7 @@ static uint32_t sop_pack(Spv *s, const uint32_t v[4]) {   /* usse.c u8_pack4: cl
 	}
 	return w;
 }
-static void emit_sop2(Gen *g, const UOp *op, int *ok) {
-	Spv *s = &g->s;
-	for (int r = 0; r < op->reps; r++) {
-		int off[4]; imad_offsets(g, op, r, off, ok);
-		uint32_t w1 = read_word(g, &op->s1, off[1], ok), w2 = read_word(g, &op->s2, off[2], ok);
-		if (!*ok) return;
-		uint32_t a[4], b[4]; sop_unpack(s, w1, a); sop_unpack(s, w2, b);
-		if (op->s1.negabs & 1) for (int k = 0; k < 4; k++) a[k] = sop_one_minus(s, a[k]);
-		int csel1 = op->args[0] & 0xFF, cmod1 = op->args[0] & 0x100, csel2 = op->args[1] & 0xFF, cmod2 = op->args[1] & 0x100;
-		int asel1 = op->args[2] & 0xFF, amod1 = op->args[2] & 0x100, asel2 = op->args[3] & 0xFF, amod2 = op->args[3] & 0x100;
-		uint32_t zero = c_float(s, 0.0f), out[4];
-		for (int k = 0; k < 3; k++) {
-			uint32_t f1 = csel1 == 1 ? a[k] : csel1 == 2 ? b[k] : csel1 == 3 ? a[3] : csel1 == 4 ? b[3] : zero;
-			uint32_t f2 = csel2 == 1 ? a[k] : csel2 == 2 ? b[k] : csel2 == 3 ? a[3] : csel2 == 4 ? b[3] : zero;
-			if (cmod1) f1 = sop_one_minus(s, f1);
-			if (cmod2) f2 = sop_one_minus(s, f2);
-			out[k] = sop_cop(s, op->sub, fop2(s, SpvOpFMul, f1, a[k]), fop2(s, SpvOpFMul, f2, b[k]));
-		}
-		uint32_t af1 = asel1 == 1 ? a[3] : asel1 == 2 ? b[3] : zero, af2 = asel2 == 1 ? a[3] : asel2 == 2 ? b[3] : zero;
-		if (amod1) af1 = sop_one_minus(s, af1);
-		if (amod2) af2 = sop_one_minus(s, af2);
-		out[3] = sop_cop(s, op->sub2, fop2(s, SpvOpFMul, af1, a[3]), fop2(s, SpvOpFMul, af2, b[3]));
-		write_word(g, &op->dst, off[3], sop_pack(s, out), ok);
-	}
-}
+/* emit_sop2: the earlier definition above (local SOP2 translation, identical arithmetic) serves both; the fork's copy was dropped in the merge */
 static void emit_sop2m(Gen *g, const UOp *op, int *ok) {
 	Spv *s = &g->s;
 	uint32_t w1 = read_word(g, &op->s1, 0, ok), w2 = read_word(g, &op->s2, 0, ok), wd = read_word(g, &op->dst, 0, ok);
@@ -2484,7 +2460,6 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 			case OP_VBW: emit_vbw(&g, op, &ok); break;
 			case OP_SOP2: emit_sop2(&g, op, &ok); break;
 			case OP_I8MAD: emit_i8mad(&g, op, &ok); break;
-			case OP_SOP2: emit_sop2(&g, op, &ok); break;
 			case OP_SOP2M: emit_sop2m(&g, op, &ok); break;
 			case OP_SOP3: emit_sop3(&g, op, &ok); break;
 			case OP_I16MAD: emit_i16mad(&g, op, &ok); break;
