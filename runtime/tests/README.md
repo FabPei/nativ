@@ -141,3 +141,13 @@ Header-only, no shims:
 
 `-DSTUBRET_UNDER_TEST='"<file>"'` compiles it against another copy of the policy for a fail-before run.
 
+## Render-target views of swizzled U8U8U8U8 targets: `view_swz_test.c`
+
+Checks `runtime/gfx/view_swz.h`, the component selectors gfx_gpu.c's view pass uses when a U8U8U8U8 texture
+reads memory a U8U8U8U8 render target drew: for every target swizzle (ABGR, ARGB, RGBA, BGRA) and every
+four-component texture swizzle, the view's selectors applied to the target's colour must equal what the texture
+decodes from the bytes the target stores (gfx_soft.c's target_write_of and apply_swizzle, restated as the oracle).
+
+    cc -O1 -g -Wall -I../gfx view_swz_test.c -o /tmp/view_swz_test && /tmp/view_swz_test
+
+It prints `420 checks, 0 failed` and exits 0.
