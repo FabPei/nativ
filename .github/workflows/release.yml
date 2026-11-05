@@ -55,6 +55,11 @@ jobs:
       - name: package
         env: { SHELLOPTS: xtrace }
         run: bash dev/release.sh "${{ steps.tag.outputs.tag }}" linux windows
+      - name: launcher build trace (on failure)
+        if: failure()
+        run: |
+          T=$(ls -d build/release/*/work-linux/ProjectNativ/toolchain | head -1)
+          ATIV_LINUX_TOOLCHAIN=$PWD/$T zsh -x launcher/build.sh /tmp/nativ-trace 2>&1 | tail -80
       - name: smoke
         run: |
           A=$(ls build/release/*/ProjectNativ-*-linux.AppImage); chmod +x "$A"
@@ -96,6 +101,11 @@ jobs:
       - name: package
         env: { SHELLOPTS: xtrace }   # (every script line in the log: the install scripts end quietly on a failure)
         run: bash dev/release.sh "${{ steps.tag.outputs.tag }}" mac
+      - name: launcher build trace (on failure)
+        if: failure()
+        run: |
+          T=$(ls -d "build/release/"*"/work-mac/Project Nativ.app/Contents/Resources/toolchain" | head -1)
+          ATIV_MAC_TOOLCHAIN="$PWD/$T" zsh -x launcher/build.sh /tmp/nativ-trace 2>&1 | tail -80
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9   # v7.0.2
         with:
           name: mac
