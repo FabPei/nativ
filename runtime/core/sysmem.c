@@ -56,13 +56,21 @@ static void h_alloc_block(Cpu *c) {   /* (name, type, size, opt) */
 	int slot = -1;
 	for (int i = 0; i < nblocks; i++) if (!blocks[i][1]) { slot = i; break; }   /* a freed slot first */
 	if (slot < 0) { if (nblocks >= MAX_BLOCKS) { pthread_mutex_unlock(&block_lock); RET(0x80020001u); return; } slot = nblocks++; }
-	uint32_t size = A2, base = hole_take(page_up(size));
+	/* the alignment the console gives the block: the type's (CDRAM 256 KiB; physically contiguous main memory 1 MiB; the
+	 * rest a page), or the larger one asked for in SceKernelAllocMemBlockOpt (attr bit 2, HAS_ALIGNMENT: the alignment at +8).
+	 * Every block was page-aligned: CRI Mana (Persona 4: Dancing All Night) checks that its decoder memory, a block of its own,
+	 * is 1 MiB-aligned and refused to create a movie player otherwise -- the game waited on a black screen for its movie */
+	uint32_t align = 4096, ty = A1;
+	if ((ty & 0x0f000000u) == 0x09000000u) align = 0x40000;                                  /* USER_CDRAM_RW (0x09408060) */
+	else if ((ty & 0x0f000000u) == 0x0c000000u || (ty & 0x0f000000u) == 0x0d000000u) align = 0x100000;   /* USER_MAIN_PHYCONT_RW (0x0c20d060) / _PHYCONT_NC_RW (0x0d808060) */
+	if (A3 && RD32(A3) >= 12 && (RD32(A3 + 4) & 4u)) { uint32_t a = RD32(A3 + 8); if (a > align && !(a & (a - 1))) align = a; }
+	uint32_t size = A2, base = align == 4096 ? hole_take(page_up(size)) : 0;   /* (the holes are page-aligned only) */
 	const int reused = base != 0;
-	if (!base) base = guest_alloc(size, 4096);
+	if (!base) base = guest_alloc(size, align);
 	blocks[slot][0] = base; blocks[slot][1] = size; block_type[slot] = A1;
 	pthread_mutex_unlock(&block_lock);
 	memset(G(base), 0, size);
-	fprintf(stderr, "    memblock '%s' %#x bytes at %#x%s\n", (char *)G(A0), size, base, reused ? " (reused)" : "");
+	fprintf(stderr, "    memblock '%s' %#x bytes at %#x%s (type %#x%s)\n", (char *)G(A0), size, base, reused ? " (reused)" : "", ty, align > 4096 ? ", aligned" : "");
 	RET(0x10000 + slot);
 }
 static void h_free_block(Cpu *c) {   /* (uid) */

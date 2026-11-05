@@ -55,8 +55,12 @@ static void h_eula_dlg_result(Cpu *c) { if (A0) { for (int i = 0; i < 0x2c; i +=
 static void h_zero(Cpu *c) { RET(0); }
 static void h_drm_open(Cpu *c) {   /* every add-on licensed; RECOMP_NP_LOG names the ones the game asks for (Killzone's Botzone: P000000000001957) */
 	static int log = -1; if (log < 0) log = getenv("RECOMP_NP_LOG") != 0;
-	if (log && A0) { char id[18]; memcpy(id, G(A0), 17); id[17] = 0; fprintf(stderr, "    np: add-on licence %s -> licensed\n", id); }
-	RET(0);
+	/* RECOMP_ADDCONT_NONE=1: no add-on is licensed (the error the console gives for content not installed) -- a test that
+	 * doesn't have a game's add-on files, or wants to start without them (Persona 4: Dancing All Night shows a notice per
+	 * add-on at every boot, ~1500 frames of a scripted run) */
+	static int none = -1; if (none < 0) none = getenv("RECOMP_ADDCONT_NONE") != 0;
+	if (log && A0) { char id[18]; memcpy(id, G(A0), 17); id[17] = 0; fprintf(stderr, "    np: add-on licence %s -> %s\n", id, none ? "not installed" : "licensed"); }
+	RET(none ? 0x80100604u : 0);
 }
 static void h_is_game(Cpu *c) { RET(1); }
 

@@ -1,0 +1,18 @@
+# Persona 5: Dancing in Starlight (PCSE01275, US). Only facts about the game (the format: pipeline/packconf.py).
+# Built from the same code as Persona 3: Dancing in Moonlight (xrd757, Atlus's GFD engine): packs/PCSE01274.
+NAME = "Persona 5: Dancing in Starlight"
+REGION = "US"
+SPLIT = 16
+MODULES = "libc libgxm_es4 libgpu_es4 libfios2"
+RUN_ENV = "RECOMP_PRESENT_MODE=vsync"
+# 60 fps as in P3D's pack (its sites found here by their code): the frame rate's getter (0x8119d000) and the
+# present's swap interval (0x811f2246) read 60 at the 60 fps setting; the menus' own 1/30 s steps 1/60 s (hooks.c)
+IHOOKS = "0x8119d000:frames30 0x811f2246:frames30 0x81049a16:p5d_grid30 0x81049a3a:p5d_step30 0x811293fa:p5d_step30 0x8103e16c:p5d_step30"
+TEST_ENV = "RECOMP_GFX=soft RECOMP_SHADERS=interp RECOMP_CLOCK=fixed RECOMP_ADDCONT_NONE=1"
+TEST_INPUT = ""
+TEST_FRAMES = 2400
+
+# 1.00, the game as installed
+[versions."1.00"]
+sha256 = "44560df9a7658f48e3dd10e3995e0cbb979f06595fb63c908ab4840134c18b0c"
+status = "supported"

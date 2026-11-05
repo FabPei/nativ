@@ -1052,6 +1052,98 @@ static void emit_i8mad(Gen *g, const UOp *op, int *ok) {
 		write_word(g, &op->dst, off[3], result, ok);
 	}
 }
+/* ---- SOP2 / SOP2M / SOP3 (§3.11): U8 RGBA blend-style sums of products, as usse.c's exec_sop2/sop2m/sop3 to the bit: the
+ * operand words as four 0..1 bytes, factors selected per channel (optionally complemented), the two products combined by
+ * add / subtract / min / max, each result clamped and rounded back to a byte. Persona 4: Dancing All Night's shaders use
+ * them throughout; without them every such program fell back to the software renderer (a dance at single-digit fps) */
+static void sop_unpack(Spv *s, uint32_t w, uint32_t v[4]) {
+	for (int k = 0; k < 4; k++) v[k] = fop2(s, SpvOpFDiv, result1(s, &s->func, SpvOpConvertUToF, t_float(s), ubits(s, w, 8 * k, 8)), c_float(s, 255.0f));
+}
+static uint32_t sop_one_minus(Spv *s, uint32_t x) { return fop2(s, SpvOpFSub, c_float(s, 1.0f), x); }
+static uint32_t sop_cop(Spv *s, int op, uint32_t x, uint32_t y) {
+	if (op == 0) return fop2(s, SpvOpFAdd, x, y);
+	if (op == 1) return fop2(s, SpvOpFSub, x, y);
+	uint32_t lt = result2(s, &s->func, SpvOpFOrdLessThan, t_bool(s), x, y);
+	return op == 2 ? result3(s, &s->func, SpvOpSelect, t_float(s), lt, x, y) : result3(s, &s->func, SpvOpSelect, t_float(s), lt, y, x);
+}
+static uint32_t sop_pack(Spv *s, const uint32_t v[4]) {   /* usse.c u8_pack4: clamp01, *255 + 0.5, truncate */
+	uint32_t w = c_uint(s, 0);
+	for (int k = 0; k < 4; k++) {
+		uint32_t x = v[k];
+		x = result3(s, &s->func, SpvOpSelect, t_float(s), result2(s, &s->func, SpvOpFOrdLessThan, t_bool(s), x, c_float(s, 0.0f)), c_float(s, 0.0f), x);
+		x = result3(s, &s->func, SpvOpSelect, t_float(s), result2(s, &s->func, SpvOpFOrdGreaterThan, t_bool(s), x, c_float(s, 1.0f)), c_float(s, 1.0f), x);
+		uint32_t b = result1(s, &s->func, SpvOpConvertFToU, t_uint(s), fop2(s, SpvOpFAdd, fop2(s, SpvOpFMul, x, c_float(s, 255.0f)), c_float(s, 0.5f)));
+		w = uop2(s, SpvOpBitwiseOr, w, uop2(s, SpvOpShiftLeftLogical, b, c_uint(s, 8u * k)));
+	}
+	return w;
+}
+static void emit_sop2(Gen *g, const UOp *op, int *ok) {
+	Spv *s = &g->s;
+	for (int r = 0; r < op->reps; r++) {
+		int off[4]; imad_offsets(g, op, r, off, ok);
+		uint32_t w1 = read_word(g, &op->s1, off[1], ok), w2 = read_word(g, &op->s2, off[2], ok);
+		if (!*ok) return;
+		uint32_t a[4], b[4]; sop_unpack(s, w1, a); sop_unpack(s, w2, b);
+		if (op->s1.negabs & 1) for (int k = 0; k < 4; k++) a[k] = sop_one_minus(s, a[k]);
+		int csel1 = op->args[0] & 0xFF, cmod1 = op->args[0] & 0x100, csel2 = op->args[1] & 0xFF, cmod2 = op->args[1] & 0x100;
+		int asel1 = op->args[2] & 0xFF, amod1 = op->args[2] & 0x100, asel2 = op->args[3] & 0xFF, amod2 = op->args[3] & 0x100;
+		uint32_t zero = c_float(s, 0.0f), out[4];
+		for (int k = 0; k < 3; k++) {
+			uint32_t f1 = csel1 == 1 ? a[k] : csel1 == 2 ? b[k] : csel1 == 3 ? a[3] : csel1 == 4 ? b[3] : zero;
+			uint32_t f2 = csel2 == 1 ? a[k] : csel2 == 2 ? b[k] : csel2 == 3 ? a[3] : csel2 == 4 ? b[3] : zero;
+			if (cmod1) f1 = sop_one_minus(s, f1);
+			if (cmod2) f2 = sop_one_minus(s, f2);
+			out[k] = sop_cop(s, op->sub, fop2(s, SpvOpFMul, f1, a[k]), fop2(s, SpvOpFMul, f2, b[k]));
+		}
+		uint32_t af1 = asel1 == 1 ? a[3] : asel1 == 2 ? b[3] : zero, af2 = asel2 == 1 ? a[3] : asel2 == 2 ? b[3] : zero;
+		if (amod1) af1 = sop_one_minus(s, af1);
+		if (amod2) af2 = sop_one_minus(s, af2);
+		out[3] = sop_cop(s, op->sub2, fop2(s, SpvOpFMul, af1, a[3]), fop2(s, SpvOpFMul, af2, b[3]));
+		write_word(g, &op->dst, off[3], sop_pack(s, out), ok);
+	}
+}
+static void emit_sop2m(Gen *g, const UOp *op, int *ok) {
+	Spv *s = &g->s;
+	uint32_t w1 = read_word(g, &op->s1, 0, ok), w2 = read_word(g, &op->s2, 0, ok), wd = read_word(g, &op->dst, 0, ok);
+	if (!*ok) return;
+	uint32_t a[4], b[4], old[4]; sop_unpack(s, w1, a); sop_unpack(s, w2, b); sop_unpack(s, wd, old);
+	int sel1 = op->args[0] & 0xFF, mod1 = op->args[0] & 0x100, sel2 = op->args[1] & 0xFF, mod2 = op->args[1] & 0x100;
+	uint32_t zero = c_float(s, 0.0f), t1[4], t2[4], res[4];
+	for (int k = 0; k < 4; k++) {
+		uint32_t f1 = sel1 == 2 ? a[k] : sel1 == 3 ? a[3] : sel1 == 6 ? b[k] : sel1 == 7 ? b[3] : zero;
+		uint32_t f2 = sel2 == 2 ? a[k] : sel2 == 3 ? a[3] : sel2 == 6 ? b[k] : sel2 == 7 ? b[3] : zero;
+		if (mod1) f1 = sop_one_minus(s, f1);
+		if (mod2) f2 = sop_one_minus(s, f2);
+		t1[k] = fop2(s, SpvOpFMul, f1, a[k]); t2[k] = fop2(s, SpvOpFMul, f2, b[k]);
+	}
+	for (int k = 0; k < 3; k++) res[k] = sop_cop(s, op->sub, t1[k], t2[k]);
+	res[3] = sop_cop(s, op->sub2, t1[3], t2[3]);
+	for (int k = 0; k < 4; k++) if (!(op->mask & (1 << k))) res[k] = old[k];
+	write_word(g, &op->dst, 0, sop_pack(s, res), ok);
+}
+static void emit_sop3(Gen *g, const UOp *op, int *ok) {
+	Spv *s = &g->s;
+	uint32_t w0 = read_word(g, &op->s0, 0, ok), w1 = read_word(g, &op->s1, 0, ok), w2 = read_word(g, &op->s2, 0, ok);
+	if (!*ok) return;
+	uint32_t z[4], a[4], b[4]; sop_unpack(s, w0, z); sop_unpack(s, w1, a); sop_unpack(s, w2, b);
+	int csel1 = op->args[0] & 0xFF, cmod1 = op->args[0] & 0x100, csel2 = op->args[1] & 0xFF, cmod2 = op->args[1] & 0x100;
+	int asel1 = op->args[2] & 0xFF, amod1 = op->args[2] & 0x100;
+	uint32_t zero = c_float(s, 0.0f), out[4];
+	for (int k = 0; k < 3; k++) {
+		uint32_t f1 = csel1 == 2 ? a[k] : csel1 == 3 ? a[3] : csel1 == 4 ? z[k] : csel1 == 5 ? z[3] : csel1 == 6 ? b[k] : csel1 == 7 ? b[3] : zero;
+		uint32_t f2 = csel2 == 2 ? a[k] : csel2 == 3 ? a[3] : csel2 == 4 ? z[k] : csel2 == 5 ? z[3] : csel2 == 6 ? b[k] : csel2 == 7 ? b[3] : zero;
+		if (cmod1) f1 = sop_one_minus(s, f1);
+		if (cmod2) f2 = sop_one_minus(s, f2);
+		out[k] = sop_cop(s, op->sub, fop2(s, SpvOpFMul, f1, a[k]), fop2(s, SpvOpFMul, f2, b[k]));
+	}
+	/* (the alpha factors exactly as the interpreter picks them: its second from csel2, complemented by cmod2) */
+	uint32_t af1 = asel1 == 1 ? z[3] : asel1 == 2 ? a[3] : asel1 == 3 ? b[3] : zero;
+	uint32_t af2 = csel2 == 2 || csel2 == 3 ? a[3] : csel2 == 4 || csel2 == 5 ? z[3] : csel2 == 6 || csel2 == 7 ? b[3] : zero;
+	if (amod1) af1 = sop_one_minus(s, af1);
+	if (cmod2) af2 = sop_one_minus(s, af2);
+	out[3] = sop_cop(s, op->sub2, fop2(s, SpvOpFMul, af1, a[3]), fop2(s, SpvOpFMul, af2, b[3]));
+	write_word(g, &op->dst, 0, sop_pack(s, out), ok);
+}
 static void emit_i16mad(Gen *g, const UOp *op, int *ok) {
 	Spv *s = &g->s;
 	for (int r = 0; r < op->reps; r++) {
@@ -2392,6 +2484,9 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 			case OP_VBW: emit_vbw(&g, op, &ok); break;
 			case OP_SOP2: emit_sop2(&g, op, &ok); break;
 			case OP_I8MAD: emit_i8mad(&g, op, &ok); break;
+			case OP_SOP2: emit_sop2(&g, op, &ok); break;
+			case OP_SOP2M: emit_sop2m(&g, op, &ok); break;
+			case OP_SOP3: emit_sop3(&g, op, &ok); break;
 			case OP_I16MAD: emit_i16mad(&g, op, &ok); break;
 			case OP_I32MAD: emit_i32mad(&g, op, &ok); break;
 			case OP_I32MAD2: emit_i32mad2(&g, op, &ok); break;

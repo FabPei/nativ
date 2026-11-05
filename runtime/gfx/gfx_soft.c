@@ -753,7 +753,8 @@ static void apply_swizzle(uint32_t format, int ncomp, float o[4]) {
  * SWIZZLE4 ones), 0 for formats whose components are placed by the decode itself */
 static int swizzle_ncomp(uint32_t base) {
 	return base == 0x00000000u || base == 0x01000000u || base == 0x09000000u || base == 0x0a000000u || base == 0x0b000000u || base == 0x12000000u || base == 0x88000000u ? 1
-	     : base == 0x0c000000u || base == 0x0d000000u || base == 0x1b000000u || base == 0x02000000u || base == 0x04000000u || (base >= 0x85000000u && base <= 0x87000000u) ? 4
+	     : base == 0x0c000000u || base == 0x0d000000u || base == 0x1b000000u || base == 0x02000000u || base == 0x04000000u || (base >= 0x85000000u && base <= 0x87000000u)
+	       || base == 0x94000000u || base == 0x95000000u ? 4   /* P4 / P8: their palette entries are U8U8U8U8 */
 	     : base == 0x98000000u || base == 0x99000000u ? 3 : 0;
 }
 static float small_float(uint32_t v, int mbits);
@@ -775,6 +776,7 @@ static void block_dims(uint32_t base, int *bw, int *bh, int *bytes, int *minbloc
 	case 0x86000000u: case 0x87000000u: *bw = 4; *bh = 4; *bytes = 16; return;                 /* UBC2 / UBC3 */
 	case 0x90000000u: case 0x91000000u: *bw = 2; *bh = 2; *bytes = 6; return;                  /* YUV420P2 / P3: 12 bits a texel (yuv_texel) */
 	case 0x92000000u: *bw = 1; *bh = 1; *bytes = 2; return;                                     /* YUV422 */
+	case 0x94000000u: *bw = 2; *bh = 1; *bytes = 1; return;                                     /* P4: two indices a byte */
 	default: *bw = *bh = 1; *bytes = (int)tex_bytes_per_texel(base); if (!*bytes) *bytes = 4; return;
 	}
 }
@@ -918,7 +920,7 @@ static uint32_t tex_bytes_per_texel(uint32_t base) {
 	case 0x05000000u: case 0x09000000u: case 0x0a000000u: case 0x0b000000u: case 0x07000000u:
 	case 0x02000000u: case 0x04000000u: return 2;                                          /* U5U6U5/U16/S16/F16/U8U8/U4U4U4U4/U1U5U5U5 */
 	case 0x98000000u: case 0x99000000u: return 3;                                          /* U8U8U8 / S8S8S8: three bytes, no padding */
-	case 0x00000000u: return 1;                                                            /* U8 */
+	case 0x00000000u: case 0x95000000u: return 1;                                          /* U8 / P8 */
 	default: return 0;                                                                     /* block-compressed / PVRTC / unknown: no flat per-face stride */
 	}
 }
@@ -1003,6 +1005,44 @@ void gfx_decode_texture_rgba8(const GfxTexture *t, uint8_t *out) {
 			uint32_t v = RD32(t->data + 4 * texel_index(t, x, y)); uint8_t *p = out + 4 * (y * w + x);
 			uint8_t c[4] = { (uint8_t)(v & 0xff), (uint8_t)((v >> 8) & 0xff), (uint8_t)((v >> 16) & 0xff), (uint8_t)(v >> 24) };
 			for (int i = 0; i < 4; i++) p[i] = m[sw][i] < 0 ? 255 : c[m[sw][i]];
+		}
+		fast = 1;
+	} else if ((base == 0x94000000u || base == 0x95000000u) && !GFX_TEX_GAMMA(t->format)) {
+		/* P4 / P8: each index's palette entry, its bytes placed as U8U8U8U8's are (texel_raw, apply_swizzle). Persona 4
+		 * Dancing's UI panels: a 1024x512 P8 took 12 ms through texel(), redecoded whenever the game rewrote it */
+		static const int8_t m[8][4] = {{0, 1, 2, 3}, {2, 1, 0, 3}, {3, 2, 1, 0}, {1, 2, 3, 0}, {0, 1, 2, -1}, {2, 1, 0, -1}, {3, 2, 1, -1}, {1, 2, 3, -1}};
+		uint8_t pal[256][4]; int n = base == 0x95000000u ? 256 : 16;
+		for (int i = 0; i < n; i++) {
+			uint32_t v = t->palette ? RD32(t->palette + 4 * (uint32_t)i) : 0;
+			uint8_t c[4] = { (uint8_t)(v & 0xff), (uint8_t)((v >> 8) & 0xff), (uint8_t)((v >> 16) & 0xff), (uint8_t)(v >> 24) };
+			for (int k = 0; k < 4; k++) pal[i][k] = m[sw][k] < 0 ? 255 : c[m[sw][k]];
+		}
+		for (uint32_t y = 0; y < h; y++) for (uint32_t x = 0; x < w; x++) {
+			uint32_t i = texel_index(t, x, y), idx = base == 0x95000000u ? RD8(t->data + i) : (RD8(t->data + i / 2) >> (4 * (i & 1))) & 15;
+			memcpy(out + 4 * (y * w + x), pal[idx], 4);
+		}
+		fast = 1;
+	} else if (base == 0x90000000u || base == 0x91000000u) {
+		/* YUV420P2 / P3 (a movie's frames: CRI Mana's, every one re-uploaded): yuv_texel's arithmetic, its products from
+		 * tables (the same float operations in the same order: the same bytes), a row at a time. 960x544 took ~12 ms
+		 * through texel() -- over a 60 fps frame by itself */
+		const uint32_t st = (uint32_t)tex_stride(t), c = t->data + st * h; const int full = sw >= 2;
+		float ty[256], tr[256], tgu[256], tgv[256], tb[256];
+		for (int k = 0; k < 256; k++) {
+			float Y = full ? k / 255.f : (k - 16) * (1.f / 219.f), C = full ? (k - 128) / 255.f : (k - 128) * (1.f / 224.f);
+			ty[k] = Y; tr[k] = 1.402f * C; tgu[k] = 0.344136f * C; tgv[k] = 0.714136f * C; tb[k] = 1.772f * C;
+		}
+		for (uint32_t y = 0; y < h; y++) {
+			uint8_t *p = out + 4 * ((size_t)y * w);
+			for (uint32_t x = 0; x < w; x++, p += 4) {
+				int yy = RD8(t->data + y * st + x), a, b; uint32_t cx = x / 2, cy = y / 2;
+				if (base == 0x91000000u) { uint32_t cst = st / 2, plane = cst * ((h + 1) / 2); a = RD8(c + cy * cst + cx); b = RD8(c + plane + cy * cst + cx); }
+				else { a = RD8(c + cy * st + cx * 2); b = RD8(c + cy * st + cx * 2 + 1); }
+				int uu, vv; if (sw & 1) { uu = a; vv = b; } else { vv = a; uu = b; }
+				float r = ty[yy] + tr[vv], g = ty[yy] - tgu[uu] - tgv[vv], bl = ty[yy] + tb[uu];
+				r = r < 0 ? 0 : r > 1 ? 1 : r; g = g < 0 ? 0 : g > 1 ? 1 : g; bl = bl < 0 ? 0 : bl > 1 ? 1 : bl;
+				p[0] = (uint8_t)(r * 255.f + 0.5f); p[1] = (uint8_t)(g * 255.f + 0.5f); p[2] = (uint8_t)(bl * 255.f + 0.5f); p[3] = 255;
+			}
 		}
 		fast = 1;
 	} else if ((base == 0x80000000u || base == 0x81000000u || base == 0x82000000u || base == 0x83000000u) && !pvrtc_slow()) {
@@ -1093,6 +1133,12 @@ static void texel_raw(const GfxTexture *t, float u, float v, float out[4]) {
 	uint32_t base = t->format & 0xff000000u, at = t->data;
 	if (base == 0x0c000000u) {           /* U8U8U8U8, ABGR: bytes R G B A */
 		uint32_t p = RD32(at + 4 * texel_index(t, x, y));
+		out[0] = (p & 0xff) / 255.f; out[1] = ((p >> 8) & 0xff) / 255.f; out[2] = ((p >> 16) & 0xff) / 255.f; out[3] = (p >> 24) / 255.f;
+	} else if (base == 0x94000000u || base == 0x95000000u) {   /* P4 / P8: an index into the texture's palette of U8U8U8U8 entries (bytes
+		 * c0..c3, placed by the SWIZZLE4 mode as U8U8U8U8's are); P4 holds two indices a byte, the first texel in the low nibble.
+		 * Persona 4: Dancing All Night draws its UI panels from them: undecoded, they sampled as noise */
+		uint32_t i = texel_index(t, x, y), idx = base == 0x95000000u ? RD8(at + i) : (RD8(at + i / 2) >> (4 * (i & 1))) & 15;
+		uint32_t p = t->palette ? RD32(t->palette + 4 * idx) : 0;
 		out[0] = (p & 0xff) / 255.f; out[1] = ((p >> 8) & 0xff) / 255.f; out[2] = ((p >> 16) & 0xff) / 255.f; out[3] = (p >> 24) / 255.f;
 	} else if (base == 0x98000000u || base == 0x99000000u) {   /* U8U8U8 / S8S8S8: three bytes a texel (Killzone's colour-grading textures in its final composite:
 		 * undecoded, every texel came out as the fallback magenta and so did the whole frame) */

@@ -150,8 +150,12 @@ static int au_annexb(Dec *d, const uint8_t *p, uint32_t n) {
 
 static inline uint8_t clamp8(int v) { return v < 0 ? 0 : v > 255 ? 255 : (uint8_t)v; }
 /* a decoded picture into the caller's SceAvcdecPicture (size, SceAvcdecFrame at +4, SceAvcdecInfo at +0x44) */
+uint64_t video_last_picture_frame;   /* the presented frame (display_frames) when a movie picture was last decoded: display.c's RECOMP_MOVIE_30 */
 static void put_picture(Dec *d, uint32_t pic, const AVFrame *f) {
+	{ extern uint64_t display_frames(void); video_last_picture_frame = display_frames() + 1; }
 	uint32_t type = RD32(pic + 4), pitch = RD32(pic + 8), bufh = RD32(pic + 0x10), p0 = RD32(pic + 0x3c), p1 = RD32(pic + 0x40);
+	{ static int on = -1; if (on < 0) on = getenv("RECOMP_VIDEO_SYNC_LOG") != 0;
+	  if (on) { extern uint64_t guest_time_us_peek(void); fprintf(stderr, "vsync: decoded picture %llu t %.4f -> %#x\n", (unsigned long long)d->pics, guest_time_us_peek() / 1e6, p0); } }
 	int w = f->width, h = f->height;
 	if (!pitch) pitch = (uint32_t)w;
 	if (!bufh) bufh = (uint32_t)h;
@@ -297,8 +301,9 @@ static void h_avcdec_decode(Cpu *c) {   /* (const SceAvcdecCtrl *, const SceAvcd
 		}
 	}
 	uint32_t got = take_pictures(d, arr);
-	if (video_log() && (d->aus < 8 || r < 0)) {
+	if (video_log() && (d->aus < 8 || d->aus % 30 == 0 || r < 0)) {
 		const uint8_t *p = size ? G(es) : 0;
+		{ extern uint64_t display_frames(void); extern uint64_t guest_time_us_peek(void); fprintf(stderr, "video: frame %llu guest %.3f s: ", (unsigned long long)display_frames(), guest_time_us_peek() / 1e6); }
 		fprintf(stderr, "video: AU %llu: %u bytes [%02x %02x %02x %02x %02x] pts %#llx dts %#llx -> send %d, %u picture(s)\n", (unsigned long long)d->aus, size,
 		        p ? p[0] : 0, p ? p[1] : 0, p ? p[2] : 0, p ? p[3] : 0, p ? p[4] : 0, (unsigned long long)pts, (unsigned long long)dts, r, got);
 	}

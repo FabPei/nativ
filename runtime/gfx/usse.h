@@ -158,7 +158,7 @@ void usse_preload_color(UsseInst *inst, const UsseFragLayout *fl, const float in
 /* what a FRAGCOLOR_USED program does with the colour it reads, when the blend unit can do it instead (colour out =
  * K * colour in + X; see usse.c): gfx_gpu.c runs such a program without the framebuffer and blends. Tested on the
  * interpreter, cached. */
-enum { USSE_FB_NONE, USSE_FB_ADD, USSE_FB_ADD_REPLACE, USSE_FB_LERP_KEEP, USSE_FB_LERP_OVER };
+enum { USSE_FB_NONE, USSE_FB_ADD, USSE_FB_ADD_REPLACE, USSE_FB_LERP_KEEP, USSE_FB_LERP_OVER, USSE_FB_LERP_ALL };   /* LERP_ALL: one K on all four, alpha's X any (gfx_gpu.c: two draws, the second adding X's alpha) */
 int usse_fragment_fb_blend(const UsseProgram *p);
 
 /* vertex attribute -> PA: convert one attribute's raw memory value (already read into comps[]

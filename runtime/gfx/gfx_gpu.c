@@ -33,6 +33,7 @@
 #include "metrics.h"
 #include "settings.h"
 #include "ssao.h"
+#include "texpack.h"
 #ifdef RECOMP_MTL_ARCHIVE
 #include "mtl_archive.h"   /* this machine's archive of Metal's compiles (macOS) */
 #endif
@@ -960,6 +961,11 @@ static int shader_translate(ShaderEntry *e, const UsseProgram *prog, const UsseV
 	usse_spirv_set_pcf(-1, 0); usse_spirv_set_points(0); usse_spirv_set_probe_off(0); usse_spirv_set_fetch_zero(0); usse_spirv_set_motion(0);
 	uint64_t tb1 = us_now(); t_shader_xlate += tb1 - tb0;
 	if (!m.ok) { fprintf(stderr, "    gpu: %#x: %s\n", e->addr, m.err); usse_spirv_free(&m); return 0; }
+	{	/* RECOMP_SPIRV_DUMP=<folder>: every module this renderer translates, for spirv-val (as gfx_coverage.c's for the gate) */
+		static const char *dir = (const char *)1; if (dir == (const char *)1) dir = getenv("RECOMP_SPIRV_DUMP");
+		if (dir) { char path[512]; snprintf(path, sizeof path, "%s/%08x_%08x_%s.spv", dir, e->addr, (uint32_t)hash_bytes(m.words, 4 * (size_t)m.nwords), usse_is_fragment(prog) ? "frag" : "vert");
+		           FILE *f = fopen(path, "wb"); if (f) { fwrite(m.words, 4, m.nwords, f); fclose(f); } }
+	}
 	int is_frag = usse_is_fragment(prog);
 	e->fetch = m.frag_fetch; e->nldst = m.nldst_sa; e->pa_words = m.pa_words; memcpy(e->ldst_sa, m.ldst_sa, sizeof e->ldst_sa);
 	e->nsmp = nsmp; memcpy(e->smp_units, smp_units, sizeof smp_units);
@@ -1031,7 +1037,8 @@ static ShaderEntry *get_shader(uint32_t addr, const UsseProgram *prog, const Uss
 }
 
 /* ---------------------------------------------------------------- textures */
-typedef struct { uint32_t addr, format, width, height; int layout; int stale, bc; uint64_t used, checked_frame; SDL_GPUTexture *tex; SDL_GPUSampler *samp[4][2][3][3];
+typedef struct { uint32_t addr, format, width, height, palette; int layout; int stale, bc;   /* palette: a P4/P8 texture's (GfxTexture.palette): the same indices under another palette are another texture */
+ uint64_t used, checked_frame; SDL_GPUTexture *tex; SDL_GPUSampler *samp[4][2][3][3];
 	const void *view_src; uint64_t view_gen; int view_depth; SDL_GPUTextureFormat vfmt; int vfilt, vlinear;   /* a view (see target_view): built from this render target / depth entry at that generation; vfmt: its texture's format (RECOMP_GPU_VIEW_FAST's view_format), vfilt: linear-filtered; vlinear: of an sRGB target -- samples give decoded values, as the target itself does */
 	/* change detection (see get_texture): the guest bytes the decode reads, [addr, addr+span); a
 	 * content hash per host page of them; the guest write clock when the pages were last checked
@@ -1039,7 +1046,7 @@ typedef struct { uint32_t addr, format, width, height; int layout; int stale, bc
 	 * watched (streak/calm count the frames towards and back out of that); full: the next check
 	 * re-hashes every page (and closes them again); nchk: re-checks in frame chk_frame */
 	uint32_t span, wclock, nph; uint64_t *ph; int hot, streak, calm, full, nchk; uint64_t big_frame, chk_frame;
-	uint64_t chash; int levels; uint64_t bytes;
+	uint64_t chash; int levels; uint64_t bytes; int rep;   /* rep: e->tex is a texture pack's replacement (texpack.c), not the game's bytes */
 	uint8_t sx, sy; } TexEntry;   /* sx, sy: a view's texels a guest pixel (its source's scale: target_scale) */   /* chash/levels: the uploaded bytes' hash over the whole span and its mip count (get_texture: a texture that moved) */   /* samp[min][mag][addrmode_u][addrmode_v]; layout: GfxTexture's (3 = cube: a 6-layer cube texture) */
 /* The texture table: up to MAXTEX entries and tex_budget() bytes of GPU textures (an estimate per entry, TexEntry.bytes), the
  * least recently used one replaced past either. It was a fixed 512 entries: a Killzone area that samples more than that a
@@ -1290,11 +1297,149 @@ static void tring_end(SDL_GPUCommandBuffer *cmd, uint32_t lo, uint32_t hi) {   /
 	if (ntring_use == NTRING_USE) { SDL_WaitForGPUFences(gpu(), true, &tring_use[0].f, 1); SDL_ReleaseGPUFence(gpu(), tring_use[0].f); memmove(tring_use, tring_use + 1, sizeof tring_use[0] * (size_t)--ntring_use); }
 	tring_use[ntring_use++] = (TringUse){ f, lo, hi, tring_lap };
 }
+/* A texture pack's replacement (texpack.c: RECOMP_TEXTURE_PACK, Vita3K's naming) for the texture about to be uploaded:
+ * a DDS (BC1/BC2/BC3/BC7, every level it carries) or a PNG (one level, RGBA8) as the GPU texture, at its own size -- the
+ * shaders sample by normalized coordinates, so a 1024x1024 replacement of a 256x256 texture is simply sharper. Returns
+ * 1 when e->tex now holds it. */
+/* whether a DXT1 level has any transparent texel: a block in its 3-colour mode (colour 0 <= colour 1) using index 3 */
+static int bc1_has_alpha(const uint8_t *p, size_t nblocks) {
+	for (size_t b = 0; b < nblocks; b++, p += 8) {
+		uint16_t c0 = (uint16_t)(p[0] | p[1] << 8), c1 = (uint16_t)(p[2] | p[3] << 8);
+		if (c0 > c1) continue;
+		uint32_t idx = (uint32_t)p[4] | (uint32_t)p[5] << 8 | (uint32_t)p[6] << 16 | (uint32_t)p[7] << 24;
+		for (int k = 0; k < 16; k++) if (((idx >> (2 * k)) & 3) == 3) return 1;
+	}
+	return 0;
+}
+/* whether the game's texture has transparent texels (its first level): a texture pack's replacement without any is
+ * refused for it -- Persona 4 Dancing's story portraits are layered, eyes and mouths drawn over the face with transparent
+ * edges, and the PS4 pack's opaque DXT1 versions of those layers boxed the faces */
+static int tex_has_alpha(const GfxTexture *t) {
+	const uint32_t base = t->format & 0x9f000000u, w = t->width, h = t->height; const uint8_t *d = (const uint8_t *)G(t->data);
+	const size_t nb = (size_t)((w + 3) / 4) * ((h + 3) / 4);
+	if (base == 0x85000000u) return bc1_has_alpha(d, nb);
+	if (base == 0x86000000u) { for (size_t b = 0; b < nb; b++) for (int k = 0; k < 8; k++) if (d[16 * b + k] != 0xff) return 1; return 0; }
+	if (base == 0x87000000u) { for (size_t b = 0; b < nb; b++) { const uint8_t *q = d + 16 * b; if (q[0] != 0xff || q[1] != 0xff) { if (q[0] != q[1] || (q[2] | q[3] | q[4] | q[5] | q[6] | q[7])) return 1; } } return 0; }
+	if ((base == 0x94000000u || base == 0x95000000u) && t->palette) { const uint8_t *pal = (const uint8_t *)G(t->palette); int n = base == 0x94000000u ? 16 : 256;
+		for (int i = 0; i < n; i++) if (pal[4 * i + 3] != 0xff) return 1; return 0; }
+	if (base == 0x0C000000u) { for (size_t i = 0; i < (size_t)w * h; i++) if (d[4 * i + 3] != 0xff) return 1; return 0; }
+	return base == 0x02000000u || base == 0x04000000u;   /* (4444 / 1555: not looked into) */
+}
+static SDL_GPUTexture *texpack_upload(const char *path, int srgb, int need_alpha, uint32_t *bytes_out) {
+	FILE *f = fopen(path, "rb"); if (!f) return 0;
+	fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+	uint8_t *buf = n > 0 ? malloc((size_t)n) : 0;
+	if (!buf || fread(buf, 1, (size_t)n, f) != (size_t)n) { fclose(f); free(buf); return 0; }
+	fclose(f);
+	SDL_GPUTexture *tex = 0;
+	const size_t plen = strlen(path);
+	if (plen > 4 && !strcasecmp(path + plen - 4, ".dds")) {
+		if (n < 128 || memcmp(buf, "DDS ", 4)) { free(buf); return 0; }
+		uint32_t h, w, mips, fcc, off = 128; memcpy(&h, buf + 12, 4); memcpy(&w, buf + 16, 4); memcpy(&mips, buf + 28, 4); memcpy(&fcc, buf + 84, 4);
+		if (!mips) mips = 1;
+		SDL_GPUTextureFormat fmt = SDL_GPU_TEXTUREFORMAT_INVALID; uint32_t blk = 0;
+		if (!memcmp(buf + 84, "DXT1", 4)) { fmt = srgb ? SDL_GPU_TEXTUREFORMAT_BC1_RGBA_UNORM_SRGB : SDL_GPU_TEXTUREFORMAT_BC1_RGBA_UNORM; blk = 8; }
+		else if (!memcmp(buf + 84, "DXT3", 4)) { fmt = srgb ? SDL_GPU_TEXTUREFORMAT_BC2_RGBA_UNORM_SRGB : SDL_GPU_TEXTUREFORMAT_BC2_RGBA_UNORM; blk = 16; }
+		else if (!memcmp(buf + 84, "DXT5", 4)) { fmt = srgb ? SDL_GPU_TEXTUREFORMAT_BC3_RGBA_UNORM_SRGB : SDL_GPU_TEXTUREFORMAT_BC3_RGBA_UNORM; blk = 16; }
+		else if (!memcmp(buf + 84, "DX10", 4) && n >= 148) {
+			uint32_t dxgi; memcpy(&dxgi, buf + 128, 4); off = 148;
+			if (dxgi == 71 || dxgi == 72) { fmt = dxgi == 72 || srgb ? SDL_GPU_TEXTUREFORMAT_BC1_RGBA_UNORM_SRGB : SDL_GPU_TEXTUREFORMAT_BC1_RGBA_UNORM; blk = 8; }
+			else if (dxgi == 74 || dxgi == 75) { fmt = dxgi == 75 || srgb ? SDL_GPU_TEXTUREFORMAT_BC2_RGBA_UNORM_SRGB : SDL_GPU_TEXTUREFORMAT_BC2_RGBA_UNORM; blk = 16; }
+			else if (dxgi == 77 || dxgi == 78) { fmt = dxgi == 78 || srgb ? SDL_GPU_TEXTUREFORMAT_BC3_RGBA_UNORM_SRGB : SDL_GPU_TEXTUREFORMAT_BC3_RGBA_UNORM; blk = 16; }
+			else if (dxgi == 98 || dxgi == 99) { fmt = dxgi == 99 || srgb ? SDL_GPU_TEXTUREFORMAT_BC7_RGBA_UNORM_SRGB : SDL_GPU_TEXTUREFORMAT_BC7_RGBA_UNORM; blk = 16; }
+		}
+		(void)fcc;
+		if (fmt == SDL_GPU_TEXTUREFORMAT_INVALID || !w || !h) { fprintf(stderr, "    texpack: %s: a DDS format this doesn't read\n", path); free(buf); return 0; }
+		uint32_t total = 0, lv = 0;
+		for (uint32_t l = 0, lw = w, lh = h; l < mips; l++, lw = lw > 1 ? lw / 2 : 1, lh = lh > 1 ? lh / 2 : 1) {
+			uint32_t sz = ((lw + 3) / 4) * ((lh + 3) / 4) * blk; if (off + total + sz > (uint32_t)n) break; total += sz; lv++;
+		}
+		if (!lv) { free(buf); return 0; }
+		if (need_alpha && blk == 8 && !bc1_has_alpha(buf + off, (size_t)((w + 3) / 4) * ((h + 3) / 4))) { free(buf); return (SDL_GPUTexture *)-1; }   /* (opaque: refused, see tex_has_alpha) */
+		SDL_GPUTextureCreateInfo ci = { .type = SDL_GPU_TEXTURETYPE_2D, .format = fmt, .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER, .width = w, .height = h, .layer_count_or_depth = 1, .num_levels = lv, .sample_count = SDL_GPU_SAMPLECOUNT_1 };
+		tex = SDL_CreateGPUTexture(gpu(), &ci);
+		SDL_GPUTransferBufferCreateInfo xci = { .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, .size = total };
+		SDL_GPUTransferBuffer *xb = tex ? SDL_CreateGPUTransferBuffer(gpu(), &xci) : 0;
+		void *map = xb ? SDL_MapGPUTransferBuffer(gpu(), xb, false) : 0;
+		if (!map) { if (xb) SDL_ReleaseGPUTransferBuffer(gpu(), xb); if (tex) SDL_ReleaseGPUTexture(gpu(), tex); free(buf); return 0; }
+		memcpy(map, buf + off, total); SDL_UnmapGPUTransferBuffer(gpu(), xb);
+		SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu()); SDL_GPUCopyPass *cp = cmd ? SDL_BeginGPUCopyPass(cmd) : 0;
+		if (cp) {
+			uint32_t o = 0;
+			for (uint32_t l = 0, lw = w, lh = h; l < lv; l++, lw = lw > 1 ? lw / 2 : 1, lh = lh > 1 ? lh / 2 : 1) {
+				SDL_GPUTextureTransferInfo src = { .transfer_buffer = xb, .offset = o, .pixels_per_row = (lw + 3) & ~3u, .rows_per_layer = (lh + 3) & ~3u };
+				SDL_GPUTextureRegion dst = { .texture = tex, .mip_level = l, .w = lw, .h = lh, .d = 1 };
+				SDL_UploadToGPUTexture(cp, &src, &dst, false);
+				o += ((lw + 3) / 4) * ((lh + 3) / 4) * blk;
+			}
+			SDL_EndGPUCopyPass(cp); gpu_submit(cmd);
+		} else { if (cmd) gpu_submit(cmd); SDL_ReleaseGPUTexture(gpu(), tex); tex = 0; }
+		SDL_ReleaseGPUTransferBuffer(gpu(), xb);
+		if (bytes_out) *bytes_out = total;
+	} else {   /* a PNG: one level, RGBA8 */
+		SDL_IOStream *io = SDL_IOFromConstMem(buf, (size_t)n);
+		SDL_Surface *sf = io ? SDL_LoadPNG_IO(io, true) : 0;
+		SDL_Surface *rgba = sf ? SDL_ConvertSurface(sf, SDL_PIXELFORMAT_ABGR8888) : 0;
+		if (sf) SDL_DestroySurface(sf);
+		if (rgba && need_alpha) {   /* (opaque: refused, see tex_has_alpha) */
+			int any = 0; for (int y = 0; y < rgba->h && !any; y++) { const uint8_t *row = (const uint8_t *)rgba->pixels + (size_t)rgba->pitch * y; for (int x = 0; x < rgba->w; x++) if (row[4 * x + 3] != 0xff) { any = 1; break; } }
+			if (!any) { SDL_DestroySurface(rgba); free(buf); return (SDL_GPUTexture *)-1; }
+		}
+		if (rgba) {
+			uint32_t w = (uint32_t)rgba->w, h = (uint32_t)rgba->h;
+			SDL_GPUTextureCreateInfo ci = { .type = SDL_GPU_TEXTURETYPE_2D, .format = srgb ? SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER, .width = w, .height = h, .layer_count_or_depth = 1, .num_levels = 1, .sample_count = SDL_GPU_SAMPLECOUNT_1 };
+			tex = SDL_CreateGPUTexture(gpu(), &ci);
+			SDL_GPUTransferBufferCreateInfo xci = { .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, .size = 4 * w * h };
+			SDL_GPUTransferBuffer *xb = tex ? SDL_CreateGPUTransferBuffer(gpu(), &xci) : 0;
+			uint8_t *map = xb ? SDL_MapGPUTransferBuffer(gpu(), xb, false) : 0;
+			if (map) {
+				for (uint32_t y = 0; y < h; y++) memcpy(map + 4 * w * y, (uint8_t *)rgba->pixels + (size_t)rgba->pitch * y, 4 * w);
+				SDL_UnmapGPUTransferBuffer(gpu(), xb);
+				SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu()); SDL_GPUCopyPass *cp = cmd ? SDL_BeginGPUCopyPass(cmd) : 0;
+				if (cp) { SDL_GPUTextureTransferInfo src = { .transfer_buffer = xb, .pixels_per_row = w, .rows_per_layer = h }; SDL_GPUTextureRegion dst = { .texture = tex, .w = w, .h = h, .d = 1 };
+					SDL_UploadToGPUTexture(cp, &src, &dst, false); SDL_EndGPUCopyPass(cp); gpu_submit(cmd); }
+				else { if (cmd) gpu_submit(cmd); SDL_ReleaseGPUTexture(gpu(), tex); tex = 0; }
+				if (bytes_out) *bytes_out = 4 * w * h;
+			} else if (tex) { SDL_ReleaseGPUTexture(gpu(), tex); tex = 0; }
+			if (xb) SDL_ReleaseGPUTransferBuffer(gpu(), xb);
+			SDL_DestroySurface(rgba);
+		}
+	}
+	free(buf);
+	return tex;
+}
 static void upload_texture(TexEntry *e, const GfxTexture *t) {
 	int cube = ((t->u_mode >> 4) & 3) == 3, levels = cube ? gfx_texture_cube_levels(t) : gfx_texture_levels(t), layers = cube ? 6 : 1;
+	const int old_levels = e->levels;
 	e->chash = hash_bytes(G(t->data), e->span); e->levels = levels;   /* what the GPU texture holds (~10 us for 256 KB) */
 	int wide = tex_wide(t->format); uint32_t bpp = wide ? 16 : 4;
 	batch_retire(e->tex, "texture re-upload");   /* its own command buffer runs before the pending draws that sampled the old content */
+	/* the same address, format and size with another mip count (Persona 4 Dancing's costumes: each one loaded over the
+	 * last): the texture object was made with the old count, and a level past its end is no subresource at all (a crash
+	 * inside SDL_UploadToGPUTexture on Vulkan) -- a new object */
+	if (e->tex && old_levels != levels) {
+		static int told; if (told++ < 8) fprintf(stderr, "    gpu: texture %#x %ux%u fmt %#x: %d mip levels now (%d before): a new texture object\n", t->data, t->width, t->height, t->format, levels, old_levels);
+		SDL_ReleaseGPUTexture(gpu(), e->tex); e->tex = 0; e->bc = 0;
+	}
+	if (e->tex && e->rep) { SDL_ReleaseGPUTexture(gpu(), e->tex); e->tex = 0; e->bc = 0; }   /* (a replacement: the new bytes may be another texture's, or the game's own again) */
+	e->rep = 0;
+	if (!cube && texpack_on()) {   /* a texture pack's replacement for these bytes (texpack.c) */
+		const uint64_t h = texpack_hash(t); const char *path = texpack_find(h);
+		if (path) {
+			uint32_t nb = 0; SDL_GPUTexture *rt = texpack_upload(path, GFX_TEX_GAMMA(t->format) != 0, tex_has_alpha(t), &nb);
+			if (rt == (SDL_GPUTexture *)-1) {   /* the game's texture has transparency the replacement lacks: the game's own kept */
+				static int nref; if (nref++ < 16) fprintf(stderr, "    texpack: %016llX (texture %#x %ux%u fmt %#x) has transparent texels its replacement lacks: the game's own kept\n", (unsigned long long)h, t->data, t->width, t->height, t->format);
+				rt = 0; path = 0;
+			}
+			if (rt) {
+				if (e->tex) SDL_ReleaseGPUTexture(gpu(), e->tex);
+				e->tex = rt; e->rep = 1; e->bc = 0; e->layout = (t->u_mode >> 4) & 3; n_tex_uploads++;
+				static int told; if (told++ < 16) fprintf(stderr, "    texpack: %016llX (texture %#x %ux%u) -> %s\n", (unsigned long long)h, t->data, t->width, t->height, path);
+				return;
+			}
+			static int bad; if (path && bad++ < 8) fprintf(stderr, "    texpack: %s couldn't be loaded\n", path);
+		}
+	}
 	e->layout = (t->u_mode >> 4) & 3;
 	n_tex_uploads++;
 	SDL_GPUTextureFormat bc = tex_bc_format(t, cube);
@@ -1464,7 +1609,7 @@ static TexEntry *get_texture(const GfxTexture *t) {
 	n_tex_binds++;
 	TexEntry *e = 0;   /* one entry per (address, format, size): a layout change re-decodes it in place */
 	const unsigned key = tex_key(t);
-	#define TEX_MATCH(x) ((x)->addr == t->data && (x)->format == t->format && (x)->width == t->width && (x)->height == t->height)
+	#define TEX_MATCH(x) ((x)->addr == t->data && (x)->format == t->format && (x)->width == t->width && (x)->height == t->height && (x)->palette == t->palette)
 	{ int hint = tex_index[key] - 1; if (hint >= 0 && hint < ntextures && TEX_MATCH(&textures[hint])) e = &textures[hint]; }
 	if (!e) for (int i = 0; i < ntextures; i++) { TexEntry *x = &textures[i]; if (TEX_MATCH(x)) { e = x; tex_index[key] = (uint16_t)(i + 1); break; } }
 	#undef TEX_MATCH
@@ -1517,7 +1662,7 @@ static TexEntry *get_texture(const GfxTexture *t) {
 		 * and a hash of the whole span, as uploaded -- takes the new address instead: its GPU texture is already right. */
 		ch = hash_bytes(G(t->data), span); int lv = layout == 3 ? gfx_texture_cube_levels(t) : gfx_texture_levels(t);
 		for (int i = 1; i < ntextures && !moved; i++) { TexEntry *x = &textures[i];
-			if (x->tex && x->chash == ch && x->span == span && x->format == t->format && x->width == t->width && x->height == t->height && x->layout == layout && x->levels == lv) moved = x; }
+			if (x->tex && x->chash == ch && x->span == span && x->format == t->format && x->width == t->width && x->height == t->height && x->palette == t->palette && x->layout == layout && x->levels == lv) moved = x; }
 		if (moved) {
 			if (trace_sync()) fprintf(stderr, "gpu trace: texture %#x fmt %#x %ux%u u%#x: the same bytes as the one at %#x -- moved, not uploaded\n", t->data, t->format, t->width, t->height, t->u_mode, moved->addr);
 			e = moved; free(e->ph); e->ph = 0; e->addr = t->data; e->stale = 0; n_tex_moved++;
@@ -1538,7 +1683,7 @@ static TexEntry *get_texture(const GfxTexture *t) {
 			free(e->ph);
 		}
 		if (trace_sync()) fprintf(stderr, "gpu trace: texture %#x fmt %#x %ux%u u%#x uploaded: new\n", t->data, t->format, t->width, t->height, t->u_mode);
-		memset(e, 0, sizeof *e); e->addr = t->data; e->format = t->format; e->width = t->width; e->height = t->height; n_tex_new++;
+		memset(e, 0, sizeof *e); e->addr = t->data; e->format = t->format; e->width = t->width; e->height = t->height; e->palette = t->palette; n_tex_new++;
 	}
 	tex_index[key] = (uint16_t)(e - textures + 1);
 	e->span = span; e->nph = tex_pages(t->data, span); e->ph = calloc(e->nph ? e->nph : 1, sizeof *e->ph);
@@ -2139,12 +2284,12 @@ static void pipe_create_info(const GfxDraw *d, const ShaderEntry *vs, const Shad
 		bs.alpha_blend_op = conv_blendop(af);
 	}
 	if (fs->fzero) {   /* a FRAGCOLOR program's blend-unit variant (gfx_gpu_draw: no GXM blend of its own): the module outputs X (and 1 - K), the target supplies the colour it read */
-		int c = fs->fzero, lerp = c == USSE_FB_LERP_KEEP || c == USSE_FB_LERP_OVER;
+		int c = fs->fzero, lerp = c == USSE_FB_LERP_KEEP || c == USSE_FB_LERP_OVER || c == USSE_FB_LERP_ALL;
 		bs.enable_blend = true; bs.color_blend_op = bs.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
 		bs.src_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
 		bs.dst_color_blendfactor = lerp ? SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA : SDL_GPU_BLENDFACTOR_ONE;
-		bs.src_alpha_blendfactor = c == USSE_FB_LERP_KEEP ? SDL_GPU_BLENDFACTOR_ZERO : SDL_GPU_BLENDFACTOR_ONE;   /* keep: the source alpha is 1 - K, not the target's */
-		bs.dst_alpha_blendfactor = c == USSE_FB_ADD_REPLACE ? SDL_GPU_BLENDFACTOR_ZERO : c == USSE_FB_LERP_OVER ? SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA : SDL_GPU_BLENDFACTOR_ONE;
+		bs.src_alpha_blendfactor = c == USSE_FB_LERP_KEEP || c == USSE_FB_LERP_ALL ? SDL_GPU_BLENDFACTOR_ZERO : SDL_GPU_BLENDFACTOR_ONE;   /* keep: the source alpha is 1 - K, not the target's; all: K * target alpha here, X's alpha added by its second draw */
+		bs.dst_alpha_blendfactor = c == USSE_FB_ADD_REPLACE ? SDL_GPU_BLENDFACTOR_ZERO : c == USSE_FB_LERP_OVER || c == USSE_FB_LERP_ALL ? SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA : SDL_GPU_BLENDFACTOR_ONE;
 	}
 	/* SceGxmColorMask (A=1 R=2 G=4 B=8) -> SDL_GPUColorComponentFlags (R=1 G=2 B=4 A=8); forced to
 	 * nothing when the fragment program itself is disabled (depth/stencil still ran, above) */
@@ -3977,6 +4122,31 @@ static uint32_t snap_scale(uint32_t snap_mask) {   /* the block snap_fetch steps
 	for (int u = 0; u < 16 && pick < 0; u++) if (unit_sx[u]) pick = u;
 	return pick < 0 ? (uint32_t)rscale_x | (uint32_t)rscale << 16 : (uint32_t)unit_sx[pick] | (uint32_t)unit_sy[pick] << 16;
 }
+/* A single quad (at most six indices) whose float2 attributes all lie in [0, 1]: a sprite drawn with its whole texture
+ * once. Its REPEAT units are sampled CLAMPed: the same texels inside, but at a render scale above 1x the pixels along
+ * its edges sample between texel centres, and REPEAT blends in the texture's opposite edge there -- a hairline seam
+ * around every tile of a 2D scene (Persona 4 Dancing's story portraits: around each face's eyes and mouth, each its
+ * own 128x128 quad over the face, and through the tiled backgrounds). At 1x a pixel centre is a texel centre and the
+ * Vita never showed it. RECOMP_GPU_SPRITE_REPEAT=1: REPEAT as the game set it. */
+static int g_sprite_clamp;   /* this draw's (gfx_gpu_draw): bind_unit samples REPEAT as CLAMP */
+static int sprite_quad(const GfxDraw *d) {
+	static int off = -1; if (off < 0) off = getenv("RECOMP_GPU_SPRITE_REPEAT") != 0;
+	if (off || !d->count || d->count > 6 || !d->indices || !any_scaled()) return 0;
+	int found = 0;
+	for (int k = 0; k < d->nattr; k++) {
+		const GfxAttr *a = &d->attr[k];
+		if (a->format != 9 || a->comps != 2 || a->stream >= 16 || !d->stream[a->stream]) continue;   /* (F32 x2) */
+		for (uint32_t i = 0; i < d->count; i++) {
+			uint32_t ix = d->index_format ? RD32(d->indices + 4 * i) : RD16(d->indices + 2 * i);
+			uint32_t at = d->stream[a->stream] + ix * d->stride[a->stream] + a->offset, w0 = RD32(at), w1 = RD32(at + 4); float f0, f1;
+			memcpy(&f0, &w0, 4); memcpy(&f1, &w1, 4);
+			if (!(f0 >= -1e-4f && f0 <= 1.0001f && f1 >= -1e-4f && f1 <= 1.0001f)) return 0;
+		}
+		found = 1;
+	}
+	{ static int told; if (found && !told++) fprintf(stderr, "    gpu: sprite quads (vprog %#x): REPEAT sampled as CLAMP%s\n", d->vprog, getenv("RECOMP_GPU_SPRITE_NEAREST") ? ", point-sampled" : ""); }
+	return found;
+}
 static void bind_unit(const GfxTexture *tex, int unit, SDL_GPUTextureSamplerBinding *b, uint32_t *srgb_dec, uint32_t *srgb_enc, uint32_t *scaled_units, const char *stage, uint32_t prog, int slot) {
 	/* render-to-texture: a texture over memory a GPU scene has rendered into (offscreen
 	 * then composite; or, as Unit 13 does, a surface read back in other formats and
@@ -4007,7 +4177,12 @@ static void bind_unit(const GfxTexture *tex, int unit, SDL_GPUTextureSamplerBind
 		if (!tg && st) *srgb_enc |= 1u << unit;
 	}
 	if (trace_sync() && tex) fprintf(stderr, "gpu trace: draw %u %s %#x slot %d unit %d tex %#x fmt %#x %ux%u u%#x -> %s%s\n", n_gpu_draws, stage, prog, slot, unit, tex->data, tex->format, tex->width, tex->height, tex->u_mode, src_target ? "target" : te && te->view_src ? "view" : te ? "texture" : "dummy", te && !te->view_src && tex_wide(tex->format) ? " (wide)" : "");
-	b->sampler = te ? tex_sampler(te, tex->min_filter, tex->mag_filter, tex->u_mode & 15, tex->v_mode & 15, (int)GFX_TEX_MIP_LINEAR(tex->format))
+	const int um = tex ? ((tex->u_mode & 15) == 0 && g_sprite_clamp ? 2 : tex->u_mode & 15) : 2, vm = tex ? ((tex->v_mode & 15) == 0 && g_sprite_clamp ? 2 : tex->v_mode & 15) : 2;   /* (sprite_quad) */
+	/* RECOMP_GPU_SPRITE_NEAREST=1: a sprite quad's units point-sampled -- above 1x, the Vita's own 1x look exactly (each
+	 * texel a block): no filtering across a layer's edge, so a face's eye and mouth layers meet the face with no hairline */
+	static int sp_near = -1; if (sp_near < 0) sp_near = getenv("RECOMP_GPU_SPRITE_NEAREST") != 0;
+	const int mnf = tex && g_sprite_clamp && sp_near ? 0 : tex ? tex->min_filter : 0, mgf = tex && g_sprite_clamp && sp_near ? 0 : tex ? tex->mag_filter : 0;
+	b->sampler = te ? tex_sampler(te, mnf, mgf, um, vm, (int)GFX_TEX_MIP_LINEAR(tex->format))
 	                : tex_sampler(&textures[0], tex ? tex->min_filter : 0, tex ? tex->mag_filter : 0, tex ? (tex->u_mode & 15) : 2, tex ? (tex->v_mode & 15) : 2, tex ? (int)GFX_TEX_MIP_LINEAR(tex->format) : 0);
 }
 /* ---------------------------------------------------------------- the draw batch
@@ -5621,13 +5796,16 @@ void gfx_gpu_draw(const GfxDraw *d) {
 	 * target before the draw. A float target only (an 8-bit one clamps the source before blending, the Vita
 	 * clamps the result) and no GXM blend of the draw's own. The Vita rounds each result to the target's format
 	 * (U2F10F10F10's 5-bit mantissas), the blend unit keeps F16 between draws: a little more precise.
+	 * An 8-bit program (TY_U8) into an RGBA8 target too: both saturate, the Vita's SOP2s and the UNORM blend unit
+	 * (usse.c's fb_blend_u8 -- Persona 4 Dancing's ~285 FRAGCOLOR copies a frame on its stages).
 	 * RECOMP_GPU_NO_ADDITIVE=1: the copies. */
 	static int no_additive = -1; if (no_additive < 0) no_additive = getenv("RECOMP_GPU_NO_ADDITIVE") != 0;
-	g_fzero_draw = fl && fl->frag_color_used && fetch_mode() == 1 && !no_additive && (scene_entry->kind == TK_F16 || scene_entry->kind == TK_HDR10)
+	g_fzero_draw = fl && fl->frag_color_used && fetch_mode() == 1 && !no_additive && (fl->color_type == 0 /* TY_U8 */ ? scene_entry->kind == TK_U8 : (scene_entry->kind == TK_F16 || scene_entry->kind == TK_HDR10))
 	               && !(d->blend.present && (d->blend.color_func || d->blend.alpha_func)) ? usse_fragment_fb_blend(fp) : 0;
+	if (g_fzero_draw == USSE_FB_LERP_ALL && (d->stencil_fail || d->depth_fail || d->depth_pass)) g_fzero_draw = 0;   /* (its alpha's second draw re-tests depth EQUAL and must find the stencil unchanged) */
 	if (g_fzero_draw) {
 		static uint32_t told[64]; static int ntold; uint32_t h = usse_program_hash(fp); int seen = 0;
-		static const char *what[5] = { "", "adds to it: ONE/ONE", "adds to it, alpha replaced: ONE/ONE, alpha ONE/ZERO", "blends over it, alpha kept: ONE/ONE_MINUS_SRC_ALPHA", "blends over it: ONE/ONE_MINUS_SRC_ALPHA" };
+		static const char *what[6] = { "", "adds to it: ONE/ONE", "adds to it, alpha replaced: ONE/ONE, alpha ONE/ZERO", "blends over it, alpha kept: ONE/ONE_MINUS_SRC_ALPHA", "blends over it: ONE/ONE_MINUS_SRC_ALPHA", "blends over it, alpha too: ONE/ONE_MINUS_SRC_ALPHA, then its alpha added" };
 		for (int i = 0; i < ntold; i++) if (told[i] == h) seen = 1;
 		if (!seen && ntold < 64) { told[ntold++] = h; fprintf(stderr, "    gpu: fragment %#x reads the framebuffer and %s blending, no copy\n", d->fprog, what[g_fzero_draw]); }
 	}
@@ -5893,6 +6071,7 @@ void gfx_gpu_draw(const GfxDraw *d) {
 	uint32_t srgb_dec = 0, srgb_enc = 0;   /* UsseDrawUniforms.tex_srgb: units the shader decodes / re-encodes (usse_spirv.c srgb_fixup) */
 	memset(unit_sx, 0, sizeof unit_sx); memset(unit_sy, 0, sizeof unit_sy);
 	uint32_t scaled_units = 0;             /* tex_srgb word 2: units bound to a texture at the render scale (a view, the target itself) -- snap_fetch */
+	g_sprite_clamp = pipe->nsmp ? sprite_quad(d) : 0;
 	if (pipe->nsmp || pipe->fetch) {
 		for (int i = 0; i < pipe->nsmp; i++) {
 			int unit = pipe->smp_units[i];
@@ -5906,6 +6085,7 @@ void gfx_gpu_draw(const GfxDraw *d) {
 		}
 	}
 
+	g_sprite_clamp = 0;
 	SDL_GPUTextureSamplerBinding vtsb[16]; uint32_t v_srgb_dec = 0, v_srgb_enc = 0, v_scaled = 0;
 	for (int i = 0; i < vs->nsmp && i < 16; i++) {
 		int unit = vs->smp_units[i];
@@ -6014,6 +6194,26 @@ void gfx_gpu_draw(const GfxDraw *d) {
 				else for (int i = 0; i < vs->nldst && i < 8; i++) { int w = vs->ldst_sa[i]; if (w >= 0 && w < 256) b->pvu.sa[w] = b->vu.sa[w]; }
 			}
 		} else b->mv = 0;
+	}
+	if (fs->fzero == USSE_FB_LERP_ALL && (!d->blend.present || (d->blend.mask & 1))) {
+		/* LERP_ALL's alpha: the draw above left K * the target's alpha (ZERO / ONE_MINUS_SRC_ALPHA, its alpha out 1 - K);
+		 * the same draw again adds X's alpha (the ADD variant outputs X; ONE / ONE), alpha only, no depth or stencil write,
+		 * depth EQUAL where the first wrote it. (Two triangles of one draw over a pixel: their alpha as K1 K2 a + X1 + X2
+		 * where the Vita has K2 (K1 a + X1) + X2 -- the copy path had its own form of that.) */
+		GfxDraw d2 = *d; d2.blend.present = 1; d2.blend.mask = 1; d2.blend.color_func = d2.blend.alpha_func = 0;
+		if (d2.depth_write) { d2.depth_write = 0; d2.depth_func = 2; }
+		g_fzero_draw = USSE_FB_ADD;
+		ShaderEntry *fs2 = get_shader(d->fprog, fp, vp, vl, fl, sa_for_smp, scene_entry->kind, cube_mask, snap_mask, 0, 0);
+		g_fzero_draw = 0;
+		if (fs2 && (shader_pending(fs2) || fs2->ok)) {
+			if (shader_pending(fs2) && !gpu_overlap()) build_wait(&fs2->pending);
+			PipeEntry *p2 = get_pipeline(&d2, vs, fs2, scene_target.depth != 0, scene_entry->kind, ds_depth_ok, ds_stencil_ok, cull_sdl, -1, 0);
+			if (p2 && pipeline_pending(p2) && !gpu_overlap()) build_wait(&p2->pending);
+			if (p2 && (pipeline_pending(p2) || p2->pipe)) {
+				int bi = (int)(b - batch.d); BatchDraw *b2 = batch_add(); b = &batch.d[bi];
+				*b2 = *b; b2->pipe = p2; b2->mv = 0; b2->qslot = -1;
+			}
+		}
 	}
 	if (d->vis_addr) vis_query_add(d, vs, scene_target.depth != 0, scene_entry->kind, ds_depth_ok, ds_stencil_ok, cull_sdl);
 	/* what the draw writes, as views and the guest-memory syncs see it: the colour target always;

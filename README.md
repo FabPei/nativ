@@ -1,3 +1,46 @@
+# PersonaDancingRecomp
+
+The Persona Dancing games for PS Vita, running natively on PC. This is a fork of
+[Project Nativ](https://github.com/TheLostPantheon/nativ), which does the recompiling; this fork adds the packs and
+the renderer fixes these games need. Everything below the line is Project Nativ's own README.
+
+| Game | Title ID | Status |
+|---|---|---|
+| Persona 4: Dancing All Night (US) | PCSE00764 | Playable: v0.9 |
+| Persona 3: Dancing in Moonlight (US) | PCSE01274 | Playable, in testing |
+| Persona 5: Dancing in Starlight (US) | PCSE01275 | Playable, in testing |
+
+**Persona 4: Dancing All Night** is playable: the opening movie, menus and Free Dance, music in sync, the DLC songs and
+costumes, at 4x the Vita's resolution (up to 6x) and 30 or 60 fps. Story mode hasn't had a full playthrough yet:
+reports welcome.
+
+- **Sharper than the Vita:** the close-up blur (the Vita draws those shots at quarter resolution and stretches them back)
+  is turned off by default.
+- **Texture packs:** packs made for Vita3K work unchanged (none are included).
+- **DLC:** the add-ons you own, decrypted from your own dump.
+
+### What you need
+
+Your own dumps, made from a Vita you own: the game, its update and any DLC (ux0:app, ux0:patch and ux0:addcont), and
+Sony's firmware update file. **No game code, game data or firmware is in this repository, and none ever will be.**
+Please don't open issues asking for them.
+
+Setup for P4D, its options and notes are in [packs/PCSE00764/README.md](packs/PCSE00764/README.md).
+
+**Persona 3: Dancing in Moonlight** boots, plays its songs and DLC, and runs at the right speed at 60 fps in songs and
+menus (it's Atlus's own engine, as in Persona 5, where P4D's was Dingo's). Its pack is `packs/PCSE01274`; Vita3K texture
+packs work, such as the PS4 texture pack for P3D.
+
+**Persona 5: Dancing in Starlight** is built from the same code as P3D and plays the same way, 60 fps included. Its pack
+is `packs/PCSE01275`.
+
+### Credits
+
+[Project Nativ](https://github.com/TheLostPantheon/nativ) by TheLostPantheon and its contributors: the recompiler,
+runtime and pipeline this all runs on. Atlus and Dingo made the games: support them by buying them.
+
+---
+
 <p align="center"><img src="assets/brand/banner.svg" alt="Project Nativ: your PS Vita games, rebuilt natively" width="720"></p>
 
 # Project Nativ
@@ -31,6 +74,7 @@ copy of each game and Sony's firmware update file, and the tools decrypt and rec
 | Uncharted: Golden Abyss | US | PCSA00029 | 1.00 |
 | Unit 13 | US | PCSA00014 | 1.00 |
 | Shovel Knight | US | PCSE00640 | 1.00 |
+| Persona 4: Dancing All Night | US | PCSE00764 | 1.00, 1.01 |
 
 Each game's pack supports exact releases, recognised by the SHA-256 of the game's main program. Game-specific fixes,
 such as Killzone's physics fix or the widescreen cameras, patch code at fixed addresses, so they only fit the build

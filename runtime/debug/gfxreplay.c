@@ -106,9 +106,9 @@ int main(int argc, char **argv) {
 	for (;;) {
 		static uint8_t *scratch; static uint32_t scratch_cap;
 		char tag[4]; uint32_t len;
-		if (fread(tag, 1, 4, f) != 4 || fread(&len, 4, 1, f) != 1) { fprintf(stderr, "truncated capture\n"); return 1; }
+		if (fread(tag, 1, 4, f) != 4 || fread(&len, 4, 1, f) != 1) { fprintf(stderr, "truncated capture (after %d draws)\n", draws); break; }
 		if (len > cap) { cap = len; buf = realloc(buf, cap); }
-		if (len && fread(buf, 1, len, f) != len) { fprintf(stderr, "truncated capture\n"); return 1; }
+		if (len && fread(buf, 1, len, f) != len) { fprintf(stderr, "truncated capture (after %d draws)\n", draws); break; }
 		if (!memcmp(tag, "MEMP", 4)) {
 			uint32_t addr, raw; memcpy(&addr, buf, 4); memcpy(&raw, buf + 4, 4);
 			uLongf dl = raw;
@@ -179,6 +179,33 @@ int main(int argc, char **argv) {
 				       d.viewport_set, d.viewport_disabled, d.vp_xoff, d.vp_xscale, d.vp_yoff, d.vp_yscale, d.vp_zoff, d.vp_zscale,
 				       d.clip_mode, d.clip_xmin, d.clip_xmax, d.clip_ymin, d.clip_ymax, d.fp_disabled, d.polygon_mode, d.point_line_width);
 				continue;
+			}
+			if (getenv("RECOMP_REPLAY_DECODE_TEST")) {   /* each texture through gfx_decode_texture_rgba8 once (RECOMP_GPU_DECODE_CHECK=1: against the generic path), timed */
+				static uint32_t seen[2048][2]; static int nseen;
+				for (int u = 0; u < 16; u++) { const GfxTexture *tx = &d.tex[u]; if (!tx->data || !tx->width) continue;
+					int k = 0; for (; k < nseen && !(seen[k][0] == tx->data && seen[k][1] == tx->format); k++) {}
+					if (k < nseen || nseen >= 2048) continue; seen[nseen][0] = tx->data; seen[nseen][1] = tx->format; nseen++;
+					uint8_t *o = malloc(4u * tx->width * tx->height); struct timespec a, b; clock_gettime(CLOCK_MONOTONIC, &a);
+					extern void gfx_decode_texture_rgba8(const GfxTexture *, uint8_t *); gfx_decode_texture_rgba8(tx, o);
+					clock_gettime(CLOCK_MONOTONIC, &b); free(o);
+					fprintf(stderr, "decodetest: tex %#x fmt %#x %ux%u %.2f ms\n", tx->data, tx->format, tx->width, tx->height, (b.tv_sec - a.tv_sec) * 1e3 + (b.tv_nsec - a.tv_nsec) / 1e6); }
+			}
+			if (getenv("RECOMP_REPLAY_TEX_SURVEY")) {   /* each texture's Vita3K hash (texpack.c), once per address and format; =<file>: marks the ones it lists */
+				static uint64_t *want; static int nwant = -1; static uint32_t seen[4096][2]; static int nseen;
+				if (nwant < 0) { nwant = 0; FILE *hf = fopen(getenv("RECOMP_REPLAY_TEX_SURVEY"), "r"); char ln[64];
+					if (hf) { while (fgets(ln, sizeof ln, hf)) { want = realloc(want, (size_t)(nwant + 1) * 8); want[nwant++] = strtoull(ln, 0, 16); } fclose(hf); } }
+				for (int u = 0; u < 16; u++) { const GfxTexture *tx = &d.tex[u]; if (!tx->data) continue;
+					int k = 0; for (; k < nseen && !(seen[k][0] == tx->data && seen[k][1] == tx->format); k++) {}
+					if (k < nseen || nseen >= 4096) continue; seen[nseen][0] = tx->data; seen[nseen][1] = tx->format; nseen++;
+					extern uint64_t texpack_hash(const GfxTexture *); uint64_t h = texpack_hash(tx); int hit = 0; for (int i = 0; i < nwant; i++) if (want[i] == h) hit = 1;
+					fprintf(stderr, "texsurvey: %016llX %s tex %#x fmt %#x %ux%u layout %d\n", (unsigned long long)h, hit ? "IN PACK" : "-", tx->data, tx->format, tx->width, tx->height, tx->u_mode >> 4); }
+			}
+			if (getenv("RECOMP_REPLAY_FB_SURVEY")) {   /* each FRAGCOLOR fragment program's usse_fragment_fb_blend class, with its draws */
+				static uint32_t sp[256], sn[256]; static int ns;
+				const UsseProgram *fp = usse_get(d.fprog); const UsseFragLayout *fl = fp ? usse_fragment_layout(fp) : 0;
+				if (fl && fl->frag_color_used) { int k = 0; for (; k < ns && sp[k] != d.fprog; k++) {}
+					if (k == ns && ns < 256) { sp[ns++] = d.fprog; fprintf(stderr, "survey: fprog %#x colour type %d target fmt %#x blend %d: class %d\n", d.fprog, fl->color_type, cur.format, d.blend.present, usse_fragment_fb_blend(fp)); }
+					if (k < 256) sn[k]++; }
 			}
 			if (getenv("RECOMP_REPLAY_INFO") && atol(getenv("RECOMP_REPLAY_INFO")) == draws + 1) {   /* what draw k's programs declare */
 				const UsseProgram *fp = usse_get(d.fprog);
