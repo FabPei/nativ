@@ -21,6 +21,7 @@ ZLIB_SHA=9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23
 FFMPEG=7.1.1
 FFMPEG_SHA=733984395e0dbbe5c046abda2dc49a5544e7e0e1e2366bba849222ae9e3a03b1
 D=${ATIV_LINUX_TOOLCHAIN:-$HOME/toolchains/ativ-linux}
+HERE=$(cd "$(dirname "$0")" && pwd)   # (runtime/platform/linux: rawdec.c is in ../ffmpeg)
 mkdir -p "$D/dl" "$D/bin"; cd "$D/dl"
 # a download's sha256 against its pin above, so a tampered or changed archive stops the script
 verify() { local h; h=$(sha256sum "$1" 2>/dev/null | awk '{print $1}'); [[ -n $h ]] || h=$(shasum -a 256 "$1" | awk '{print $1}'); [[ $h == "$2" ]] && return; echo "checksum mismatch: $1 (expected $2, got $h)"; rm -f "$1"; exit 1; }
@@ -77,22 +78,22 @@ if [[ ! -f SDL3/lib/libSDL3.so.0 ]]; then
     -DSDL_HIDAPI_LIBUSB=OFF -DSDL_JACK=OFF -DSDL_SNDIO=OFF -DSDL_KMSDRM=OFF -DSDL_RPATH=OFF > sdl-configure.log
   cmake --build sdl-build -j"$(nproc)" > sdl-build.log 2>&1 && cmake --install sdl-build >> sdl-build.log 2>&1
 fi
-if [[ ! -f ffmpeg/lib/libavcodec.a ]]; then
-  rm -rf ffmpeg-src; mkdir ffmpeg-src; tar xJf "dl/ffmpeg-$FFMPEG.tar.xz" -C ffmpeg-src --strip-components 1
+if [[ ! -f ffmpeg/lib/libavcodec.a || ! -f ffmpeg/lib/libnativ_rawdec.a ]]; then
+  rm -rf ffmpeg ffmpeg-src; mkdir ffmpeg-src; tar xJf "dl/ffmpeg-$FFMPEG.tar.xz" -C ffmpeg-src --strip-components 1
   ASM=--disable-x86asm; command -v nasm >/dev/null && ASM=
   # (HAVE_SYSCTL off: configure finds the function, but zig's glibc headers have no <sys/sysctl.h> -- gone since glibc 2.32;
   # FFmpeg only counts processors with it on the BSDs)
   ( cd ffmpeg-src && ./configure --prefix="$D/ffmpeg" --cc="$CC" --cxx="$D/bin/c++" --ar="$D/bin/ar" --ranlib="$D/bin/ranlib" --nm=nm \
       --enable-static --disable-shared --enable-pic --disable-everything --disable-programs --disable-doc --disable-network --disable-autodetect \
       --disable-avdevice --disable-avformat --disable-swscale --disable-swresample --disable-avfilter --disable-debug \
-      --enable-decoder=h264 --enable-parser=h264 --enable-parser=hevc $ASM > ../ffmpeg-configure.log \
+      --enable-decoder=h264 --enable-parser=h264 --enable-parser=hevc --enable-decoder=aac $ASM > ../ffmpeg-configure.log \
     && sed -i 's/^#define HAVE_SYSCTL 1/#define HAVE_SYSCTL 0/' config.h \
-    && make -j"$(nproc)" > ../ffmpeg-build.log 2>&1 && make install >> ../ffmpeg-build.log 2>&1 )
+    && make -j"$(nproc)" > ../ffmpeg-build.log 2>&1 && make install >> ../ffmpeg-build.log 2>&1 \n    && "$CC" -O2 -fPIC -I. -c "$HERE/../ffmpeg/rawdec.c" -o rawdec.o && "$D/bin/ar" rcs "$D/ffmpeg/lib/libnativ_rawdec.a" rawdec.o )
 fi
 # their licences beside them, as SDL's own install does and zig's folder already has (an install ships these: zlib's and
 # the LGPL ask for the text, and the LGPL for where the source is)
 mkdir -p zlib/share/licenses ffmpeg/share/licenses
 cp zlib-src/LICENSE zlib/share/licenses/LICENSE
 cp ffmpeg-src/LICENSE.md ffmpeg-src/COPYING.LGPLv2.1 ffmpeg/share/licenses/
-printf 'FFmpeg %s (LGPL 2.1 or later), unmodified: https://ffmpeg.org/releases/ffmpeg-%s.tar.xz\nbuilt by runtime/platform/linux/setup-toolchain.sh with only the H.264 decoder and parsers enabled.\n' "$FFMPEG" "$FFMPEG" > ffmpeg/share/licenses/SOURCE.txt
+printf 'FFmpeg %s (LGPL 2.1 or later), unmodified: https://ffmpeg.org/releases/ffmpeg-%s.tar.xz\nbuilt by runtime/platform/linux/setup-toolchain.sh with only the H.264 and AAC decoders and the parsers enabled, plus libnativ_rawdec.a (runtime/platform/ffmpeg/rawdec.c).\n' "$FFMPEG" "$FFMPEG" > ffmpeg/share/licenses/SOURCE.txt
 echo "toolchain: $D (zig $("$D/zig/zig" version), glibc $GLIBC; SDL3 $SDL $([[ -f SDL3/lib/libSDL3.so.0 ]] && echo built || echo MISSING); zlib $ZLIB; FFmpeg $FFMPEG $([[ -f ffmpeg/lib/libavcodec.a ]] && echo built || echo MISSING))"

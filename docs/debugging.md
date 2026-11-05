@@ -39,7 +39,7 @@ the log (Shovel Knight's are `ycAssert` texts).
 | `RECOMP_DUMP_FRAME=n` | Log every draw of frame n. |
 | `RECOMP_INPUT=from-to:mask,...` | Scripted buttons by frame range. |
 | `RECOMP_TOUCH=from-to:x,y;...` | Scripted front-panel touches by frame range (panel coordinates, 1920x1088). |
-| `RECOMP_INPUT_RECORD=<file>`, `RECOMP_INPUT_PLAY=<file>` | Record every controller, touch and motion read during play, then serve it back headlessly. This is how a moment deep in a mission becomes a repeatable run. |
+| `RECOMP_INPUT_RECORD=<file>`, `RECOMP_INPUT_REPLAY=<file>` | Record every controller, touch and motion read during play, then serve it back headlessly. This is how a moment deep in a mission becomes a repeatable run. (`RECOMP_INPUT_PLAY` is kept as an alias.) |
 | `RECOMP_SETTINGS_SWITCH=frame:key=value,...` | Change a setting mid-run, as the F10 menu would. Compare settings in one run instead of a run per value. |
 | `RECOMP_SKIP_MOVIES=1` | Skip the game's videos. |
 | `RECOMP_CLOCK=fixed` | Guest time follows the frame count, so runs repeat exactly. |

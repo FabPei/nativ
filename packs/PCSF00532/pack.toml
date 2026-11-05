@@ -1,0 +1,33 @@
+# Soul Sacrifice Delta (PCSF00532, EU Vita release).
+# Only facts about the game; nothing of its code or data (the format: pipeline/packconf.py).
+NAME = "Soul Sacrifice Delta"
+# REGION: the release this pack plays (its content id: PCSF..., Europe); another region's release is another build,
+# not played yet -- a search names it and says this release is the one Ativ plays
+REGION = "EU"
+SPLIT = 32                # recompiled C split into this many part files (the eboot is 13.3 MB)
+# The game's own sce_module (libc: C runtime, libm, the C++ library; libfios2: Sony's FIOS scheduler/dearchiver;
+# libult: Sony's ULT task scheduler) and the firmware's GXM + GPU services (GXM runs as Sony's code) and the
+# modules the game loads for fonts (libpvf, libSceFt2), movies (libscemp4, libsceavplayer) and Ad Hoc Play
+# (adhoc_matching). libsmart ships in the game's sce_module but is not recompiled.
+MODULES = "libc libgxm_es4 libgpu_es4 libfios2 libult libSceFt2 libpvf libscemp4 libsceavplayer adhoc_matching"
+# RECOMP_SRGB=1: the game samples sRGB-encoded textures (texture gamma modes; no sRGB colour surfaces logged by
+# RECOMP_LOG_GAMMA) into linear lighting. Without the modes the first snow level is lit far too bright and washes
+# out to white; with them the level shows its detail and contrast.
+RUN_ENV = "RECOMP_SRGB=1"
+TEST_ENV = "RECOMP_SRGB=1"
+
+# The build of the game this pack plays: [versions."<version>"], the SHA-256 of its eboot.bin.elf and its status
+# (vitarecomp import refuses another version or region). "EU": the EU release's eboot; its update level is not
+# established yet (no version string checked).
+[versions."EU"]
+sha256 = "a4c2712ff93e746e07c6e50a1495872de0e7a303cda7b3ac099677f1eac51178"
+status = "recommended"
+
+# The scripted regression test: the boot runs unattended to the title screen ("PRESS ANY BUTTON", ~frame 210,
+# arrival jitters ~208-215), a scripted cross press at frames 218-226 triggers the title -> menu transition
+# (within ~6 frames of the press edge), and a second press selects CONTINUE on the menu. The press starts after
+# the title's prompt state has polled with no button: a press held from the state's first poll is read but not
+# acted on (no observed edge).
+TEST_INPUT = "0-217:0,218-226:4000,227-279:0,280-288:4000"
+TEST_FRAMES = 1500        # past the menu into the CONTINUE/save flow
+TEST_TOLERANCE = 5        # the menu animates (prompt/glow); under the fixed test clock the phase is deterministic, 5% covers drift and still fails a broken frame

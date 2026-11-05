@@ -1,5 +1,6 @@
 /* Vita system calls on the host: the C runtime: guest malloc, strings and memory, the printf family, libm, C++ static-init guards, exit/abort. */
 #include <ctype.h>
+#include "events.h"
 #include <math.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -26,8 +27,13 @@ static void h_realloc(Cpu *c) {
 }
 
 /* ---- strings and memory */
-static void h_memset(Cpu *c) { memset(G(A0), A1 & 0xff, A2); RET(A0); }
-static void h_memcpy(Cpu *c) { memmove(G(A0), G(A1), A2); RET(A0); }
+/* a bulk copy/set overlapping the armed store-trace window logs the window word after the write (width 10) */
+static void watch_bulk(uint32_t a, uint32_t n) {
+	if (recomp_watch_hi && n && a < recomp_watch_lo + recomp_watch_hi && recomp_watch_lo < a + n)
+		recomp_watch_write(recomp_watch_lo, RD32(recomp_watch_lo), 10);
+}
+static void h_memset(Cpu *c) { memset(G(A0), A1 & 0xff, A2); watch_bulk(A0, A2); RET(A0); }
+static void h_memcpy(Cpu *c) { memmove(G(A0), G(A1), A2); watch_bulk(A0, A2); RET(A0); }
 static void h_memcmp(Cpu *c) { RET(memcmp(G(A0), G(A1), A2)); }
 static void h_memchr(Cpu *c) { uint8_t *p = memchr(G(A0), A1 & 0xff, A2); RET(p ? (uint32_t)(p - recomp_mem) : 0); }
 static void h_strlen(Cpu *c) { RET(strlen((char *)G(A0))); }
@@ -301,10 +307,10 @@ static void h_errno_loc(Cpu *c) { static uint32_t e; if (!e) e = guest_alloc(4, 
 /* C++ function-local statics: acquire returns 1 when the caller must run the initialiser */
 static void h_guard_acquire(Cpu *c) { RET(!(RD8(A0) & 1)); }
 static void h_guard_release(Cpu *c) { WR8(A0, RD8(A0) | 1); }
-static void h_abort(Cpu *c) { (void)c; fprintf(stderr, "game called abort()\n"); exit(4); }
+static void h_abort(Cpu *c) { (void)c; fprintf(stderr, "game called abort()\n"); ev_log("fail", "game abort()"); exit(4); }
 void gfx_gpu_builds_stop(void);
 static void h_exit(Cpu *c) { fprintf(stderr, "game called exit(%d)\n", (int)A0); gfx_gpu_builds_stop(); exit(0); }   /* (the shader workers first: gfx.h) */
-static void h_stack_chk_fail(Cpu *c) { (void)c; fprintf(stderr, "stack check failed (stack smashing detected)\n"); exit(4); }
+static void h_stack_chk_fail(Cpu *c) { (void)c; fprintf(stderr, "stack check failed (stack smashing detected)\n"); ev_log("fail", "stack canary"); exit(4); }
 
 /* ---- more of the C runtime */
 static void h_strchr(Cpu *c) { RET(gptr(strchr((char *)G(A0), (int)(A1 & 0xff)))); }

@@ -103,7 +103,11 @@ ENV.setdefault("PYTHONUTF8", "1")
 
 
 def _python():   # the repository's virtualenv (.venv), else whichever Python runs this
-    for p in (os.path.join(ROOT, ".venv", "bin", "python"), os.path.join(ROOT, ".venv", "Scripts", "python.exe")):
+    # one venv per host: a Windows .venv's Scripts/python.exe is visible under WSL (and a POSIX
+    # .venv's bin/python on Windows), where it cannot run the other host's paths -- so only the
+    # hosted platform's venv layout is considered, then this interpreter
+    cands = ("Scripts/python.exe",) if os.name == "nt" else ("bin/python",)
+    for p in (os.path.join(ROOT, ".venv", *c.split("/")) for c in cands):
         if os.path.exists(p): return p
     return sys.executable
 
@@ -806,8 +810,9 @@ def cmd_dist(out):
 
 UPDATES = "updates.txt"   # (an install's release channel, "github <owner>/<repo>": cmd_dist writes it, cmd_update_check reads it)
 def release_newer(tag, mine):
-    """a release tag newer than this install's version, both vX.Y.Z (a build that isn't a release is never told)"""
-    def parts(v): m = re.fullmatch(r"v?(\d+)\.(\d+)(?:\.(\d+))?", v.strip()); return tuple(int(x or 0) for x in m.groups()) if m else None
+    """a release tag newer than this install's version, both vX.Y.Z or a fork's vX.Y.Z-fpN (a build that isn't a release
+    is never told); vX.Y.Z-fpN sorts after vX.Y.Z and before the next upstream version"""
+    def parts(v): m = re.fullmatch(r"v?(\d+)\.(\d+)(?:\.(\d+))?(?:-fp(\d+))?", v.strip()); return tuple(int(x or 0) for x in m.groups()) if m else None
     a, b = parts(tag), parts(mine)
     return bool(a and b and a > b)
 def cmd_update_check():

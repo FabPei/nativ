@@ -2,6 +2,13 @@
 
 # Project Nativ
 
+> **Unofficial fork.** This is [FabPei/nativ](https://github.com/FabPei/nativ), a community fork of
+> [TheLostPantheon/nativ](https://github.com/TheLostPantheon/nativ), not an official release. It adds runtime fixes and
+> support for Soul Sacrifice Delta (EU) that are also offered upstream as pull requests. Its releases are tagged
+> `vX.Y.Z-fpN` (based on upstream `vX.Y.Z`), are built from this repository's source by GitHub Actions
+> (`.github/workflows/release.yml`), are unsigned, and contain no game: as with upstream, you bring your own copy.
+> Problems with these builds belong in this fork's issues, not upstream's.
+
 Project Nativ turns PS Vita games into native programs for macOS, Linux and Windows. You bring your own copy of a
 game. The tools recompile it on your machine, and it runs like any other program, with extras the Vita never had:
 higher resolutions, wider screens, 60 fps and mouse aiming, depending on the game.

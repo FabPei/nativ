@@ -27,7 +27,7 @@ static int dialog_open[DLG_N];
 #define DIALOG(kind, name) \
 	static void h_##name##_init(Cpu *c) { dialog_open[kind] = 1; RET(0); } \
 	static void h_##name##_status(Cpu *c) { RET(dialog_open[kind] ? 2 : 0); } /* FINISHED : NONE */ \
-	static void h_##name##_term(Cpu *c) { dialog_open[kind] = 0; RET(0); }
+	static void h_##name##_term(Cpu *c) { int in_use = dialog_open[kind]; dialog_open[kind] = 0; RET(in_use ? 0 : 0x80020411u); } /* NOT_IN_USE without an open dialog */
 DIALOG(DLG_TROPHY, trophy_dlg)
 DIALOG(DLG_NETCHECK, net_dlg)
 DIALOG(DLG_MSG, msg_dlg)
@@ -90,6 +90,18 @@ static int slot_write(uint32_t id, uint32_t param) {   /* param: a guest SceAppU
 	fwrite(p, 1, SLOT_PARAM_SIZE, f); fclose(f);
 	return 0;
 }
+/* sceAppUtilSaveDataMount(SceAppUtilSaveDataMount * (title id +0, +0x10 scratch), const char *passphrase,
+ * ...) mounts ANOTHER title's saved data -- the saved-data bonus check (a game probing its sister
+ * titles). A host holding no such saved data must report SLOT_NOT_FOUND, the console's answer
+ * for missing saved data: the game then skips the bonus. The former unimplemented stub returned success
+ * for every call, so the game treated a mounted-but-empty directory as corrupt saved data and its save
+ * flow dead-locked behind the error window's task. Mounting real foreign saved data stays unimplemented
+ * and fails loudly here. */
+static void h_save_data_mount(Cpu *c) {
+	if (A0) { char id[10]; memcpy(id, G(A0), 9); id[9] = 0; fprintf(stderr, "    apputil: SaveDataMount foreign title %s -> SLOT_NOT_FOUND (no such saved data)\n", id); }
+	RET(0x80100641u);   /* SCE_APPUTIL_ERROR_SAVEDATA_SLOT_NOT_FOUND */
+}
+static void h_save_data_umount(Cpu *c) { (void)c; RET(0); }   /* (mount point): nothing was mounted */
 static void h_save_slot_create(Cpu *c) { RET(slot_write(A0, A1) == 0 ? 0 : 0x80100600u); }   /* (slot id, SceAppUtilSaveDataSlotParam *, mount point) */
 static void h_save_slot_delete(Cpu *c) { char m[1024]; slot_marker(A0, m, sizeof m); RET(unlink(m) == 0 ? 0 : 0x80100641u); }   /* SLOT_NOT_FOUND */
 static void h_save_slot_param(Cpu *c) {   /* (slot id, SceAppUtilSaveDataSlotParam *, mount point) */
@@ -372,7 +384,16 @@ static void h_save_dlg_finish(Cpu *c) {   /* the dialog's last step is done: FIN
 	pthread_mutex_unlock(&sd_mu);
 	RET(ok ? 0 : 0x80020404u);
 }
-static void h_save_dlg_term(Cpu *c) { pthread_mutex_lock(&sd_mu); sd.open = 0; sd.status = sd.sub = ST_NONE; sd.kind = SAVEDLG_NONE; pthread_mutex_unlock(&sd_mu); RET(0); }
+/* the common-dialog Term contract: a Term with no dialog in use returns
+ * SCE_COMMON_DIALOG_ERROR_NOT_IN_USE, as the console does (the game's dialog flow reads it); a
+ * real Init..Term still terminates and returns 0 */
+static void h_save_dlg_term(Cpu *c) {
+	pthread_mutex_lock(&sd_mu);
+	int in_use = sd.open;
+	sd.open = 0; sd.status = sd.sub = ST_NONE; sd.kind = SAVEDLG_NONE;
+	pthread_mutex_unlock(&sd_mu);
+	RET(in_use ? 0 : 0x80020411u);   /* NOT_IN_USE */
+}
 static void h_save_dlg_abort(Cpu *c) {
 	pthread_mutex_lock(&sd_mu); sd.result = 2; sd.button = 0; sd.open = 0; sd.status = ST_FINISHED; sd.kind = SAVEDLG_NONE; pthread_mutex_unlock(&sd_mu);   /* ABORTED */
 	RET(0);
@@ -475,7 +496,15 @@ static void h_avplayer_frame(Cpu *c) { if (A1) memset(G(A1), 0, 0x20); RET(0); }
 static void h_avplayer_no_stream(Cpu *c) { RET(0x806a0001u); }   /* GetStreamInfo / EnableStream / JumpToTime / Start with no source */
 static void h_avplayer_time(Cpu *c) { c->r[0] = 0; c->r[1] = 0; }   /* CurrentTime: a 64-bit 0 ms */
 static void h_app_state(Cpu *c) { memset(G(A0), 0, A1); RET(0); }   /* (SceAppMgrAppState *, size, version): nothing pending */
-static void h_zero_ok(Cpu *c) { RET(0); }
+/* SceSysmodule: the host has every library built in, so loading is bookkeeping -- but IsLoaded answers only for the
+ * modules the game loaded (SCE_SYSMODULE_ERROR_UNLOADED 0x805a1001 otherwise), as the system does: a game that asks whether the IME module (0x11) it never loads is loaded before calling sceImeUpdate, and "loaded"
+ * plus the update stub's 0 read as "an on-screen keyboard is open", so its save-data dialog was never opened */
+static uint8_t sysmodule_loaded[0x200];
+static void h_sysmodule_load(Cpu *c) { if (A0 < sizeof sysmodule_loaded) __atomic_store_n(&sysmodule_loaded[A0], 1, __ATOMIC_RELAXED); RET(0); }
+static void h_sysmodule_unload(Cpu *c) { if (A0 < sizeof sysmodule_loaded) __atomic_store_n(&sysmodule_loaded[A0], 0, __ATOMIC_RELAXED); RET(0); }
+static void h_sysmodule_is_loaded(Cpu *c) {
+	RET(A0 < sizeof sysmodule_loaded && __atomic_load_n(&sysmodule_loaded[A0], __ATOMIC_RELAXED) ? 0 : 0x805a1001u);
+}
 /* sceAppMgrAppParamGetString(pid, param, buf, size): param 12 is the title id (np_matching2 asks for it); the others unknown */
 static void h_app_param_string(Cpu *c) {
 	if (!A2 || !A3) { RET(0x80800001u); return; }
@@ -486,7 +515,8 @@ static void h_app_param_string(Cpu *c) {
 const HleEntry hle_apputil[] = {
 	{"sceAppMgrAppParamGetString", h_app_param_string},
 	{"sceAppMgrReceiveSystemEvent", h_receive_system_event},
-	{"sceAppUtilSystemParamGetInt", h_system_param_int}, {"_sceAppMgrGetAppState", h_app_state}, {"sceSysmoduleIsLoaded", h_zero_ok},
+	{"sceAppUtilSystemParamGetInt", h_system_param_int}, {"_sceAppMgrGetAppState", h_app_state}, {"sceSysmoduleIsLoaded", h_sysmodule_is_loaded},
+	{"sceSysmoduleLoadModule", h_sysmodule_load}, {"sceSysmoduleUnloadModule", h_sysmodule_unload},
 	{"sceAppUtilSystemParamGetString", h_system_param_string},
 	{"sceAppUtilInit", h_zero}, {"sceAppUtilShutdown", h_zero}, {"sceAppUtilDrmOpen", h_drm_open}, {"sceAppUtilDrmClose", h_zero},   /* (SceAppUtilDrmAddcontId *, mount point): the additional content's licence -- the host has no DRM, every add-on is licensed */   /* (SceAppUtilInitParam *, SceAppUtilBootParam *): nothing to set up */
 	{"sceAppUtilReceiveAppEvent", h_receive_app_event},
@@ -528,6 +558,7 @@ const HleEntry hle_apputil[] = {
 	{"sceAppMgrIsGameProgram", h_is_game},   /* 1: a game -- libfios2 picks its default file mode by it */
 	{"sceAppUtilSaveDataSlotGetParam", h_save_slot_param}, {"sceAppUtilSaveDataSlotCreate", h_save_slot_create}, {"sceAppUtilSaveDataSlotDelete", h_save_slot_delete}, {"sceAppUtilSaveDataSlotSetParam", h_save_slot_set_param},
 	{"sceAppUtilSaveDataDataSave", h_save_data_save},
+	{"sceAppUtilSaveDataMount", h_save_data_mount}, {"sceAppUtilSaveDataUmount", h_save_data_umount},
 	{"sceAppUtilSaveDataDataRemove", h_save_data_remove},
 	{"sceNpTrophyCreateContext", h_trophy_create},
 	{"sceNpTrophyCreateHandle", h_trophy_create},

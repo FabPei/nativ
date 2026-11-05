@@ -1,0 +1,118 @@
+# The fork's downloads, built from this repository's source alone by GitHub's runners: dev/release.sh, as a release is
+# made by hand (docs/developers.md "Making a release"), with no game anywhere: NATIV_RELEASE_SKIP_BUILDS=1 packages
+# the tools without building a library's games (a runner has none; players build their own from their own copy).
+#   a pushed tag vX.Y.Z-fpN   the three downloads + SHA256SUMS, as a DRAFT release (published by hand after a look)
+#   Run workflow (manual)     the same downloads as workflow artifacts only, from the branch's head (no release)
+# Unsigned: no signing identity is configured, so Windows' SmartScreen and macOS' Gatekeeper ask the player once.
+name: release
+on:
+  push:
+    tags: ["v*-fp*"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  NATIV_RELEASES: ${{ github.repository }}
+  NATIV_RELEASE_SKIP_BUILDS: "1"
+
+jobs:
+  linux-windows:   # the AppImage (made on Linux) and the Windows zip (cross-built on Linux, as upstream makes it)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with: { fetch-depth: 0 }
+      - name: build dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq --no-install-recommends zsh rsync zip unzip xz-utils cmake ninja-build nasm pkg-config \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev libxfixes-dev libxtst-dev libxkbcommon-dev \
+            libwayland-dev wayland-protocols libdecor-0-dev libpipewire-0.3-dev libpulse-dev libasound2-dev libdbus-1-dev \
+            libudev-dev libegl-dev libgl-dev
+      - name: toolchain cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9   # v6.1.0
+        with:
+          path: |
+            ~/toolchains/ativ-linux
+            ~/toolchains/ativ-win
+          key: tc-linux-win-${{ hashFiles('runtime/platform/linux/setup-toolchain.sh', 'runtime/platform/win/setup-toolchain.sh', 'runtime/platform/ffmpeg/rawdec.c') }}
+      - name: toolchains
+        run: |
+          bash runtime/platform/linux/setup-toolchain.sh
+          bash runtime/platform/win/setup-toolchain.sh
+      - name: tag
+        id: tag
+        run: |
+          if [[ $GITHUB_REF == refs/tags/* ]]; then echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else t=v0.0.0-fp0; git tag -f "$t"; echo "tag=$t" >> "$GITHUB_OUTPUT"; fi   # (a manual run: a throwaway local tag)
+      - name: package
+        run: bash dev/release.sh "${{ steps.tag.outputs.tag }}" linux windows
+      - name: smoke
+        run: |
+          A=$(ls build/release/*/ProjectNativ-*-linux.AppImage); chmod +x "$A"
+          "$A" --appimage-extract >/dev/null
+          squashfs-root/python/bin/python3 -c "import capstone, Crypto; print('install python ok')"
+          test -x squashfs-root/launcher/nativ && test -f squashfs-root/toolchain/ffmpeg/lib/libnativ_rawdec.a
+          unzip -l build/release/*/ProjectNativ-*-windows.zip | grep -q "ProjectNativ/Project Nativ.exe"
+          unzip -l build/release/*/ProjectNativ-*-windows.zip | grep -q "ProjectNativ/packs/PCSF00532/pack.toml"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9   # v7.0.2
+        with:
+          name: linux-windows
+          path: |
+            build/release/*/ProjectNativ-*-linux.AppImage
+            build/release/*/ProjectNativ-*-windows.zip
+          if-no-files-found: error
+
+  mac:   # the .dmg (made on a Mac: Apple silicon, macOS 11 and later)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with: { fetch-depth: 0 }
+      - name: build dependencies
+        run: brew install ninja
+      - name: toolchain cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9   # v6.1.0
+        with:
+          path: ~/toolchains/ativ-mac
+          key: tc-mac-${{ hashFiles('runtime/platform/macos/setup-toolchain.sh', 'runtime/platform/ffmpeg/rawdec.c') }}
+      - name: toolchain
+        run: bash runtime/platform/macos/setup-toolchain.sh
+      - name: tag
+        id: tag
+        run: |
+          if [[ $GITHUB_REF == refs/tags/* ]]; then echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else t=v0.0.0-fp0; git tag -f "$t"; echo "tag=$t" >> "$GITHUB_OUTPUT"; fi
+      - name: package
+        run: bash dev/release.sh "${{ steps.tag.outputs.tag }}" mac
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9   # v7.0.2
+        with:
+          name: mac
+          path: build/release/*/ProjectNativ-*-mac.dmg
+          if-no-files-found: error
+
+  draft-release:   # only for a pushed tag: every download and SHA256SUMS on a draft release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [linux-windows, mac]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333   # v8.0.2
+        with: { path: dl, merge-multiple: true }
+      - name: draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          mkdir out; find dl -type f -name "ProjectNativ-$TAG-*" -exec mv {} out/ \;
+          (cd out && sha256sum ProjectNativ-* > SHA256SUMS && cat SHA256SUMS)
+          cat > notes.md <<NOTES
+          Unofficial build of the [FabPei/nativ](https://github.com/${{ github.repository }}) fork of
+          [Project Nativ](https://github.com/TheLostPantheon/nativ), made by GitHub Actions from tag \`$TAG\`
+          ([source](https://github.com/${{ github.repository }}/tree/$TAG)). No game is included: you bring your own copy.
+          Unsigned: Windows and macOS ask once before the first start. Licences: \`LICENSE\` (GPL-2.0-or-later) and
+          \`THIRD_PARTY.md\` in each download.
+          NOTES
+          gh release create "$TAG" out/* --repo "${{ github.repository }}" --draft --prerelease --title "Project Nativ $TAG (unofficial fork)" --notes-file notes.md

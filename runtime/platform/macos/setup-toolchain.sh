@@ -19,6 +19,7 @@ FFMPEG_SHA=733984395e0dbbe5c046abda2dc49a5544e7e0e1e2366bba849222ae9e3a03b1
 MIN=11.0   # macOS Big Sur, the first on Apple silicon: every M-series Mac (the shaders are MSL 2.3, the pipeline archive MTLBinaryArchive: both 11.0)
 ARCH=arm64
 D=${ATIV_MAC_TOOLCHAIN:-$HOME/toolchains/ativ-mac}
+HERE=$(cd "$(dirname "$0")" && pwd)   # (runtime/platform/macos: rawdec.c is in ../ffmpeg)
 mkdir -p "$D/dl"; cd "$D/dl"
 # a download's sha256 against its pin above, so a tampered or changed archive stops the script
 verify() { local h; h=$(sha256sum "$1" 2>/dev/null | awk '{print $1}'); [[ -n $h ]] || h=$(shasum -a 256 "$1" | awk '{print $1}'); [[ $h == "$2" ]] && return; echo "checksum mismatch: $1 (expected $2, got $h)"; rm -f "$1"; exit 1; }
@@ -42,21 +43,21 @@ if [[ ! -f spirv-cross/lib/libspirv-cross-c.a ]]; then
     -DSPIRV_CROSS_SHARED=OFF -DSPIRV_CROSS_STATIC=ON -DSPIRV_CROSS_CLI=OFF -DSPIRV_CROSS_ENABLE_TESTS=OFF > spirv-configure.log
   cmake --build spirv-build -j"$(sysctl -n hw.ncpu)" > spirv-build.log 2>&1 && cmake --install spirv-build >> spirv-build.log 2>&1
 fi
-if [[ ! -f ffmpeg/lib/libavcodec.a ]]; then
-  rm -rf ffmpeg-src; mkdir ffmpeg-src; tar xJf "dl/ffmpeg-$FFMPEG.tar.xz" -C ffmpeg-src --strip-components 1
+if [[ ! -f ffmpeg/lib/libavcodec.a || ! -f ffmpeg/lib/libnativ_rawdec.a ]]; then
+  rm -rf ffmpeg ffmpeg-src; mkdir ffmpeg-src; tar xJf "dl/ffmpeg-$FFMPEG.tar.xz" -C ffmpeg-src --strip-components 1
   F="-arch $ARCH -mmacosx-version-min=$MIN"
   ( cd ffmpeg-src && ./configure --prefix="$D/ffmpeg" --cc=clang --extra-cflags="$F" --extra-ldflags="$F" \
       --enable-static --disable-shared --enable-pic --disable-everything --disable-programs --disable-doc --disable-network --disable-autodetect \
       --disable-avdevice --disable-avformat --disable-swscale --disable-swresample --disable-avfilter --disable-debug \
-      --enable-decoder=h264 --enable-parser=h264 --enable-parser=hevc > ../ffmpeg-configure.log \
-    && make -j"$(sysctl -n hw.ncpu)" > ../ffmpeg-build.log 2>&1 && make install >> ../ffmpeg-build.log 2>&1 )
+      --enable-decoder=h264 --enable-parser=h264 --enable-parser=hevc --enable-decoder=aac > ../ffmpeg-configure.log \
+    && make -j"$(sysctl -n hw.ncpu)" > ../ffmpeg-build.log 2>&1 && make install >> ../ffmpeg-build.log 2>&1 \n    && clang $F -O2 -I. -c "$HERE/../ffmpeg/rawdec.c" -o rawdec.o && ar rcs "$D/ffmpeg/lib/libnativ_rawdec.a" rawdec.o )
 fi
 # their licences beside them, as SDL's own install does (an install ships these libraries: Apache 2.0 and the LGPL ask for
 # the text, and the LGPL for where the source is)
 mkdir -p spirv-cross/share/licenses ffmpeg/share/licenses
 cp spirv-src/LICENSE spirv-cross/share/licenses/LICENSE
 cp ffmpeg-src/LICENSE.md ffmpeg-src/COPYING.LGPLv2.1 ffmpeg/share/licenses/
-printf 'FFmpeg %s (LGPL 2.1 or later), unmodified: https://ffmpeg.org/releases/ffmpeg-%s.tar.xz\nbuilt by runtime/platform/macos/setup-toolchain.sh with only the H.264 decoder and parsers enabled.\n' "$FFMPEG" "$FFMPEG" > ffmpeg/share/licenses/SOURCE.txt
+printf 'FFmpeg %s (LGPL 2.1 or later), unmodified: https://ffmpeg.org/releases/ffmpeg-%s.tar.xz\nbuilt by runtime/platform/macos/setup-toolchain.sh with only the H.264 and AAC decoders and the parsers enabled, plus libnativ_rawdec.a (runtime/platform/ffmpeg/rawdec.c).\n' "$FFMPEG" "$FFMPEG" > ffmpeg/share/licenses/SOURCE.txt
 ok() { [[ -f $1 ]] && echo built || echo MISSING; }
 echo "toolchain: $D (macOS $MIN, $ARCH; SDL3 $SDL $(ok SDL3/lib/libSDL3.0.dylib); SPIRV-Cross $SPIRV_CROSS $(ok spirv-cross/lib/libspirv-cross-c.a); FFmpeg $FFMPEG $(ok ffmpeg/lib/libavcodec.a))"
 echo "$MIN" > "$D/min"

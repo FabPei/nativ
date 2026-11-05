@@ -20,6 +20,7 @@
 #define _GNU_SOURCE   /* glibc: pthread_setname_np (thread_main names host threads after guest threads) */
 #endif
 #include <errno.h>
+#include "events.h"
 #include <limits.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -39,6 +40,7 @@
 #define E_ILLEGAL_MODE          0x80020010u
 #define E_UID_CANNOT_FIND_BY_NAME 0x8002450Au
 #define E_UNKNOWN_UID           0x80028001u
+#define E_ALREADY_SENT          0x80028121u
 #define E_WAIT_TIMEOUT          0x80028005u
 #define E_WAIT_DELETE           0x80028006u
 #define E_UNKNOWN_THREAD_ID     0x80028021u
@@ -106,6 +108,7 @@ typedef struct Thread {
 	struct Fiber *fiber;         /* the fiber running in its place (fibers, below); 0 while the thread itself runs */
 	pthread_cond_t *fcv; int fgo, fexit; uint32_t fret_arg;   /* the handoff back from its fiber: fgo set and fret_arg its argOnReturn; fexit: the fiber ended the thread */
 	int cb_pending;              /* a callback it owns was notified (callbacks, below) */
+	int signal_pending;          /* _sceKernelWaitSignal/sceKernelSendSignal: a signal waiting to be taken (consumed by the wait) */
 	pthread_mutex_t *wait_m; pthread_cond_t *wait_cv;   /* where it sleeps in a CB wait, for a notifier to wake it */
 	/* the run-slot scheduler (RECOMP_SCHED=vita, below). It belongs to the guest thread, not to a
 	 * host thread: a fiber's host thread runs as its thread, on the thread's slot */
@@ -114,6 +117,9 @@ typedef struct Thread {
 	uint64_t s_boundaries, s_seen, s_quiet;   /* boundaries passed; the count the timer last saw, and since when it has stood still */
 	pthread_cond_t s_cv;         /* where it waits for a slot (initialised when it is admitted) */
 	struct Thread *s_next;       /* the wait list */
+	const char *in_hle;         /* the kernel handler it is inside right now (the stall dump) */
+	unsigned lw_phase;          /* its lwmutex-handler phase (the stall dump; written through the lwm_ph macro) */
+	uint64_t lw_lookup_enter, lw_lookup_return; /* opt-in lookup progress, read atomically by the stall dump */
 } Thread;
 #define MAX_THREADS 1024
 static Thread threads[MAX_THREADS];
@@ -122,6 +128,47 @@ static Thread main_thread = { .uid = 0x40010003, .name = "main", .init_prio = 16
 static pthread_mutex_t klock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t kcond = PTHREAD_COND_INITIALIZER;   /* thread ends */
 static __thread uint32_t cur_tid = 0x40010003;              /* the main thread's */
+/* how far through the lwmutex handler the thread is; plain stores (no I/O, no allocation, no extra
+ * locks) read only by the bounded stall dump (kernel_report_pcs). The quiet hot path has no other
+ * observability -- the per-call fprintf phase traces exist only in the opt-in verbose mode
+ * (RECOMP_LOG_LWMUTEX=1), so a quiet run can never stall on its own diagnostics. Phase map:
+ *   0  idle (outside a lwmutex handler)          1 lock: entered, before lwmutex()
+ *   2  lock: object known (lwmutex() returned)   3 lock: waiting for o->m
+ *   4  lock: o->m held                           5 lock: queued in wait_on
+ *   6  lock: mutex_lock returned                 7 lw_log: entered
+ *   8  lw_log: object lookup done               21 unlock: entered
+ *  22  unlock: inside mutex_unlock              23 unlock: mutex_unlock returned
+ * A thread frozen at a phase names the span between that store and the next. */
+#define lwm_ph (SELF()->lw_phase)
+static int lwm_log_on(void) { static int on = -1; if (on < 0) on = getenv("RECOMP_LOG_LWMUTEX") != 0; return on; }
+static uint32_t klock_held;                                 /* whose handler holds klock right now (the stall dump) */
+static int lwm_count_on;                                    /* enabled once before guest threads start */
+static void klock_take(void) { pthread_mutex_lock(&klock); klock_held = cur_tid; }
+static void klock_give(void) { klock_held = 0; pthread_mutex_unlock(&klock); }
+/* kernel-object event counts, exact and always on: one count per
+ * SignalSema/SetEvent call and object -- the loader's request-completion gates and the render-start
+ * event counted even in a quiet run, whose log has no import lines to grep. Printed by the bounded
+ * stall dump and the exit summary (kernel_report_obj_counts). */
+#define OBJEV 256
+static struct { uint32_t uid; uint64_t n; } objev[OBJEV]; static uint64_t objev_lost;
+static void objev_count(uint32_t uid) {
+	klock_take();
+	unsigned h = (uid >> 1) & (OBJEV - 1);
+	for (int i = 0; i < 8; i++) {
+		if (objev[(h + i) & (OBJEV - 1)].uid == uid || !objev[(h + i) & (OBJEV - 1)].uid) {
+			objev[(h + i) & (OBJEV - 1)].uid = uid; objev[(h + i) & (OBJEV - 1)].n++;
+			klock_give(); return;
+		}
+	}
+	objev_lost++; klock_give();
+}
+void kernel_report_obj_counts(void) {
+	klock_take();
+	for (int i = 0; i < OBJEV; i++) if (objev[i].n)
+		fprintf(stderr, "  obj-events uid %#x n %llu\n", objev[i].uid, (unsigned long long)objev[i].n);
+	if (objev_lost) fprintf(stderr, "  obj-events LOST %llu\n", (unsigned long long)objev_lost);
+	klock_give();
+}
 static __thread Thread *cur_thread;                         /* 0 on the main thread */
 int waitstats_on(void); uint64_t waitstats_now(void); void waitstats_begin(uint64_t t0); void waitstats_wait(uint64_t t0, uint64_t woken_at); void waitstats_sleep(uint64_t t0); void waitstats_name(const char *n);   /* (debug/waitstats.c) */
 #define SELF() (cur_thread ? cur_thread : &main_thread)
@@ -241,7 +288,13 @@ static void sched_hand(int slot, Thread *from, int why) {
 	pthread_cond_signal(&n->s_cv);
 }
 static void sched_release(Thread *t, int why) { int slot = t->s_slot; sched_slot[slot] = 0; sched_hand(slot, t, why); }   /* sched_m held, t in S_RUN */
-static void sched_wait_turn(Thread *t) { while (t->s_state != S_RUN) pthread_cond_wait(&t->s_cv, &sched_m); }   /* sched_m held */
+static void sched_wait_turn(Thread *t) {   /* sched_m held */
+	extern __thread int recomp_excl_valid;
+	extern __thread uint32_t recomp_switch_seq; extern __thread int recomp_excl_drop_reason;
+	recomp_excl_valid = 0;   /* the thread is about to yield the CPU: the firmware's scheduler clears the exclusive monitor on a context switch, so a strex after this point must fail and its loop retry (a stale ldrex value must never publish) */
+	recomp_excl_drop_reason = 2; recomp_switch_seq++;   /* this drop site's tag + the switch sequence rt.h's staleness check compares */
+	while (t->s_state != S_RUN) pthread_cond_wait(&t->s_cv, &sched_m);
+}
 static void sched_get_slot(Thread *t, int front) {   /* sched_m held: a free slot it may use (nobody waiting can use it), else the list */
 	int slot = sched_free_slot(t);
 	if (slot >= 0) sched_take(t, slot);
@@ -407,6 +460,7 @@ extern uint32_t process_param;
  * ask for (SceProcessParam +0x14 sceUserMainThreadPriority, +0x28 sceUserMainThreadCpuAffinityMask:
  * pointers to the values, 0 for the defaults) and admits it */
 void kernel_sched_init(void) {
+	lwm_count_on = getenv("RECOMP_LWM_COUNT") != NULL;
 	const char *e = getenv("RECOMP_SCHED");
 	/* the main thread's priority and affinity are the process parameters' (sceUserMainThreadPriority
 	 * / ...CpuAffinityMask), scheduler or not: Unit 13 asks for 144 and the host ran it at 160, so
@@ -465,11 +519,11 @@ static void thread_event(Cpu *base, Thread *t, uint32_t type) {
 	}
 }
 static void h_register_thread_event(Cpu *c) {   /* (name, thid, eventMask, handler, common) */
-	pthread_mutex_lock(&klock);
-	if (ntevents >= 16) { pthread_mutex_unlock(&klock); RET(0x80028060u); return; }   /* THREAD_EVENT_ERROR */
+	klock_take();
+	if (ntevents >= 16) { klock_give(); RET(0x80028060u); return; }   /* THREAD_EVENT_ERROR */
 	ThreadEvent *e = &tevents[ntevents++];
 	e->uid = 0x40030001 + 2 * (ntevents - 1); e->thid = A1; e->mask = A2; e->handler = A3; e->common = STK(0); e->live = 1;
-	pthread_mutex_unlock(&klock);
+	klock_give();
 	RET(e->uid);
 }
 static void h_unregister_thread_event(Cpu *c) {
@@ -478,8 +532,8 @@ static void h_unregister_thread_event(Cpu *c) {
 }
 
 static void h_create_thread(Cpu *c) {   /* (name, entry, priority, stack size, attr, affinity, opt) */
-	pthread_mutex_lock(&klock);
-	if (nthreads >= MAX_THREADS) { pthread_mutex_unlock(&klock); fprintf(stderr, "thread table full (%d)\n", MAX_THREADS); RET(0x80028020u); return; }   /* THREAD_ERROR */
+	klock_take();
+	if (nthreads >= MAX_THREADS) { klock_give(); fprintf(stderr, "thread table full (%d)\n", MAX_THREADS); RET(0x80028020u); return; }   /* THREAD_ERROR */
 	Thread *t = &threads[nthreads];
 	memset(t, 0, sizeof *t);
 	t->uid = 0x40010100 + 2 * nthreads++;
@@ -489,16 +543,16 @@ static void h_create_thread(Cpu *c) {   /* (name, entry, priority, stack size, a
 	t->stack = guest_alloc(t->stack_size, 4096);
 	t->attr = STK(0); t->affinity = STK(1);
 	snprintf(t->name, sizeof t->name, "%s", A0 ? (char *)G(A0) : "?");
-	pthread_mutex_unlock(&klock);
-	fprintf(stderr, "    thread '%s' uid %#x entry %#x stack %#x prio %d affinity %#x\n", t->name, t->uid, t->entry, t->stack_size, t->prio, t->affinity);
+	klock_give();
+	fprintf(stderr, "    thread '%s' uid %#x entry %#x stack %#x+%#x prio %d affinity %#x\n", t->name, t->uid, t->entry, t->stack, t->stack_size, t->prio, t->affinity);
 	RET(t->uid);
 }
 static void thread_done(Thread *t, uint32_t status) {
 	sched_thread_exit(t);
-	pthread_mutex_lock(&klock);
+	klock_take();
 	t->status = status; t->done = 1;
 	pthread_cond_broadcast(&kcond);
-	pthread_mutex_unlock(&klock);
+	klock_give();
 }
 static void *thread_main(void *p) {
 	Thread *t = p;
@@ -549,21 +603,21 @@ static void h_start_thread(Cpu *c) {   /* (uid, arg size, arg block): the block 
 /* run guest code on a new thread and wait for it (the loader runs a module's module_start that
  * way: some end it with sceKernelExitThread) -> its exit status */
 uint32_t kernel_run_thread(const char *name, uint32_t entry) {
-	pthread_mutex_lock(&klock);
+	klock_take();
 	Thread *t = &threads[nthreads];
 	memset(t, 0, sizeof *t);
 	t->uid = 0x40010100 + 2 * nthreads++;
 	t->entry = entry; t->stack_size = 0x40000; t->stack = guest_alloc(t->stack_size, 4096);
 	t->init_prio = t->prio = 160;
 	snprintf(t->name, sizeof t->name, "%s", name);
-	pthread_mutex_unlock(&klock);
+	klock_give();
 	Cpu *n = calloc(1, sizeof *n);
 	n->r[13] = t->stack + t->stack_size - 16; n->r[14] = 0xfffffffe; n->fpscr = 0x03000000;
 	spawn(t, n);
-	pthread_mutex_lock(&klock);
+	klock_take();
 	int b = 0;
 	while (!t->done) { if (!b) b = sched_block_begin(); pthread_cond_wait(&kcond, &klock); }
-	pthread_mutex_unlock(&klock);
+	klock_give();
 	if (b) sched_block_end();
 	return t->status;
 }
@@ -618,7 +672,7 @@ static void h_wait_thread_end(Cpu *c) {   /* (uid, *status, *timeout) -> 0, the 
 	struct timespec ts; int timed = deadline(A2, &ts);
 	thread_waits(9, A0);
 	Thread *me = cb_thread();   /* WaitThreadEndCB: a notified callback interrupts (kcond is broadcast by the notifier) */
-	pthread_mutex_lock(&klock);
+	klock_take();
 	if (me) cb_publish(me, &klock, &kcond);
 	int b = 0;   /* the slot is given up only if it actually sleeps, and taken back once klock is released */
 	while (!t->done && !(me && cb_pending(me))) {
@@ -627,13 +681,56 @@ static void h_wait_thread_end(Cpu *c) {   /* (uid, *status, *timeout) -> 0, the 
 	}
 	if (me) cb_publish(me, 0, 0);
 	int done = t->done;
-	pthread_mutex_unlock(&klock);
+	klock_give();
 	thread_waits(0, 0);
 	if (b) sched_block_end();
 	if (!done && me && cb_pending(me)) { timeout_left(A2, timed, &ts); RET(E_CB_RETRY); return; }
 	if (!done) { if (A2) WR32(A2, 0); RET(E_WAIT_TIMEOUT); return; }
 	timeout_left(A2, timed, &ts);
 	if (A1) WR32(A1, t->status);
+	RET(0);
+}
+/* _sceKernelWaitSignal / sceKernelSendSignal (SceThreadmgr): the per-thread signal a thread parks
+ * on -- the firmware's SceUlt parks its worker threads on this pair (Vita3K SceThreadmgr.cpp
+ * _sceKernelWaitSignal -> ThreadState::wait_for_signal, thread.cpp: a signal sent before ends the
+ * wait at once and is consumed by it; sceKernelSendSignal(uid) errors on uid 0 or an unknown
+ * thread). (unknown, delay, *timeout): the delay is unused on the reference too; no timeout = a
+ * wait that only a signal ends. Observed use: libult's worker thunk calls it as (0, 0, 0). */
+static void h_wait_signal(Cpu *c) {
+	Thread *t = SELF();
+	struct timespec ts; int timed = deadline(A2, &ts);
+	klock_take();
+	if (!t->signal_pending) {   /* a signal sent before ends the wait at once, with the timeout untouched */
+		thread_waits(4, 0x00010221u);   /* SCE_KERNEL_WAITTYPE_SIGNAL / SIGNAL_WAIT_ID (Vita3K kernel/types.h, thread.cpp) */
+		Thread *me = cb_thread();
+		if (me) cb_publish(me, &klock, &kcond);
+		int b = 0;
+		while (!t->signal_pending && !(me && cb_pending(me))) {
+			if (!b) b = sched_block_begin();
+			if (timed ? pthread_cond_timedwait(&kcond, &klock, &ts) == ETIMEDOUT : pthread_cond_wait(&kcond, &klock) != 0) break;
+		}
+		if (me) cb_publish(me, 0, 0);
+		klock_give();
+		thread_waits(0, 0);
+		if (b) sched_block_end();
+		if (!t->signal_pending && me && cb_pending(me)) { timeout_left(A2, timed, &ts); RET(E_CB_RETRY); return; }
+		if (!t->signal_pending) { if (A2) WR32(A2, 0); RET(E_WAIT_TIMEOUT); return; }
+	} else {
+		klock_give();
+	}
+	t->signal_pending = 0;
+	timeout_left(A2, timed, &ts);
+	RET(0);
+}
+static void h_send_signal(Cpu *c) {   /* (target thread uid) */
+	if (!A0) { RET(E_ILLEGAL_THREAD_ID); return; }
+	Thread *t = thread_of(A0);
+	if (!t) { RET(E_UNKNOWN_THREAD_ID); return; }
+	klock_take();
+	if (t->signal_pending) { klock_give(); RET(E_ALREADY_SENT); return; }   /* the firmware's flag: a second signal before the first was taken is an error the waker sees, so it holds the wake and retries (Vita3K ThreadState::send_signal) */
+	t->signal_pending = 1;
+	pthread_cond_broadcast(&kcond);
+	klock_give();
 	RET(0);
 }
 static void h_thread_exit_status(Cpu *c) {
@@ -702,11 +799,12 @@ static void h_zero_ok(Cpu *c) { RET(0); }   /* ChangeThreadVfpException, CloseSe
 static void h_exit_process(Cpu *c) { fprintf(stderr, "process exited (sceKernelExitProcess %#x)\n", A0); fflush(stderr); exit(0); }
 static void h_abort_handler(Cpu *c) {   /* libc's abort() ends here; a stub that returned let the program run on past its own abort */
 	fprintf(stderr, "abort (sceKernelCallAbortHandler from lr %#x); last formatted string: %s\n", c->r[14], hle_last_format);
+	ev_log("fail", "abort handler (lr %#x)", c->r[14]);
 	fflush(stderr); exit(1);
 }
 
 /* ---- sync objects */
-enum { SEMA = 1, MUTEX, LWMUTEX, LWCOND, EVF, KCOND, SEVENT, RWLOCK, MSGPIPE, CALLBACK };
+enum { SEMA = 1, MUTEX, LWMUTEX, LWCOND, EVF, KCOND, SEVENT, RWLOCK, MSGPIPE, CALLBACK, TIMER };
 /* a thread blocked on an object: what it waits for and the condition variable it sleeps on (one
  * per host thread: a thread waits on one object at a time, and a pthread condition may serve
  * different mutexes over time), so a wake is one signal to one thread */
@@ -729,6 +827,8 @@ typedef struct {
 	uint32_t mutex_uid;             /* a (kernel) condition's mutex */
 	uint32_t bits;                  /* an event flag's or simple event's pattern */
 	uint64_t udata;                 /* a simple event's user data (the last SetEvent's) */
+	uint64_t t_start, t_stop; int t_running;   /* a timer: the CLOCK_MONOTONIC start, the stop stamp, and whether it runs */
+	uint32_t m_held;            /* the tid whose handler currently holds o->m (the stall dump's deadlock chain) */
 	int deleted;
 	Waiter *head, *tail; int nwait;
 	char name[32];
@@ -752,12 +852,12 @@ static Obj *new_obj(int kind, uint32_t name, uint32_t attr) {
 	pthread_mutex_init(&o->m, 0);
 	o->kind = kind; o->attr = attr;
 	snprintf(o->name, sizeof o->name, "%s", name ? (char *)G(name) : "");
-	pthread_mutex_lock(&klock);
+	klock_take();
 	o->uid = 0x40020001 + 2 * nobjs;
 	if (!obj_pages[nobjs / OBJ_PAGE]) obj_pages[nobjs / OBJ_PAGE] = calloc(OBJ_PAGE, sizeof(Obj *));
 	obj_pages[nobjs / OBJ_PAGE][nobjs % OBJ_PAGE] = o;
 	nobjs++;
-	pthread_mutex_unlock(&klock);
+	klock_give();
 	return o;
 }
 static Obj *by_uid(uint32_t uid, int kind) {
@@ -766,25 +866,25 @@ static Obj *by_uid(uint32_t uid, int kind) {
 	return o && o->kind == kind && !o->deleted ? o : 0;
 }
 static Obj *by_work(uint32_t work, int kind) {
-	pthread_mutex_lock(&klock);
+	klock_take();
 	Obj *r = 0;
 	for (WorkNode *n = by_work_hash[(work >> 2) & 0xffff]; n; n = n->next) if (n->o->work == work && n->o->kind == kind) { r = n->o; break; }
-	pthread_mutex_unlock(&klock);
+	klock_give();
 	return r;
 }
 static Obj *new_obj_at(int kind, uint32_t name, uint32_t attr, uint32_t work) {   /* a lightweight object, found by its work area (newest first: a work area can be reused) */
 	Obj *o = new_obj(kind, name, attr);
 	o->work = work;
 	WorkNode *n = malloc(sizeof *n);
-	pthread_mutex_lock(&klock);
+	klock_take();
 	n->o = o; n->next = by_work_hash[(work >> 2) & 0xffff]; by_work_hash[(work >> 2) & 0xffff] = n;
-	pthread_mutex_unlock(&klock);
+	klock_give();
 	return o;
 }
 static void unlink_work(Obj *o) {
-	pthread_mutex_lock(&klock);
+	klock_take();
 	for (WorkNode **pp = &by_work_hash[(o->work >> 2) & 0xffff]; *pp; pp = &(*pp)->next) if ((*pp)->o == o) { WorkNode *n = *pp; *pp = n->next; free(n); break; }
-	pthread_mutex_unlock(&klock);
+	klock_give();
 }
 
 /* the wait queue (o->m held): FIFO, or by priority when the object was created with
@@ -896,7 +996,7 @@ static uint32_t sema_signal(Obj *o, int n, uint32_t eovf) {
 }
 static void h_wait_sema(Cpu *c) { Obj *o = by_uid(A0, SEMA); RET(o ? sema_wait(o, (int)A1, A2, 0, 0, E_WAIT_DELETE) : E_UNKNOWN_SEMA_ID); }   /* (uid, need, *timeout) */
 static void h_poll_sema(Cpu *c) { Obj *o = by_uid(A0, SEMA); RET(o ? sema_wait(o, (int)A1, 0, 1, E_SEMA_ZERO, E_WAIT_DELETE) : E_UNKNOWN_SEMA_ID); }
-static void h_signal_sema(Cpu *c) { Obj *o = by_uid(A0, SEMA); RET(o ? sema_signal(o, (int)A1, E_SEMA_OVF) : E_UNKNOWN_SEMA_ID); }
+static void h_signal_sema(Cpu *c) { objev_count(A0); Obj *o = by_uid(A0, SEMA); RET(o ? sema_signal(o, (int)A1, E_SEMA_OVF) : E_UNKNOWN_SEMA_ID); }
 static void h_delete_sema(Cpu *c) { h_delete_uid(c, SEMA, E_UNKNOWN_SEMA_ID); }
 static void h_sema_info(Cpu *c) {   /* (uid, *SceKernelSemaInfo 0x3c) */
 	Obj *o = by_uid(A0, SEMA);
@@ -916,7 +1016,11 @@ static void h_sema_info(Cpu *c) {   /* (uid, *SceKernelSemaInfo 0x3c) */
 static uint32_t mutex_lock(Obj *o, int n, uint32_t timeout_p, int try_only, int lw) {
 	uint32_t L = lw ? 0x40 : 0;
 	if (n <= 0 || (!o->recursive && n != 1)) return E_ILLEGAL_COUNT;
-	pthread_mutex_lock(&o->m);
+	if (lw) lwm_ph = 3;
+	if (lw && lwm_log_on()) fprintf(stderr, "    lwm-mlock enter uid %#x tid %#x\n", o->uid, cur_tid);
+	pthread_mutex_lock(&o->m); o->m_held = cur_tid;
+	if (lw) lwm_ph = 4;
+	if (lw && lwm_log_on()) fprintf(stderr, "    lwm-mlock got uid %#x tid %#x\n", o->uid, cur_tid);
 	uint32_t r = 0;
 	if (o->deleted) r = E_UNKNOWN_MUTEX_ID + L;
 	else if (o->count && o->owner == cur_tid) {
@@ -925,8 +1029,8 @@ static uint32_t mutex_lock(Obj *o, int n, uint32_t timeout_p, int try_only, int 
 		else o->count += n;
 	} else if (!o->count) { o->owner = cur_tid; o->count = n; }
 	else if (try_only) r = E_MUTEX_FAILED_TO_OWN + L;
-	else { Waiter w = { .need = n }; r = wait_on(o, &w, timeout_p, lw ? E_WAIT_DELETE_LW_MUTEX : E_WAIT_DELETE_MUTEX, lw ? 7 : 6); }
-	pthread_mutex_unlock(&o->m);
+	else { if (lw) lwm_ph = 5; Waiter w = { .need = n }; r = wait_on(o, &w, timeout_p, lw ? E_WAIT_DELETE_LW_MUTEX : E_WAIT_DELETE_MUTEX, lw ? 7 : 6); }
+	o->m_held = 0; pthread_mutex_unlock(&o->m);
 	return r;
 }
 static void mutex_release(Obj *o) {   /* o->m held, the owner's last count gone: to the queue head, or free */
@@ -936,12 +1040,13 @@ static void mutex_release(Obj *o) {   /* o->m held, the owner's last count gone:
 static uint32_t mutex_unlock(Obj *o, int n, int lw) {
 	uint32_t L = lw ? 0x40 : 0;
 	if (n <= 0 || (!o->recursive && n != 1)) return E_ILLEGAL_COUNT;
-	pthread_mutex_lock(&o->m);
+	if (lw) lwm_ph = 22;
+	pthread_mutex_lock(&o->m); o->m_held = cur_tid;
 	uint32_t r = 0;
 	if (!o->count || o->owner != cur_tid) r = E_MUTEX_NOT_OWNED + L;
 	else if (n > o->count) r = E_MUTEX_UNLOCK_UDF + L;
 	else if (!(o->count -= n)) mutex_release(o);
-	pthread_mutex_unlock(&o->m);
+	o->m_held = 0; pthread_mutex_unlock(&o->m);
 	return r;
 }
 static uint32_t mutex_init(Obj *o, uint32_t attr, int init) {
@@ -980,7 +1085,9 @@ static void h_create_lwmutex(Cpu *c) {   /* (work, name, attr, init count, opt) 
 }
 static Obj *lwmutex(uint32_t work) {   /* one made by hand (work area zeroed, never created) is created on first use */
 	Obj *o = by_work(work, LWMUTEX);
+	if (lwm_log_on()) fprintf(stderr, "    lwm-lookup work %#x -> %#x\n", work, o ? o->uid : 0);
 	if (!o) { o = new_obj_at(LWMUTEX, 0, 2, work); o->recursive = 1; }
+	if (lwm_log_on()) fprintf(stderr, "    lwm-obj work %#x uid %#x\n", work, o->uid);
 	return o;
 }
 /* RECOMP_LOG_LWMUTEX=1: every failing lock/unlock of a lightweight mutex, once per (work area, call site, code) --
@@ -988,9 +1095,13 @@ static Obj *lwmutex(uint32_t work) {   /* one made by hand (work area zeroed, ne
  * means some unlock isn't landing */
 static struct { uint32_t work, lr, tid, r, up; int count; char op; } lw_ring[1024]; static unsigned lw_ring_n;   /* the last operations (RECOMP_LOG_LWMUTEX) */
 static void lw_log(const char *what, uint32_t work, uint32_t r, Cpu *c) {
-	static int on = -1; if (on < 0) on = getenv("RECOMP_LOG_LWMUTEX") != 0;
+	int on = lwm_log_on();
+	lwm_ph = 7;
 	if (!on) return;
+	if (on) fprintf(stderr, "    lwm-log enter %s work %#x tid %#x\n", what, work, cur_tid);
 	Obj *ob = by_work(work, LWMUTEX); int cnt = ob ? ob->count : -1;
+	lwm_ph = 8;
+	if (on) fprintf(stderr, "    lwm-log looked %s work %#x\n", what, work);
 	{	unsigned k = __atomic_fetch_add(&lw_ring_n, 1, __ATOMIC_RELAXED) % 1024;
 		lw_ring[k].work = work; lw_ring[k].lr = c->r[14]; lw_ring[k].up = c->r[13] + 24 > c->r[13] ? RD32(c->r[13] + 20) : 0; lw_ring[k].tid = cur_tid; lw_ring[k].r = r; lw_ring[k].count = cnt; lw_ring[k].op = what[0];
 	}
@@ -1012,9 +1123,30 @@ static void lw_log(const char *what, uint32_t work, uint32_t r, Cpu *c) {
 	Obj *o = by_work(work, LWMUTEX);
 	fprintf(stderr, "    lwmutex %#x %s by %#x (%s) from lr %#x: %#x; owner %#x count %d\n", work, what, cur_tid, SELF()->name, c->r[14], r, o ? o->owner : 0, o ? o->count : -1);
 }
-static void h_lock_lwmutex(Cpu *c) { uint32_t w = A0, r = mutex_lock(lwmutex(w), (int)A1, A2, 0, 1); lw_log("lock", w, r, c); RET(r); }
+static void h_lock_lwmutex(Cpu *c) {
+	uint32_t w = A0;
+	lwm_ph = 1;
+	if (lwm_log_on()) fprintf(stderr, "    lwm-lock enter work %#x n %#x tid %#x lr %#x\n", w, A1, cur_tid, c->r[14]);
+	if (lwm_count_on) __atomic_add_fetch(&SELF()->lw_lookup_enter, 1, __ATOMIC_RELAXED);
+	Obj *o = lwmutex(w);
+	if (lwm_count_on) __atomic_add_fetch(&SELF()->lw_lookup_return, 1, __ATOMIC_RELAXED);
+	lwm_ph = 2;
+	if (lwm_log_on()) fprintf(stderr, "    lwm-lock obj %#x owner %#x count %d\n", o->uid, o->owner, o->count);
+	uint32_t r = mutex_lock(o, (int)A1, A2, 0, 1);
+	lwm_ph = 6;
+	if (lwm_log_on()) fprintf(stderr, "    lwm-lock done work %#x r %#x\n", w, r);
+	lw_log("lock", w, r, c); lwm_ph = 0; RET(r);
+}
 static void h_trylock_lwmutex(Cpu *c) { uint32_t w = A0, r = mutex_lock(lwmutex(w), (int)A1, 0, 1, 1); lw_log("trylock", w, r, c); RET(r); }
-static void h_unlock_lwmutex(Cpu *c) { uint32_t w = A0, r = mutex_unlock(lwmutex(w), (int)A1, 1); lw_log("unlock", w, r, c); RET(r); }
+static void h_unlock_lwmutex(Cpu *c) {
+	uint32_t w = A0;
+	lwm_ph = 21;
+	if (lwm_log_on()) fprintf(stderr, "    lwm-unlock enter work %#x n %#x tid %#x lr %#x\n", w, A1, cur_tid, c->r[14]);
+	uint32_t r = mutex_unlock(lwmutex(w), (int)A1, 1);
+	lwm_ph = 23;
+	if (lwm_log_on()) fprintf(stderr, "    lwm-unlock done work %#x r %#x\n", w, r);
+	lw_log("unlock", w, r, c); lwm_ph = 0; RET(r);
+}
 static void h_delete_lwmutex(Cpu *c) { h_delete_work(c, LWMUTEX, E_UNKNOWN_LW_MUTEX_ID); }
 /* for hooks.c: a lightweight mutex the calling thread holds let go of wholly, and taken again with the same count -- a game
  * holding its own lock across a call that waits for a thread that wants that lock (Killzone's video wrapper) */
@@ -1031,11 +1163,11 @@ void kernel_lwmutex_retake(uint32_t work, int n) { if (n > 0) mutex_lock(lwmutex
  * out or deleted. Signal wakes the queue head, SignalAll everyone, SignalTo one named thread. */
 static uint32_t cond_wait(Obj *o, Obj *mx, uint32_t timeout_p, int lw) {
 	uint32_t r = 0;
-	pthread_mutex_lock(&o->m);
-	if (o->deleted) { pthread_mutex_unlock(&o->m); return lw ? E_UNKNOWN_LW_COND_ID : E_UNKNOWN_COND_ID; }
-	pthread_mutex_lock(&mx->m);
+	pthread_mutex_lock(&o->m); o->m_held = cur_tid;
+	if (o->deleted) { o->m_held = 0; pthread_mutex_unlock(&o->m); return lw ? E_UNKNOWN_LW_COND_ID : E_UNKNOWN_COND_ID; }
+	pthread_mutex_lock(&mx->m); mx->m_held = cur_tid;
 	if (!mx->count || mx->owner != cur_tid) {
-		pthread_mutex_unlock(&mx->m); pthread_mutex_unlock(&o->m);
+		mx->m_held = 0; pthread_mutex_unlock(&mx->m); o->m_held = 0; pthread_mutex_unlock(&o->m);
 		static int said; if (!said++) fprintf(stderr, "    %s waited on by thread %#x without holding its mutex (returns NOT_OWNED, as the kernel's unlock would)\n", lw ? "LwCond" : "Cond", cur_tid);
 		return lw ? E_LW_MUTEX_NOT_OWNED : E_MUTEX_NOT_OWNED;
 	}
@@ -1044,7 +1176,7 @@ static uint32_t cond_wait(Obj *o, Obj *mx, uint32_t timeout_p, int lw) {
 	pthread_mutex_unlock(&mx->m);   /* the signaller needs only o->m, which stays held into the sleep: no signal can slip between the release and the wait */
 	Waiter w = { 0 };
 	r = wait_on(o, &w, timeout_p, lw ? E_WAIT_DELETE_LW_COND : E_WAIT_DELETE_COND, lw ? 11 : 10);
-	pthread_mutex_unlock(&o->m);
+	o->m_held = 0; pthread_mutex_unlock(&o->m);
 	int cbw = cb_wait; cb_wait = 0;   /* taking the mutex back is part of the wait, and not one a callback may interrupt: a retry re-enters with the mutex held */
 	mutex_lock(mx, held, 0, 0, lw);
 	cb_wait = cbw;
@@ -1206,6 +1338,7 @@ static uint32_t sevent_wait(Obj *o, uint32_t bits, uint32_t out, uint32_t udata,
 static void h_wait_sevent(Cpu *c) { Obj *o = by_uid(A0, SEVENT); RET(o ? sevent_wait(o, A1, A2, A3, STK(0), 0) : E_UNKNOWN_EVENT_ID); }   /* (uid, waitPattern, *resultPattern, *userData, *timeout) */
 static void h_poll_sevent(Cpu *c) { Obj *o = by_uid(A0, SEVENT); RET(o ? sevent_wait(o, A1, A2, A3, 0, 1) : E_UNKNOWN_EVENT_ID); }
 static void h_set_sevent(Cpu *c) {   /* (uid, setPattern, userData (r2:r3)) */
+	objev_count(A0);
 	Obj *o = by_uid(A0, SEVENT); if (!o) { RET(E_UNKNOWN_EVENT_ID); return; }
 	pthread_mutex_lock(&o->m);
 	o->bits |= A1; o->udata = (uint64_t)A2 | ((uint64_t)A3 << 32);
@@ -1298,6 +1431,49 @@ void kernel_report_locks(void) {
 		pthread_mutex_unlock(&o->m);
 	}
 }
+/* RECOMP_STALL_DUMP's per-thread evidence (main.c's watchdog): the innermost call site each
+ * guest thread's code last executed (c->r[14] is the return address of its last call) -- the one
+ * position marker a build without -DRECOMP_TRACE still has for a thread spinning in pure guest
+ * code, which makes no imports and so leaves no other trace */
+void kernel_hle_in(const char *name) { Thread *t = SELF(); if (t) t->in_hle = name; }
+void kernel_report_pcs(void) {
+	uint32_t kh = klock_held;   /* snapshot BEFORE the dump takes klock itself: after klock_take the
+	                             * marker is the dump's own tid and every print would be self-report */
+	klock_take();
+	if (kh) fprintf(stderr, "  stall: klock HELD BY tid %#x (pre-dump snapshot)\n", kh);
+	for (int i = 0; i < nthreads; i++) {
+		Thread *t = &threads[i];
+		if (!t->started || t->done || !t->cpu) continue;
+		fprintf(stderr, "  stall: thread %d uid %#x %-16s lr %#x sp %#x r0 %#x r1 %#x r2 %#x r3 %#x r4 %#x r5 %#x r6 %#x r7 %#x r8 %#x r9 %#x r10 %#x r11 %#x r12 %#x hle %s\n",
+		        i, t->uid, t->name, t->cpu->r[14], t->cpu->r[13], t->cpu->r[0], t->cpu->r[1], t->cpu->r[2], t->cpu->r[3],
+		        t->cpu->r[4], t->cpu->r[5], t->cpu->r[6], t->cpu->r[7],
+		        t->cpu->r[8], t->cpu->r[9], t->cpu->r[10], t->cpu->r[11], t->cpu->r[12], t->in_hle ? t->in_hle : "-");
+		fprintf(stderr, "  stall: lwm-phas tid %#x ph %u\n", t->uid, t->lw_phase);
+		if (lwm_count_on) fprintf(stderr, "  stall: lwm-lookup-count tid %#x entered %llu returned %llu\n", t->uid,
+		    (unsigned long long)__atomic_load_n(&t->lw_lookup_enter, __ATOMIC_RELAXED),
+		    (unsigned long long)__atomic_load_n(&t->lw_lookup_return, __ATOMIC_RELAXED));
+		if (!t->in_hle) {   /* the guest call-frame chain (each frame's saved lr) for threads in pure guest code */
+			fprintf(stderr, "  stall: stack tid %#x", t->uid);
+			for (int w = 0; w < 40; w++) fprintf(stderr, " %08x", ((uint32_t *)G(t->cpu->r[13]))[w]);
+			fprintf(stderr, "\n");
+		}
+	}
+	/* who waits on which object, and whose it is: the blocked-while-holding chain */
+	for (int i = 0; i < nobjs; i++) {
+		Obj *o = obj_at((uint32_t)i);
+		if (!o || o->deleted) continue;
+		if ((o->kind == MUTEX || o->kind == LWMUTEX) && o->owner)
+			fprintf(stderr, "  stall: mutex kind %d uid %#x work %#x HELD BY tid %#x count %d\n",
+			        o->kind, o->uid, o->work, o->owner, o->count);
+		if (o->m_held)
+			fprintf(stderr, "  stall: o->m of kind %d uid %#x work %#x HELD BY tid %#x\n",
+			        o->kind, o->uid, o->work, o->m_held);
+		for (Waiter *w = o->head; w; w = w->next)
+			fprintf(stderr, "  stall: wait tid %#x on kind %d uid %#x owner %#x count %d bits %#x\n",
+			        w->tid, o->kind, o->uid, o->owner, o->count, o->bits);
+	}
+	klock_give();
+}
 void kernel_notify_callback(uint32_t uid, uint32_t count, uint32_t arg) { Obj *o = by_uid(uid, CALLBACK); if (o) cb_notify(o, 0, count, arg); }
 int kernel_callback_valid(uint32_t uid) { return by_uid(uid, CALLBACK) != 0; }
 /* sleep until a CLOCK_MONOTONIC time, running this thread's callbacks as they are notified
@@ -1367,6 +1543,7 @@ static void h_lock_lwmutex_cb(Cpu *c) { cb_call(c, h_lock_lwmutex); }
 static void h_wait_cond_cb(Cpu *c) { cb_call(c, h_wait_cond); }
 static void h_wait_lwcond_cb(Cpu *c) { cb_call(c, h_wait_lwcond); }
 static void h_wait_thread_end_cb(Cpu *c) { cb_call(c, h_wait_thread_end); }
+static void h_wait_signal_cb(Cpu *c) { cb_call(c, h_wait_signal); }
 static void h_delay_cb(Cpu *c) {
 	uint32_t us = A0 ? A0 : 1;
 	run_callbacks(c);
@@ -1546,8 +1723,13 @@ static void h_msgpipe_info(Cpu *c) {   /* (uid, *SceKernelMppInfo 0x3c) */
  * of a function, which the recompiled C cannot do -- so a fiber here is a host thread of its own,
  * over its own Cpu and the guest stack the game supplied, parked on a handoff while it isn't the
  * one running: the same way the host runs ULT ulthreads. A fiber with no context (addrContext 0)
- * runs on its thread's stack below the caller and starts from its entry at every Run, as the
- * SDK's does. The game's SceFiber (128 bytes it owns) holds a tag and the host object's address. */
+ * starts from its entry at every Run, as the SDK's does; its stack is its OWN private guest
+ * memory: the game cannot observe a context-less fiber's stack location (sceFiberInfo
+ * reports addrContext/sizeContext 0), and the runtime's old placement -- a 512-byte carve below
+ * the caller's sp -- put the fiber's frames inside a neighbouring strand's live stack region,
+ * where a concurrent chain clobbered its saved registers (the phantom parent-set wrote
+ * from a smashed saved r4). The game's SceFiber (128
+ * bytes it owns) holds a tag and the host object's address. */
 typedef struct Fiber {
 	uint32_t addr;                    /* the guest SceFiber */
 	uint32_t entry, arg_init, ctx, ctx_size;
@@ -1573,6 +1755,9 @@ static void fiber_identity(Fiber *f) {   /* the fiber's host thread is the threa
 	cur_tid = t->uid; cur_thread = t == &main_thread ? 0 : t; recomp_tpidruro = t->tls; cur_fiber = f;
 }
 static void fiber_park(Fiber *f) {   /* flock held: until a Run/Switch resumes it; a finalize ends the host thread (its guest stack is abandoned) */
+	extern __thread uint32_t recomp_switch_seq; extern __thread int recomp_excl_valid; extern __thread int recomp_excl_drop_reason;
+	recomp_switch_seq++;   /* a fiber context switch -- rt.h's staleness check flags an strex that succeeds across it (the firmware's monitor would have been cleared) */
+	recomp_excl_valid = 0; recomp_excl_drop_reason = 3;   /* the firmware's exclusive monitor does not survive a context switch (fiber or thread) -- a strex after this park must fail and its loop retry (monitor_test case 3 fail-before/pass-after) */
 	while (!f->go && !f->finalize) pthread_cond_wait(&f->cv, &flock);
 	f->go = 0;
 	if (f->finalize) { pthread_mutex_unlock(&flock); pthread_cond_destroy(&f->cv); free(f); pthread_exit(0); }
@@ -1596,6 +1781,7 @@ static void *fiber_main(void *p) {
 	memset(c, 0, sizeof *c);
 	c->r[0] = f->arg_init; c->r[1] = f->run_arg;
 	c->r[13] = f->ctx ? (f->ctx + f->ctx_size) & ~7u : f->sp0; c->r[14] = 0xfffffffe; c->fpscr = 0x03000000;
+	fprintf(stderr, "    fiber '%s' start addr %#x ctx %#x+%#x sp0 %#x sp %#x\n", f->name, f->addr, f->ctx, f->ctx_size, f->sp0, c->r[13]);
 	pthread_mutex_unlock(&flock);
 	extern GuestFn guest_lookup(uint32_t a);
 	GuestFn fn = guest_lookup(f->entry & ~1u);
@@ -1639,6 +1825,10 @@ static uint32_t fiber_init(Cpu *c, uint32_t fiber, uint32_t name, uint32_t entry
 }
 static void h_fiber_init(Cpu *c) { RET(fiber_init(c, A0, A1, A2, A3, STK(0), STK(1))); }   /* (fiber, name, entry, argOnInitialize, addrContext, sizeContext, params[, sdk version]) */
 static void h_fiber_opt_param_init(Cpu *c) { if (!A0) { RET(E_FIBER_NULL); return; } memset(G(A0), 0, 128); RET(0); }
+static void fiber_stack_private(Fiber *f) {   /* a context-less fiber's stack is its own guest memory, not a carve below the caller */
+	if (f->sp0) return;                     /* the restart copies the struct: the incarnation stack is reused */
+	f->sp0 = (guest_alloc(0x10000, 16) + 0x10000) & ~7u;
+}
 static void h_fiber_run(Cpu *c) {   /* (fiber, argOnRunTo, *argOnReturn): from a thread */
 	Fiber *f = fiber_of(A0);
 	if (!A0) { RET(E_FIBER_NULL); return; }
@@ -1648,13 +1838,13 @@ static void h_fiber_run(Cpu *c) {   /* (fiber, argOnRunTo, *argOnReturn): from a
 	pthread_mutex_lock(&flock);
 	if (f->state == F_RUNNING) { pthread_mutex_unlock(&flock); RET(E_FIBER_STATE); return; }
 	t->tls = recomp_tpidruro;   /* this host thread IS the thread: its TLS is what its fibers share */
-	if (!f->ctx) {   /* context-less: a fresh start every run, on this thread's stack below the caller */
+	if (!f->ctx) {   /* context-less: a fresh start every run, on its own private stack */
 		if (f->started) {   /* its previous run is parked mid-entry: that incarnation ends; a new host thread starts the entry over */
 			Fiber *old = f; f = calloc(1, sizeof *f); *f = *old; f->started = f->go = 0; pthread_cond_init(&f->cv, 0);
 			WR64(f->addr + 8, (uint64_t)(uintptr_t)f);
 			old->finalize = 1; pthread_cond_broadcast(&old->cv);
 		}
-		f->sp0 = (c->r[13] - 512) & ~7u;
+		fiber_stack_private(f);
 	}
 	fiber_resume(f, t, A1);
 	while (!t->fgo) pthread_cond_wait(thread_fcv(t), &flock);
@@ -1684,7 +1874,7 @@ static void h_fiber_switch(Cpu *c) {   /* (fiber, argOnRunTo, *argOnRun): from a
 	if (g->state == F_RUNNING) { pthread_mutex_unlock(&flock); RET(E_FIBER_STATE); return; }
 	if (!g->ctx) {
 		if (g->started) { Fiber *old = g; g = calloc(1, sizeof *g); *g = *old; g->started = g->go = 0; pthread_cond_init(&g->cv, 0); WR64(g->addr + 8, (uint64_t)(uintptr_t)g); old->finalize = 1; pthread_cond_broadcast(&old->cv); }
-		g->sp0 = (c->r[13] - 512) & ~7u;   /* below this fiber's own stack (the thread's, if this one is context-less too) */
+		fiber_stack_private(g);   /* its own guest stack, not a carve below this fiber's sp */
 	}
 	f->state = F_SUSPENDED; f->run_arg_p = A2;
 	fiber_resume(g, f->thread, A1);
@@ -1693,6 +1883,141 @@ static void h_fiber_switch(Cpu *c) {   /* (fiber, argOnRunTo, *argOnRun): from a
 	RET(0);
 }
 static void h_fiber_get_self(Cpu *c) { if (!A0) { RET(E_FIBER_NULL); return; } WR32(A0, cur_fiber ? cur_fiber->addr : 0); RET(0); }   /* (SceFiber **): 0 on a thread */
+/* the internal attach pair libult creates its ULT threads with (Vita3K SceFiber.cpp is the
+ * reference): give `fiber` its context stack (addrContext..+sizeContext), then run it from the
+ * thread / switch to it from the current fiber. The switching fiber is suspended with r0 =
+ * SCE_FIBER_OK and its argOnRun pointer saved; the target runs with argOnRunTo. */
+static void fiber_attach_context(Fiber *g, uint32_t a, uint32_t sz) {
+	if (a && sz) { g->ctx = a; g->ctx_size = sz; g->sp0 = (a + sz) & ~7u; }
+}
+/* the store-trace window (rt.h's WR accessors log into it): the worker's CAS state word. */
+uint32_t recomp_watch_lo, recomp_watch_hi;
+void recomp_watch_write(uint32_t a, uint32_t v, int width) {
+	extern const char *recomp_cur_tname(void);
+	fprintf(stderr, "    watch write ea=%#x val=%#x w=%d pc=%#x thread=%s fib=%#x hf=%p ret=%p\n",
+		a, v, width, cur_fiber ? cur_fiber->cpu.r[15] : (SELF() && SELF()->cpu ? SELF()->cpu->r[15] : 0), recomp_cur_tname(),
+		cur_fiber ? cur_fiber->addr : 0, (void *)cur_fiber, __builtin_return_address(0));
+}
+
+/* the ULT creation/parent-ownership chain trace (RECOMP_ULT_TRACE=1; compiled in always,
+ * quiet when the env is unset). The generated libult code's spawn/adopt/parent-write sites call
+ * this with an event tag and four values (per site's meaning: adopt carries the thread's current
+ * parent in d, parent-* writers the value they write in b). The record table remembers each
+ * object's parent as last WRITTEN by a traced writer and flags any observed change with no
+ * writer in between (ULT-DIVERGENCE: the "corrupted parent" discriminator -- a producer outside
+ * the traced chain, e.g. a host-side bulk copy or a guest link write). Logged per event:
+ * the host thread (name/uid), its fiber and scheduler slot state at the moment of the event. */
+static int ult_tr_on(void) { static int on = -1; if (on < 0) on = getenv("RECOMP_ULT_TRACE") != 0; return on; }
+static void ult_tr_arm_watch(void) {  /* RECOMP_WATCH_FIXED=<addr>,<len>: write-watch on a fixed window */
+	static int done;
+	if (done) return;
+	done = 1;
+	const char *wf = getenv("RECOMP_WATCH_FIXED");
+	if (wf && *wf) {
+		recomp_watch_lo = (uint32_t)strtoul(wf, NULL, 0);
+		const char *cma = strchr(wf, ',');
+		recomp_watch_hi = cma ? (uint32_t)strtoul(cma + 1, NULL, 0) : 8u;
+		fprintf(stderr, "watch-fixed lo=%#x hi=%#x\n", recomp_watch_lo, recomp_watch_hi);
+	}
+}
+#define ULT_TR_MAX 96
+static struct { uint32_t obj, parent; unsigned seq; const char *writer; } ult_tr_objs[ULT_TR_MAX];
+static unsigned ult_tr_seq;
+void recomp_ult_trace(const char *tag, uint32_t a, uint32_t b, uint32_t d, uint32_t e, uint32_t f, uint32_t g) {
+	ult_tr_arm_watch();
+	if (!ult_tr_on()) return;
+	unsigned seq = ++ult_tr_seq;
+	int is_writer = !strncmp(tag, "parent-", 7),
+	    is_adopt = tag[0] == 'a' && tag[1] == 'd';   /* adopt-A..D */
+	if (a && (is_writer || is_adopt)) {
+		int slot = -1;
+		for (int i = 0; i < ULT_TR_MAX; i++) {
+			if (ult_tr_objs[i].obj == a) { slot = i; break; }
+			if (slot < 0 && !ult_tr_objs[i].obj) slot = i;
+		}
+		if (slot >= 0) {
+			if (is_writer) {
+				ult_tr_objs[slot].obj = a; ult_tr_objs[slot].parent = b;
+				ult_tr_objs[slot].seq = seq; ult_tr_objs[slot].writer = tag;
+			} else if (!ult_tr_objs[slot].obj) {
+				ult_tr_objs[slot].obj = a; ult_tr_objs[slot].parent = d;
+				ult_tr_objs[slot].seq = seq; ult_tr_objs[slot].writer = "first-seen";
+			} else if (ult_tr_objs[slot].parent != d) {
+				fprintf(stderr, "ULT-DIVERGENCE obj=%#x parent now %#x (last written %#x by %s at seq %u) at %s seq %u\n",
+					a, d, ult_tr_objs[slot].parent, ult_tr_objs[slot].writer, ult_tr_objs[slot].seq, tag, seq);
+				ult_tr_objs[slot].parent = d; ult_tr_objs[slot].seq = seq; ult_tr_objs[slot].writer = "observed-change";
+			}
+		}
+	}
+	uint32_t ultid = 0;   /* the ULT current-thread slot (key 0x43): distinguishes ULT streams on one fiber */
+	if (SELF()->tls_keys) ultid = RD32(SELF()->tls_keys + 4 * 0x43);
+	fprintf(stderr, "ult-trace %u %s a=%#x b=%#x d=%#x e=%#x f=%#x g=%#x thr=%s tid=%#x fib=%#x hf=%p ult=%#x s=%d\n",
+		seq, tag, a, b, d, e, f, g, recomp_cur_tname(), cur_tid, cur_fiber ? cur_fiber->addr : 0,
+		(void *)cur_fiber, ultid, SELF()->s_state);
+}
+
+static void h_fiber_attach_and_switch(Cpu *c) {   /* (fiber, addrContext, sizeContext, argOnRunTo, *argOnRun) */
+	Fiber *f = cur_fiber, *g = fiber_of(A0);
+	if (A0 && !(A0 & 3)) {
+		fprintf(stderr, "fiber attach: %#x registered=%d; obj-full:", A0, g != 0);
+		for (int i = -8; i < 48; i++) { if (!((i + 8) % 8)) fprintf(stderr, "\n    [%02x]", 4 * i); fprintf(stderr, " %08x", RD32(A0 + 4 * i)); }
+		fprintf(stderr, "\n    ctx-bottom:");
+		if (A1 && A2) for (uint32_t a = A1; a < A1 + 80; a += 4) fprintf(stderr, " %08x", RD32(a));
+		fprintf(stderr, "\n    ctx-top:");
+		if (A1 && A2) for (uint32_t a = (A1 + A2 - 48) & ~3u; a < A1 + A2; a += 4) fprintf(stderr, " %08x", RD32(a));
+		fprintf(stderr, "\n    argOnRun@%#x:", STK(0) & ~1u);
+		if (STK(0) > 0x10000) for (int i = -4; i < 12; i++) fprintf(stderr, " %08x", RD32((STK(0) & ~1u) + 4 * i));
+		{ uint32_t dp = RD32(A0 + 0x94);   /* obj+0xb4: the r5 descriptor */
+			fprintf(stderr, "\n    desc@%#x:", dp);
+			if (dp > 0x10000) { for (int i = 0; i < 12; i++) fprintf(stderr, " %08x", RD32(dp + 4 * i));
+				uint32_t own = RD32(dp); fprintf(stderr, "  cas@%#x=%08x", own + 0xa0, own > 0x10000 ? RD32(own + 0xa0) : 0);
+				if (own > 0x10000) { recomp_watch_lo = own + 0xa0; recomp_watch_hi = 8; } } }   /* watch the CAS word from here on */
+		fprintf(stderr, "  [ctx %#x size %#x arg %#x]\n", A1, A2, A3);
+	}
+	if (!A0) { RET(E_FIBER_NULL); return; }
+	if (!f) { RET(E_FIBER_PERMISSION); return; }
+	pthread_mutex_lock(&flock);
+	if (g && g->state == F_RUNNING) { pthread_mutex_unlock(&flock); RET(E_FIBER_STATE); return; }
+	if (!g) {   /* a fresh SceFiber: the attach CREATES the worker fiber and switches into it.
+	             * The reference asserts !fiber->addrContext here and runs the fiber at its entry
+	             * (SceFiberEntry(argOnInitialize, argOnRun)); the guest's struct is blank at this
+	             * point (measured), so the entry comes from the spawning fiber itself --
+	             * the ULT worker is another incarnation of the same entry shape (its
+	             * scheduler fibers all run the same entry). */
+		if (!A1 || !A2 || (A2 & 7) || (A1 & 7) || !f->entry) { pthread_mutex_unlock(&flock); RET(E_FIBER_INVALID); return; }
+		g = calloc(1, sizeof *g);
+		pthread_cond_init(&g->cv, 0);
+		g->addr = A0; g->entry = f->entry; g->arg_init = f->arg_init;
+		g->ctx = A1; g->ctx_size = A2;
+		snprintf(g->name, sizeof g->name, "%.24s", f->name);
+		WR32(A0, FIBER_TAG); WR32(A0 + 4, 0); WR64(A0 + 8, (uint64_t)(uintptr_t)g);
+	}
+	fiber_attach_context(g, A1, A2);
+	f->state = F_SUSPENDED; f->run_arg_p = STK(0);
+	fiber_resume(g, f->thread, A3);
+	fiber_park(f);
+	pthread_mutex_unlock(&flock);
+	RET(0);
+}
+static void h_fiber_attach_and_run(Cpu *c) {   /* (fiber, addrContext, sizeContext, argOnRunTo, *argOnReturn) */
+	Fiber *f = fiber_of(A0);
+	if (!A0) { RET(E_FIBER_NULL); return; }
+	if (!f) { RET(E_FIBER_INVALID); return; }
+	if (cur_fiber) { RET(E_FIBER_PERMISSION); return; }
+	Thread *t = SELF();
+	pthread_mutex_lock(&flock);
+	if (f->state == F_RUNNING) { pthread_mutex_unlock(&flock); RET(E_FIBER_STATE); return; }
+	t->tls = recomp_tpidruro;   /* this host thread IS the thread: its TLS is what its fibers share */
+	fiber_attach_context(f, A1, A2);
+	fiber_resume(f, t, A3);
+	while (!t->fgo) pthread_cond_wait(thread_fcv(t), &flock);
+	t->fgo = 0;
+	if (t->fexit) { pthread_mutex_unlock(&flock); pthread_exit(0); }   /* the fiber ended the thread */
+	uint32_t ret = t->fret_arg;
+	pthread_mutex_unlock(&flock);
+	if (STK(0)) WR32(STK(0), ret);
+	RET(0);
+}
 static void h_fiber_finalize(Cpu *c) {
 	Fiber *f = fiber_of(A0);
 	if (!A0) { RET(E_FIBER_NULL); return; }
@@ -1732,9 +2057,9 @@ static void h_backtrace_self(Cpu *c) { if (A2) WR32(A2, 0); RET(0); }
 static void open_named(Cpu *c, int kind) {
 	const char *name = A0 ? (const char *)G(A0) : "";
 	Obj *found = 0;
-	pthread_mutex_lock(&klock);
+	klock_take();
 	for (int i = nobjs - 1; i >= 0 && !found; i--) { Obj *o = obj_at((uint32_t)i); if (o && o->kind == kind && !o->deleted && o->name[0] && !strcmp(o->name, name)) found = o; }
-	pthread_mutex_unlock(&klock);
+	klock_give();
 	RET(found ? found->uid : E_UID_CANNOT_FIND_BY_NAME);
 }
 static void h_open_sema(Cpu *c) { open_named(c, SEMA); }
@@ -1762,6 +2087,35 @@ static void h_tls_addr(Cpu *c) {   /* the guest thread's, not the host thread's:
 	RET(A0 < 256 ? t->tls_keys + 4 * A0 : 0);
 }
 static void h_system_time_wide(Cpu *c) { uint64_t t = guest_time_us(); c->r[0] = (uint32_t)t; c->r[1] = (uint32_t)(t >> 32); }
+/* the kernel timers (CreateTimer/StartTimer/GetTimerTimeWide): the game's task subsystem keeps its
+ * deadlines on one of these -- with a stub that always read 0 its poll conditions could never fire.
+ * Reference semantics (Vita3K Timer, kernel/src/sync_primitives.cpp + SceThreadmgr.cpp): a restart
+ * continues the count from where it stopped, start() on a running timer returns 1, stop() returns 1
+ * when it froze and 0 when it was already stopped, an unknown timer id is SCE_KERNEL_ERROR_UNKNOWN_
+ * TIMER_ID (0x80028241) and the Wide query gives all ones for one (an error code could be taken
+ * for a time). */
+#define E_UNKNOWN_TIMER 0x80028241u
+static void h_create_timer(Cpu *c) { Obj *o = new_obj(TIMER, A0, A1); RET(o->uid); }   /* (name, attr, opt) */
+static void h_start_timer(Cpu *c) {
+	Obj *o = by_uid(A0, TIMER); if (!o) { RET(E_UNKNOWN_TIMER); return; }
+	if (o->t_running) { RET(1); return; }   /* already running: 1 (Timer::start) */
+	o->t_start = mono_us() - (o->t_stop - o->t_start); o->t_running = 1; RET(0);   /* continues where it stopped */
+}
+static void h_stop_timer(Cpu *c) {
+	Obj *o = by_uid(A0, TIMER); if (!o) { RET(E_UNKNOWN_TIMER); return; }
+	if (!o->t_running) { RET(0); return; }   /* already stopped: 0 (Timer::stop) */
+	o->t_stop = mono_us(); o->t_running = 0; RET(1);
+}
+static uint64_t timer_us(Obj *o) { return (o->t_running ? mono_us() : o->t_stop) - o->t_start; }
+static void h_get_timer_time_wide(Cpu *c) {
+	Obj *o = by_uid(A0, TIMER);
+	uint64_t t = o ? timer_us(o) : ~0ull;   /* unknown timer: all ones, not an error code */
+	c->r[0] = (uint32_t)t; c->r[1] = (uint32_t)(t >> 32);
+}
+static void h_get_timer_time(Cpu *c) {
+	Obj *o = by_uid(A0, TIMER); if (!o) { RET(E_UNKNOWN_TIMER); return; }
+	WR64(A1, timer_us(o)); RET(0);   /* (uid, SceKernelTimerTime *t) */
+}
 
 /* the program's process parameters (mkimage.py's PPRM): older C libraries read their heap size
  * there; the standard streams are the console's TTYs, i.e. the host's */
@@ -1800,6 +2154,9 @@ const HleEntry hle_kernel[] = {
 	{"sceKernelExitDeleteThread", h_exit_delete_thread},
 	{"SceThreadmgr_0C8A38E1", h_exit_thread},   /* the system call under libkernel's sceKernelExitThread (the same NID in SceThreadmgrForDriver) */
 	{"sceKernelWaitThreadEnd", h_wait_thread_end}, {"sceKernelWaitThreadEndCB", h_wait_thread_end_cb},
+	{"sceKernelWaitSignal", h_wait_signal}, {"_sceKernelWaitSignal", h_wait_signal},
+	{"sceKernelWaitSignalCB", h_wait_signal_cb}, {"_sceKernelWaitSignalCB", h_wait_signal_cb},
+	{"sceKernelSendSignal", h_send_signal}, {"_sceKernelSendSignal", h_send_signal},
 	{"sceKernelGetThreadExitStatus", h_thread_exit_status}, {"sceKernelDeleteThread", h_delete_thread},
 	{"sceKernelDelayThread", h_delay}, {"sceKernelDelayThreadCB", h_delay_cb},
 	{"sceKernelGetThreadInfo", h_thread_info}, {"sceKernelGetThreadCurrentPriority", h_thread_current_priority},
@@ -1808,6 +2165,8 @@ const HleEntry hle_kernel[] = {
 	{"sceKernelRegisterThreadEventHandler", h_register_thread_event}, {"sceKernelUnregisterThreadEventHandler", h_unregister_thread_event},
 	{"sceKernelExitProcess", h_exit_process}, {"sceKernelCallModuleExit", h_exit_process}, {"sceKernelCallAbortHandler", h_abort_handler},
 	{"sceKernelGetTLSAddr", h_tls_addr}, {"__tls_get_addr", h_tls_get_addr}, {"sceKernelGetProcessParam", h_process_param}, {"sceKernelGetSystemTimeWide", h_system_time_wide},
+	{"sceKernelCreateTimer", h_create_timer}, {"sceKernelStartTimer", h_start_timer}, {"sceKernelStopTimer", h_stop_timer},
+	{"sceKernelGetTimerTimeWide", h_get_timer_time_wide}, {"sceKernelGetTimerTime", h_get_timer_time},
 	{"SceLibKernel_9F793F84", h_sdk_version}, {"sceKernelGetProcessTitleId", h_title_id}, {"sceKernelIsGameBudget", h_is_game_budget},
 	{"sceKernelGetStdin", h_stdin}, {"sceKernelGetStdout", h_stdout}, {"sceKernelGetStderr", h_stderr},
 	{"sceKernelCreateSema", h_create_sema}, {"sceKernelCreateSema_16XX", h_create_sema},
@@ -1844,6 +2203,7 @@ const HleEntry hle_kernel[] = {
 	{"sceKernelCancelMsgPipe", h_cancel_msgpipe}, {"sceKernelGetMsgPipeInfo", h_msgpipe_info},
 	{"_sceFiberInitializeImpl", h_fiber_init}, {"_sceFiberInitializeWithInternalOptionImpl", h_fiber_init}, {"sceFiberOptParamInitialize", h_fiber_opt_param_init},
 	{"sceFiberRun", h_fiber_run}, {"sceFiberSwitch", h_fiber_switch}, {"sceFiberReturnToThread", h_fiber_return}, {"sceFiberGetSelf", h_fiber_get_self},
+	{"_sceFiberAttachContextAndRun", h_fiber_attach_and_run}, {"_sceFiberAttachContextAndSwitch", h_fiber_attach_and_switch},
 	{"sceFiberFinalize", h_fiber_finalize}, {"sceFiberGetInfo", h_fiber_info},
 	{"sceKernelBacktraceSelf", h_backtrace_self},
 	{0, 0},
