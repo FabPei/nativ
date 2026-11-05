@@ -151,3 +151,24 @@ decodes from the bytes the target stores (gfx_soft.c's target_write_of and apply
     cc -O1 -g -Wall -I../gfx view_swz_test.c -o /tmp/view_swz_test && /tmp/view_swz_test
 
 It prints `420 checks, 0 failed` and exits 0.
+
+## SceAudiodec's ATRAC9 decoder: `audiodec_test.c`
+
+Checks `runtime/audio/audiodec.c` (ATRAC9 through the vendored LibAtrac9): InitLibrary/CreateDecoder fill the info
+(channels, rate, superframe, bit rate) and the ctrl's handle and maximum sizes from a synthetic configuration word;
+Decode of four hand-built minimal (silent) mono frames, written back to back, reports each frame's own bytes, the
+superframe's padding with the last frame, exactly one 1024-byte superframe and 512 bytes of PCM per frame; a corrupt
+frame is `API_FAIL`; other codec types are `INVALID_TYPE`; Delete of a deleted handle is `NOT_HANDLE_IN_USE`.
+
+    cc -O1 -g -Wall -D_GNU_SOURCE $INC audiodec_test.c ../../third_party/libatrac9/*.c -o /tmp/audiodec_test -lpthread -lm && /tmp/audiodec_test
+
+`-DFAIL_BEFORE` runs the checks against the behaviour without the file (every import unresolved: 0, nothing written).
+It prints `all passed` and exits 0.
+
+## SceCodecEngine's unmap-memory ranges: `codec_engine_test.c`
+
+Checks `h_ce_alloc` in `runtime/media/video.c`: a movie player's reference sequence (a 0x300000 block, then 0x80000
+aligned 0x40000 and 0x240000 aligned 0x100000) gets two nonzero, disjoint ranges inside the block, an alignment that
+fits is kept, and an allocation beyond the budget still fails. `-DVIDEO_UNDER_TEST='"<file>"'` compiles a different
+copy of `video.c` for a fail-before comparison. Same build line as `jpeg_test.c` without libraries beyond `-lpthread`.
+It prints `all passed` and exits 0.
