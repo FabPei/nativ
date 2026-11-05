@@ -23,7 +23,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)   # (runtime/platform/macos: rawdec.c is in 
 mkdir -p "$D/dl"; cd "$D/dl"
 # a download's sha256 against its pin above, so a tampered or changed archive stops the script
 verify() { local h; h=$(sha256sum "$1" 2>/dev/null | awk '{print $1}'); [[ -n $h ]] || h=$(shasum -a 256 "$1" | awk '{print $1}'); [[ $h == "$2" ]] && return; echo "checksum mismatch: $1 (expected $2, got $h)"; rm -f "$1"; exit 1; }
-fetch() { [[ -f $2 ]] || { curl -fL --retry 3 -o "$2.part" "$1" && verify "$2.part" "$3" && mv -f "$2.part" "$2"; }; }
+fetch() { [[ -f $2 ]] || { curl -fL --retry 5 --retry-all-errors -o "$2.part" "$1" && verify "$2.part" "$3" && mv -f "$2.part" "$2"; }; }
 fetch "https://github.com/libsdl-org/SDL/releases/download/release-$SDL/SDL3-$SDL.tar.gz" "SDL3-$SDL.tar.gz" "$SDL_SHA"
 fetch "https://github.com/KhronosGroup/SPIRV-Cross/archive/refs/tags/$SPIRV_CROSS.tar.gz" "SPIRV-Cross-$SPIRV_CROSS.tar.gz" "$SPIRV_CROSS_SHA"
 fetch "https://ffmpeg.org/releases/ffmpeg-$FFMPEG.tar.xz" "ffmpeg-$FFMPEG.tar.xz" "$FFMPEG_SHA"
@@ -50,7 +50,8 @@ if [[ ! -f ffmpeg/lib/libavcodec.a || ! -f ffmpeg/lib/libnativ_rawdec.a ]]; then
       --enable-static --disable-shared --enable-pic --disable-everything --disable-programs --disable-doc --disable-network --disable-autodetect \
       --disable-avdevice --disable-avformat --disable-swscale --disable-swresample --disable-avfilter --disable-debug \
       --enable-decoder=h264 --enable-parser=h264 --enable-parser=hevc --enable-decoder=aac > ../ffmpeg-configure.log \
-    && make -j"$(sysctl -n hw.ncpu)" > ../ffmpeg-build.log 2>&1 && make install >> ../ffmpeg-build.log 2>&1 \n    && clang $F -O2 -I. -c "$HERE/../ffmpeg/rawdec.c" -o rawdec.o && ar rcs "$D/ffmpeg/lib/libnativ_rawdec.a" rawdec.o )
+    && make -j"$(sysctl -n hw.ncpu)" > ../ffmpeg-build.log 2>&1 && make install >> ../ffmpeg-build.log 2>&1 \
+    && clang $F -O2 -I. -c "$HERE/../ffmpeg/rawdec.c" -o rawdec.o && ar rcs "$D/ffmpeg/lib/libnativ_rawdec.a" rawdec.o )
 fi
 # their licences beside them, as SDL's own install does (an install ships these libraries: Apache 2.0 and the LGPL ask for
 # the text, and the LGPL for where the source is)

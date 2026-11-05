@@ -25,7 +25,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)   # (runtime/platform/linux: rawdec.c is in 
 mkdir -p "$D/dl" "$D/bin"; cd "$D/dl"
 # a download's sha256 against its pin above, so a tampered or changed archive stops the script
 verify() { local h; h=$(sha256sum "$1" 2>/dev/null | awk '{print $1}'); [[ -n $h ]] || h=$(shasum -a 256 "$1" | awk '{print $1}'); [[ $h == "$2" ]] && return; echo "checksum mismatch: $1 (expected $2, got $h)"; rm -f "$1"; exit 1; }
-fetch() { [[ -f $2 ]] || { curl -fL --retry 3 -o "$2.part" "$1" && verify "$2.part" "$3" && mv -f "$2.part" "$2"; }; }
+fetch() { [[ -f $2 ]] || { curl -fL --retry 5 --retry-all-errors -o "$2.part" "$1" && verify "$2.part" "$3" && mv -f "$2.part" "$2"; }; }
 fetch "https://ziglang.org/download/$ZIG/zig-x86_64-linux-$ZIG.tar.xz" "zig-$ZIG.tar.xz" "$ZIG_SHA"
 fetch "https://github.com/libsdl-org/SDL/releases/download/release-$SDL/SDL3-$SDL.tar.gz" "SDL3-$SDL.tar.gz" "$SDL_SHA"
 fetch "https://github.com/madler/zlib/releases/download/v$ZLIB/zlib-$ZLIB.tar.gz" "zlib-$ZLIB.tar.gz" "$ZLIB_SHA"
@@ -88,7 +88,8 @@ if [[ ! -f ffmpeg/lib/libavcodec.a || ! -f ffmpeg/lib/libnativ_rawdec.a ]]; then
       --disable-avdevice --disable-avformat --disable-swscale --disable-swresample --disable-avfilter --disable-debug \
       --enable-decoder=h264 --enable-parser=h264 --enable-parser=hevc --enable-decoder=aac $ASM > ../ffmpeg-configure.log \
     && sed -i 's/^#define HAVE_SYSCTL 1/#define HAVE_SYSCTL 0/' config.h \
-    && make -j"$(nproc)" > ../ffmpeg-build.log 2>&1 && make install >> ../ffmpeg-build.log 2>&1 \n    && "$CC" -O2 -fPIC -I. -c "$HERE/../ffmpeg/rawdec.c" -o rawdec.o && "$D/bin/ar" rcs "$D/ffmpeg/lib/libnativ_rawdec.a" rawdec.o )
+    && make -j"$(nproc)" > ../ffmpeg-build.log 2>&1 && make install >> ../ffmpeg-build.log 2>&1 \
+    && "$CC" -O2 -fPIC -I. -c "$HERE/../ffmpeg/rawdec.c" -o rawdec.o && "$D/bin/ar" rcs "$D/ffmpeg/lib/libnativ_rawdec.a" rawdec.o )
 fi
 # their licences beside them, as SDL's own install does and zig's folder already has (an install ships these: zlib's and
 # the LGPL ask for the text, and the LGPL for where the source is)

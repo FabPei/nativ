@@ -46,7 +46,7 @@ jobs:
           bash runtime/platform/win/setup-toolchain.sh
       - name: toolchain logs (on failure)
         if: failure()
-        run: for f in ~/toolchains/ativ-*/*.log; do echo "::group::$f"; tail -60 "$f"; echo "::endgroup::"; done
+        run: shopt -s nullglob; for f in ~/toolchains/ativ-*/*.log; do echo "::group::$f"; tail -60 "$f"; echo "::endgroup::"; done
       - name: tag
         id: tag
         run: |
@@ -86,7 +86,7 @@ jobs:
         run: bash runtime/platform/macos/setup-toolchain.sh
       - name: toolchain logs (on failure)
         if: failure()
-        run: for f in ~/toolchains/ativ-mac/*.log; do echo "::group::$f"; tail -60 "$f"; echo "::endgroup::"; done
+        run: shopt -s nullglob; for f in ~/toolchains/ativ-mac/*.log; do echo "::group::$f"; tail -60 "$f"; echo "::endgroup::"; done
       - name: tag
         id: tag
         run: |
