@@ -168,6 +168,24 @@ int input_rec_latest_at_or_before(const InputRecRow *rows, int n, uint64_t frame
 	return best;
 }
 
+int input_rec_replay_key_parse(const char *s)
+{
+	if (!s || !*s || !strcmp(s, "frame")) return INPUT_REC_KEY_FRAME;
+	if (!strcmp(s, "ms")) return INPUT_REC_KEY_MS;
+	return -1;
+}
+
+int input_rec_latest_ms_at_or_before(const InputRecRow *rows, int n, uint64_t ms)
+{
+	int lo = 0, hi = n - 1, best = -1;
+	while (lo <= hi) {
+		int mid = lo + (hi - lo) / 2;
+		if (rows[mid].ms <= ms) { best = mid; lo = mid + 1; }
+		else hi = mid - 1;
+	}
+	return best;
+}
+
 /* --- replay checkpoint fingerprint (N02g-7) ------------------------------------------------- */
 
 static uint64_t fnv1a(uint64_t h, const uint8_t *p, size_t n)
