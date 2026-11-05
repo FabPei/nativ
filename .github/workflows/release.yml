@@ -2,12 +2,14 @@
 # made by hand (docs/developers.md "Making a release"), with no game anywhere: NATIV_RELEASE_SKIP_BUILDS=1 packages
 # the tools without building a library's games (a runner has none; players build their own from their own copy).
 #   a pushed tag vX.Y.Z-fpN   the three downloads + SHA256SUMS, as a DRAFT release (published by hand after a look)
-#   Run workflow (manual)     the same downloads as workflow artifacts only, from the branch's head (no release)
+#   a push to fp/main         the same downloads as workflow artifacts only (no release): every change is built
+#   Run workflow (manual)     the same, from the chosen branch (needs this file on the default branch)
 # Unsigned: no signing identity is configured, so Windows' SmartScreen and macOS' Gatekeeper ask the player once.
 name: release
 on:
   push:
     tags: ["v*-fp*"]
+    branches: [fp/main]
   workflow_dispatch:
 permissions:
   contents: read
