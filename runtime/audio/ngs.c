@@ -320,9 +320,19 @@ static void h_def_scream(Cpu *c) { RET(defn(DEF_SCREAM)); }
 static void h_def_scream_at9(Cpu *c) { RET(defn(DEF_SCREAM_AT9)); }
 static void h_def_compressor(Cpu *c) { RET(defn(DEF_COMPRESSOR)); }
 static void h_def_sidechain(Cpu *c) { RET(defn(DEF_SIDECHAIN)); }
+/* Definitions CRI's ADX2 asks for (Persona 4: Dancing All Night), first pass: the ATRAC9 voice has the same ATRAC9 player
+ * at module 0 as Scream's, Template1 the PCM player at module 0 as the simple voice; the effect buses (delay, distortion,
+ * mixer, EQ, pitch shift) pass what reaches them through, unprocessed, like the compressor. Without them each getter
+ * returned 0 and ADX2 sized its work area as -1 (a memset of 4 GiB at boot). */
+static void h_def_at9(Cpu *c) { RET(defn(DEF_SCREAM_AT9)); }
+static void h_def_template1(Cpu *c) { RET(defn(DEF_SIMPLE)); }
+static void h_def_effect_bus(Cpu *c) { RET(defn(DEF_COMPRESSOR)); }
 
 /* ---- system and racks */
-static void h_sys_mem(Cpu *c) { WR32(A1, 0x10000); RET(0); }   /* (params, *size) */
+/* (params, *size): the host keeps the system's state itself and never uses this memory, so the size only has to be one games
+ * accept -- CRI's ADX2 (Persona 4: Dancing All Night) places the system in a static 8 KiB buffer and gives up when it is asked
+ * for more than 0x1ff0 bytes (64 KiB was: ADX2 then sized its work area as -1, a 4 GiB memset at boot) */
+static void h_sys_mem(Cpu *c) { WR32(A1, 0x1000); RET(0); }
 static void h_sys_init(Cpu *c) {   /* (memory, ?, SceNgsSystemInitParams*, *handle): maxRacks, maxVoices, granularity, sampleRate, maxModules */
 	if (A2) { granularity = RD32(A2 + 8) ? RD32(A2 + 8) : 512; sample_rate = RD32(A2 + 12) ? RD32(A2 + 12) : 48000; }
 	fprintf(stderr, "    ngs: system, granularity %u at %u Hz\n", granularity, sample_rate);
@@ -1191,6 +1201,9 @@ static void h_voice_state(Cpu *c) {
 		 * stream's clock ran at half speed in every game that halves it back to frames: Uncharted's cutscene
 		 * sync (fn_815adf6c, voice types 3-5) then slowed the picture to that clock for its whole window and
 		 * left the dialogue running ahead of the lips by however long the window was */
+		{ static int on = -1; if (on < 0) on = getenv("RECOMP_VIDEO_SYNC_LOG") != 0;   /* (media/video.c, gfx_dispatch.c) */
+		  static uint64_t n; if (on && PCM_PLAYER(v->def) && v->playing && n++ % 16 == 0) { extern uint64_t guest_time_us_peek(void); uint32_t pp = v->params[0]; float fr; memcpy(&fr, G(pp + P_FREQ), 4);
+		    fprintf(stderr, "vsync: voice %d t %.4f samples %u (ch %d, %.0f Hz)\n", VIDX(v), guest_time_us_peek() / 1e6, v->samples_gen, (int8_t)RD8(pp + P_CHANNELS), fr); } }
 		WR32(A2, v->byte_pos); WR32(A2 + 4, v->buffer); WR32(A2 + 8, v->samples_gen);
 		WR32(A2 + 12, v->bytes_consumed); WR32(A2 + 16, v->samples_gen); WR32(A2 + 20, v->bytes_consumed);
 		if (v->def == DEF_SCREAM_AT9 && vo_log_on()) vo_state_log(v, c->r[14], vo_us());
@@ -1224,6 +1237,10 @@ const HleEntry hle_ngs[] = {
 	{"sceNgsVoiceDefGetReverbBuss", h_def_reverb}, {"sceNgsVoiceDefGetScreamVoice", h_def_scream},
 	{"sceNgsVoiceDefGetScreamAtrac9Voice", h_def_scream_at9}, {"sceNgsVoiceDefGetCompressorBuss", h_def_compressor},
 	{"sceNgsVoiceDefGetCompressorSideChainBuss", h_def_sidechain},
+	{"sceNgsVoiceDefGetAtrac9Voice", h_def_at9}, {"sceNgsVoiceDefGetTemplate1", h_def_template1},
+	{"sceNgsVoiceDefGetDelayBuss", h_def_effect_bus}, {"sceNgsVoiceDefGetDistortionBuss", h_def_effect_bus},
+	{"sceNgsVoiceDefGetMixerBuss", h_def_effect_bus}, {"sceNgsVoiceDefGetEqBuss", h_def_effect_bus},
+	{"sceNgsVoiceDefGetPitchShiftBuss", h_def_effect_bus},
 	{"sceNgsVoiceSetFinishedCallback", h_voice_finished_cb}, {"sceNgsVoiceSetModuleCallback", h_voice_module_cb},
 	{"sceNgsVoiceGetParamsOutOfRange", h_params_out_of_range}, {"sceNgsVoiceInit", h_ok}, {"sceNgsPatchGetInfo", h_patch_info},
 	{"sceNgsAT9GetSectionDetails", h_at9_section},

@@ -469,7 +469,7 @@ int audio_open(uint32_t freq, uint32_t channels, uint32_t samples) {
 	 * game hears as "played" is close to what the speakers play (RECOMP_AUDIO_FRAMES overrides) */
 	if (!nstreams) SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, getenv("RECOMP_AUDIO_FRAMES") ? getenv("RECOMP_AUDIO_FRAMES") : "256");
 	SDL_AudioStream *s = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &want, 0, 0);
-	if (!s) return 0;
+	if (!s) { fprintf(stderr, "    audio: no playback device (%s, driver %s): the game runs silent\n", SDL_GetError(), SDL_GetCurrentAudioDriver() ? SDL_GetCurrentAudioDriver() : "none"); return 0; }
 	SDL_ResumeAudioStreamDevice(s);
 	{	/* the device the stream landed on: its real buffer (the hint is a request) -- the pacing keeps one ahead (audio_pace.h) */
 		SDL_AudioSpec ds; int frames = 0;

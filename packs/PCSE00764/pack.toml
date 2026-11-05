@@ -1,0 +1,25 @@
+# Persona 4: Dancing All Night (PCSE00764, US). Only facts about the game (the format: pipeline/packconf.py).
+# A first, bare pack: no hooks yet -- what the game needs is being found out run by run.
+NAME = "Persona 4: Dancing All Night"
+REGION = "US"
+SPLIT = 16
+# sce_module/ also holds libult, libface and libsmart, which the game never imports: not loaded
+MODULES = "libc libgxm_es4 libgpu_es4 libfios2"
+RUN_ENV = "RECOMP_PRESENT_MODE=vsync RECOMP_SKIP_ROUNDTRIP=81437564 RECOMP_MOVIE_30=1 RECOMP_GPU_SPRITE_NEAREST=1"   # RECOMP_GPU_SPRITE_NEAREST: the 2D story scenes point-sampled, no seams between a portrait's layers above 1x (gfx_gpu.c sprite_quad); RECOMP_MOVIE_30: 30 fps while a movie plays, so the anime cutscenes' subtitles (event-script frames, one an update) keep the voices' time (display.c); close-up blur off (the frame through 480x272 and back: gfx_dispatch.c roundtrip_skip); vsync: steadier frame pacing on the dance stages
+TEST_ENV = "RECOMP_GFX=soft RECOMP_SHADERS=interp RECOMP_CLOCK=fixed RECOMP_ADDCONT_NONE=1"   # no add-ons (a notice each at boot, ~1500 frames); the interpreter runs the real shaders (the fast path finds positions by name, and this game names them vertex.position)
+# no input: the opening movie plays through (the logos, the movie from ~frame 450)
+TEST_INPUT = ""
+TEST_FRAMES = 2400
+
+# 1.01, the game with its update (the dump's ux0:patch eboot); 1.00 is the game as installed.
+[versions."1.01"]
+sha256 = "59bf61865829ecc8a53d0a4f3f52094ac0d986e8b7f49d68feaf446cf37a7863"
+status = "supported"
+
+[versions."1.00"]
+sha256 = "5bfde5b70ea71456f060aa312ab44d34479b911fb8e0a418f3d6a788710b64e0"
+status = "supported"
+
+# P4D_CRI_LOG=1 (a regenerate): CRI's error messages printed (hooks.c cri_say)
+[when.P4D_CRI_LOG]
+append.HOOKS = "0x811f1770:p4d_cri_err 0x811f1806:p4d_cri_err1"

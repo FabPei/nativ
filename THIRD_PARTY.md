@@ -15,6 +15,7 @@ listed under "Ported from". Each keeps its own licence, whose text travels with 
 | [AMD FidelityFX SDK](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK): FSR 3.1's upscaler shaders | v1.1.4 | MIT | `third_party/fidelityfx/` (`LICENSE.txt`); compiled into `runtime/gfx/fsr_shaders.h` |
 | HE-VAG coefficients from [vgmstream](https://github.com/vgmstream/vgmstream) | | ISC | `third_party/hevag/hevag_coefs.h` (in its header) |
 | [Input Prompts](https://kenney.nl/assets/input-prompts) by Kenney: the touch card's button icons | 1.5A | CC0 1.0 | `third_party/kenney-prompts/` (`License.txt`; `make.py` packs `prompts.png` from it) |
+| [xxHash](https://github.com/Cyan4973/xxHash) | 0.8.5 | BSD 2-clause | `third_party/xxhash/` (`LICENSE`); XXH3, for Vita3K-style texture pack hashes (`runtime/gfx/texpack.c`) |
 
 ## Ported from
 

@@ -2116,6 +2116,15 @@ static void h_get_timer_time(Cpu *c) {
 	Obj *o = by_uid(A0, TIMER); if (!o) { RET(E_UNKNOWN_TIMER); return; }
 	WR64(A1, timer_us(o)); RET(0);   /* (uid, SceKernelTimerTime *t) */
 }
+/* DeleteTimer and SetTimerTimeWide (merged from PersonaDancingRecomp 23a5426, which the movie player of Persona 4:
+ * Dancing All Night calls): Set returns the previous time and the count goes on from the new one */
+static void h_delete_timer(Cpu *c) { h_delete_uid(c, TIMER, E_UNKNOWN_TIMER); }
+static void h_set_timer_time_wide(Cpu *c) {   /* (uid, SceUInt64 in r2:r3) -> the previous time in r0:r1 */
+	Obj *o = by_uid(A0, TIMER);
+	uint64_t old = o ? timer_us(o) : ~0ull, v = (uint64_t)c->r[3] << 32 | c->r[2];
+	if (o) { uint64_t now = o->t_running ? mono_us() : o->t_stop; o->t_start = now - v; }
+	c->r[0] = (uint32_t)old; c->r[1] = (uint32_t)(old >> 32);
+}
 
 /* the program's process parameters (mkimage.py's PPRM): older C libraries read their heap size
  * there; the standard streams are the console's TTYs, i.e. the host's */
@@ -2167,6 +2176,7 @@ const HleEntry hle_kernel[] = {
 	{"sceKernelGetTLSAddr", h_tls_addr}, {"__tls_get_addr", h_tls_get_addr}, {"sceKernelGetProcessParam", h_process_param}, {"sceKernelGetSystemTimeWide", h_system_time_wide},
 	{"sceKernelCreateTimer", h_create_timer}, {"sceKernelStartTimer", h_start_timer}, {"sceKernelStopTimer", h_stop_timer},
 	{"sceKernelGetTimerTimeWide", h_get_timer_time_wide}, {"sceKernelGetTimerTime", h_get_timer_time},
+	{"sceKernelDeleteTimer", h_delete_timer}, {"sceKernelSetTimerTimeWide", h_set_timer_time_wide},
 	{"SceLibKernel_9F793F84", h_sdk_version}, {"sceKernelGetProcessTitleId", h_title_id}, {"sceKernelIsGameBudget", h_is_game_budget},
 	{"sceKernelGetStdin", h_stdin}, {"sceKernelGetStdout", h_stdout}, {"sceKernelGetStderr", h_stderr},
 	{"sceKernelCreateSema", h_create_sema}, {"sceKernelCreateSema_16XX", h_create_sema},

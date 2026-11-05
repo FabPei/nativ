@@ -153,11 +153,44 @@ static void point_draw_seen(const GfxDraw *d) {
 	if (n < 8) { n++; fprintf(stderr, "    gfx: frame %llu: point sprite draw, %u points, polygon mode %u, width %u, vprog %#x fprog %#x\n", (unsigned long long)presented, d->count, d->polygon_mode, d->point_line_width, d->vprog, d->fprog); }
 	if (cap == 1) { cap = 2; gfxcap_request(); fprintf(stderr, "capture requested (RECOMP_CAPTURE_ON_POINTS)\n"); }
 }
+/* RECOMP_VIDEO_SYNC_LOG=1: each presented frame's movie picture (a YUV texture a draw samples), by its address, with the
+ * guest clock -- media/video.c logs which decoded picture went to which address, ngs.c the movie voice's played samples */
+static void video_sync_draw(const GfxDraw *d) {
+	static int on = -1; if (on < 0) on = getenv("RECOMP_VIDEO_SYNC_LOG") != 0;
+	if (!on) return;
+	static uint32_t last; static uint64_t last_frame = ~0ull;
+	extern uint64_t display_frames(void); extern uint64_t guest_time_us_peek(void);
+	for (int u = 0; u < 16; u++) {
+		uint32_t b = d->tex[u].format >> 24;
+		if (d->tex[u].data && b >= 0x90 && b <= 0x92) {
+			uint64_t f = display_frames();
+			if (f != last_frame || d->tex[u].data != last) fprintf(stderr, "vsync: shown frame %llu t %.4f picture %#x\n", (unsigned long long)f, guest_time_us_peek() / 1e6, d->tex[u].data);
+			last = d->tex[u].data; last_frame = f; return;
+		}
+	}
+}
+/* RECOMP_SKIP_ROUNDTRIP="fprog[,fprog...]": a game's "draw the frame small, stretch it back" filter left out. A draw with
+ * one of these fragment programs (the game's own downsample: an address in its module, the same every run) copies the
+ * scene's target S into a smaller one T; the next draw that samples T into S -- the stretch back, an ordinary copy
+ * program -- is skipped, so S keeps its full-resolution picture. Persona 4 Dancing's close-up blur on the Vita: the
+ * frame through 480x272 and back (0x81437564, then a plain textured quad), ringing every edge at a PC's render scale. */
+static int roundtrip_skip(const GfxDraw *d) {
+	static int n = -1; static uint32_t fp[8]; static uint32_t small, src;
+	if (n < 0) { n = 0; const char *e = getenv("RECOMP_SKIP_ROUNDTRIP"); for (const char *p = e; p && *p && n < 8; ) { char *q; unsigned long v = strtoul(p, &q, 16); if (q == p) break; fp[n++] = (uint32_t)v; p = *q == ',' ? q + 1 : q; } }
+	if (!n) return 0;
+	for (int i = 0; i < n; i++) if (d->fprog == fp[i]) { small = scene_target.data; src = d->tex[0].data; return 0; }
+	if (small && d->tex[0].data == small && scene_target.data == src) {
+		static int told; if (!told) { told = 1; fprintf(stderr, "    gfx: skipping the stretch back of %#x into %#x (RECOMP_SKIP_ROUNDTRIP)\n", small, src); }
+		small = 0; return 1;
+	}
+	return 0;
+}
 void gfx_draw(const GfxDraw *d) {
+	video_sync_draw(d);
 	int m = metrics_on(); uint64_t t0 = m ? now_us() : 0;
 	GfxDraw tmp;
 	if (gfx_prim_kind(d->prim) == GFX_PRIM_POINTS) point_draw_seen(d);
-	LOCKED(rc_on_draw(d); gfxcap_draw(d); gfxcov_draw(d); d = backend_draw(d, &tmp); if (gpu_backend()) gfx_gpu_draw(d); else gfx_soft_draw(d));
+	LOCKED(rc_on_draw(d); gfxcap_draw(d); gfxcov_draw(d); if (!roundtrip_skip(d)) { d = backend_draw(d, &tmp); if (gpu_backend()) gfx_gpu_draw(d); else gfx_soft_draw(d); });
 	if (m) { metrics_add_render(now_us() - t0); metrics_add_draw(); }
 }
 void gfx_sync_to_guest(void) { LOCKED(if (gpu_backend()) gfx_gpu_sync_all()); }

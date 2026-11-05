@@ -335,7 +335,13 @@ static int frame_rate_60(void) {
 	static long until = -2;
 	if (until == -2) { const char *e = getenv("RECOMP_FRAME_RATE_UNTIL"); until = e && *e ? atol(e) : -1; }
 	if (until >= 0) return frames < (uint64_t)until;
-	return (env >= 0 ? env : settings_int("frame_rate", 30)) >= 60;
+	int r60 = (env >= 0 ? env : settings_int("frame_rate", 30)) >= 60;
+	/* RECOMP_MOVIE_30=1 (a pack's): 30 fps while a movie plays (a picture decoded within the last 15 presented frames).
+	 * The movies are 30 fps themselves; what a game times to them in its own updates (Persona 4 Dancing's anime
+	 * cutscenes: their event-script subtitles, one script frame an update) keeps its time */
+	static int movie30 = -1; if (movie30 < 0) movie30 = getenv("RECOMP_MOVIE_30") != 0;
+	if (r60 && movie30) { extern uint64_t video_last_picture_frame; if (video_last_picture_frame && frames < video_last_picture_frame + 15) return 0; }
+	return r60;
 }
 int display_frame_rate_60(void) { return frame_rate_60(); }
 float display_frame_dt(void) { uint64_t e = __atomic_load_n(clock_fixed() ? &frame_edges_g : &frame_edges, __ATOMIC_RELAXED); return (float)(e < 1 ? 1 : e > 2 ? 2 : e) / 60.0f; }   /* 1/60..1/30 s (hooks.c: a game's fixed 1/30 steps at 60 fps) */
@@ -508,6 +514,11 @@ static void h_audio_output(Cpu *c) {   /* (port, buffer) */
 	uint32_t i = A0 - 1;
 	if (i >= 8 || !port_len[i]) { RET(0x80260003u); return; }
 	if (A1) wav_write(i, G(A1));
+	if (A1 && getenv("RECOMP_AUDIO_STATS")) {   /* how loud the game's buffers are, device or not (silent while NGS is missing?) */
+		static uint64_t nb; const int16_t *pcm = (const int16_t *)G(A1); double sum = 0; uint32_t n = port_len[i] * port_ch[i];
+		for (uint32_t k = 0; k < n; k++) sum += (double)pcm[k] * pcm[k];
+		if (nb++ % 1000 == 0) fprintf(stderr, "    audio port %u: buffer %llu rms %.1f%s\n", i, (unsigned long long)nb, sqrt(sum / n), port_dev[i] ? "" : " (no device)");
+	}
 	if (port_dev[i]) {
 		if (A1) {
 			uint32_t n = port_len[i] * port_ch[i];
@@ -522,11 +533,6 @@ static void h_audio_output(Cpu *c) {   /* (port, buffer) */
 		}
 		if (clock_fixed()) audio_wait_guest(i, (uint64_t)port_len[i] * 1000000 / port_freq[i]);
 		RET(0); return;
-	}
-	if (getenv("RECOMP_AUDIO_STATS") && A1) {   /* how loud the buffers are (silent while NGS is missing?) */
-		static uint64_t nb; int16_t *pcm = (int16_t *)G(A1); double sum = 0; uint32_t n = port_len[i] * port_ch[i];
-		for (uint32_t k = 0; k < n; k++) sum += (double)pcm[k] * pcm[k];
-		if (nb++ % 200 == 0) fprintf(stderr, "    audio port %u: buffer %llu rms %.1f\n", i, (unsigned long long)nb, sqrt(sum / n));
 	}
 	uint64_t len = (uint64_t)port_len[i] * 1000000 / port_freq[i];
 	if (clock_fixed()) { audio_wait_guest(i, len); RET(0); return; }
@@ -758,7 +764,10 @@ static void ctrl_peek(Cpu *c, int pad2) {   /* (port, SceCtrlData *, count): tim
 	input_rec_init();
 	for (uint32_t i = 0; i < A2; i++) {
 		uint32_t p = A1 + 64 * i;
-		memset(G(p), 0, 64);
+		/* the fields written here are all in the first 16 bytes: clear 32, never 64 -- Persona 4: Dancing All Night reads
+		 * into a 32-byte SceCtrlData on its stack, and the 64-byte clear zeroed the saved registers above it (its pad loop's
+		 * counter: the loop then walked a pointer through 140 KiB of its data, writing its key-repeat timer over CRI's) */
+		memset(G(p), 0, 32);
 		WR64(p, guest_time_us());
 		extern void window_input(uint32_t *b, uint8_t s[4]); extern void window_input_pad2(uint32_t *b, uint8_t s[4]);
 		uint32_t b; uint8_t st[4];

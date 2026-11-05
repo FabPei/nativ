@@ -4,7 +4,9 @@
 
 > **Unofficial fork.** This is [FabPei/nativ](https://github.com/FabPei/nativ), a community fork of
 > [TheLostPantheon/nativ](https://github.com/TheLostPantheon/nativ), not an official release. It adds runtime fixes and
-> support for Soul Sacrifice Delta (EU) that are also offered upstream as pull requests. Its releases are tagged
+> support for Soul Sacrifice Delta (EU) that are also offered upstream as pull requests, and the Persona Dancing
+> packs and renderer fixes of [PersonaDancingRecomp](https://github.com/Ecstatic-Magician/PersonaDancingRecomp) by
+> Ecstatic-Magician, merged with its history (setup and notes: `packs/PCSE00764/README.md`). Its releases are tagged
 > `vX.Y.Z-fpN` (based on upstream `vX.Y.Z`), are built from this repository's source by GitHub Actions
 > (`.github/workflows/release.yml`), are unsigned, and contain no game: as with upstream, you bring your own copy.
 > Problems with these builds belong in this fork's issues, not upstream's.
@@ -38,6 +40,9 @@ copy of each game and Sony's firmware update file, and the tools decrypt and rec
 | Uncharted: Golden Abyss | US | PCSA00029 | 1.00 |
 | Unit 13 | US | PCSA00014 | 1.00 |
 | Shovel Knight | US | PCSE00640 | 1.00 |
+| Persona 4: Dancing All Night | US | PCSE00764 | 1.00, 1.01 |
+| Persona 3: Dancing in Moonlight | US | PCSE01274 | 1.00 (in testing) |
+| Persona 5: Dancing in Starlight | US | PCSE01275 | 1.00 (in testing) |
 
 Each game's pack supports exact releases, recognised by the SHA-256 of the game's main program. Game-specific fixes,
 such as Killzone's physics fix or the widescreen cameras, patch code at fixed addresses, so they only fit the build

@@ -279,6 +279,15 @@ class Fn:
             e = {"rev": f"BSWAP({v})", "rev16": f"(((({v}) >> 8) & 0x00ff00ffu) | ((({v}) << 8) & 0xff00ff00u))",
                  "revsh": f"(uint32_t)(int16_t)((({v} & 0xff) << 8) | (({v} >> 8) & 0xff))"}[mn]
             out = [f"{self.dst(ops[0].reg)} = {e};"]
+        elif mn in ("uqsub8", "uqadd8", "uqsub16", "uqadd16"):   # ARMv6 parallel saturating, per lane (P3D's libc: its strlen/strcmp word loops)
+            a, b = self.r(ops[1].reg, i), self.r(ops[2].reg, i)
+            bits, n = (8, 4) if mn.endswith("8") else (16, 2)
+            m, lanes = (1 << bits) - 1, []
+            for k in range(n):
+                x, y = f"((({a}) >> {k * bits}) & 0x{m:x}u)", f"((({b}) >> {k * bits}) & 0x{m:x}u)"
+                e = f"({x} > {y} ? {x} - {y} : 0u)" if "sub" in mn else f"({x} + {y} > 0x{m:x}u ? 0x{m:x}u : {x} + {y})"
+                lanes.append(f"({e} << {k * bits})")
+            out = [f"{self.dst(ops[0].reg)} = {' | '.join(lanes)};"]
         elif mn in ("ldr", "ldrb", "ldrh", "ldrsb", "ldrsh", "str", "strb", "strh",
                     "ldrd", "strd", "ldrex", "strex", "ldrexd", "strexd", "ldrexb", "strexb", "ldrexh", "strexh"):
             out = self.mem(i, mn, ops)
@@ -599,6 +608,32 @@ class Fn:
             (dn, cnt), (an, _), (bn, _) = dbytes(regs[0]), dbytes(regs[1]), dbytes(regs[2])
             op = "+" if mn == "vadd" else "-"
             return ["{ " + " ".join(f"uint64_t t{k} = c->vfp.d[{an + k}] {op} c->vfp.d[{bn + k}];" for k in range(cnt)) + " " + " ".join(f"c->vfp.d[{dn + k}] = t{k};" for k in range(cnt)) + " }"]
+        if mn in ("vqmovn", "vqmovun") and dt in ("s16", "s32", "s64", "u16", "u32", "u64") and regs[0][0] == "d" and regs[1][0] == "q" \
+                and not (mn == "vqmovun" and dt[0] == "u"):
+            # saturating narrow: each element of qM clamped to the half-width range -- signed (vqmovn.sN), unsigned (vqmovn.uN) or
+            # signed source to unsigned result (vqmovun.sN). CRI's audio mixer converts its float mix to 16-bit PCM this way
+            # (Persona 4: Dancing All Night). FPSCR.QC (sticky saturation) isn't modelled
+            es = int(dt[1:]) // 8
+            sty = {2: "int16_t", 4: "int32_t", 8: "int64_t"}[es] if dt[0] == "s" else {2: "uint16_t", 4: "uint32_t", 8: "uint64_t"}[es]
+            uns = mn == "vqmovun" or dt[0] == "u"
+            oty = ({2: "uint8_t", 4: "uint16_t", 8: "uint32_t"} if uns else {2: "int8_t", 4: "int16_t", 8: "int32_t"})[es]
+            hb = 4 * es   # the result's width in bits
+            lo, hi = ("0", f"{(1 << hb) - 1}ull") if uns else (f"-{1 << (hb - 1)}ll", f"{(1 << (hb - 1)) - 1}ll")
+            src = "(int64_t)a[k]" if dt[0] == "s" and es < 8 else "a[k]"
+            if dt[0] == "s":
+                clamp = f"{src} < {lo} ? ({oty}){lo} : {src} > {hi} ? ({oty}){hi} : ({oty}){src}"
+            else:
+                clamp = f"a[k] > {hi} ? ({oty}){hi} : ({oty})a[k]"
+            d, q0, n = regs[0][1], 2 * regs[1][1], 16 // es
+            return [f"{{ {sty} a[{n}]; {oty} o[{n}]; memcpy(a, &c->vfp.d[{q0}], 16); for (int k = 0; k < {n}; k++) o[k] = {clamp};"
+                    f" memcpy(&c->vfp.d[{d}], o, 8); }}"]
+        if mn == "vzip" and dt in ("8", "16", "32") and len(regs) == 2 and regs[0][0] == regs[1][0]:
+            # interleave: the elements of D and M alternated (d0 m0 d1 m1 ...), the first half into D and the second into M -- vuzp's inverse
+            (a0, cnt), (b0, _) = dbytes(regs[0]), dbytes(regs[1])
+            es, nb = int(dt) // 8, 8 * cnt
+            return [f"{{ uint8_t x[16], y[16], o[32]; memcpy(x, &c->vfp.d[{a0}], {nb}); memcpy(y, &c->vfp.d[{b0}], {nb});"
+                    f" for (int e = 0; e < {nb // es}; e++) {{ memcpy(o + 2 * e * {es}, x + e * {es}, {es}); memcpy(o + (2 * e + 1) * {es}, y + e * {es}, {es}); }}"
+                    f" memcpy(&c->vfp.d[{a0}], o, {nb}); memcpy(&c->vfp.d[{b0}], o + {nb}, {nb}); }}"]
         if mn == "vmovn" and dt in ("i16", "i32") and regs[0][0] == "d" and regs[1][0] == "q":
             es = int(dt[1:]) // 8   # source element size; the result keeps its low half
             ty, oty = ("uint16_t", "uint8_t") if es == 2 else ("uint32_t", "uint16_t")
