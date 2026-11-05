@@ -110,6 +110,42 @@ int main(void) {
 	check("CreateDecoder(MP3) -> INVALID_TYPE", call("sceAudiodecCreateDecoder", CTRL, 0x1004) == SCE_AUDIODEC_ERROR_INVALID_TYPE);
 	check("TermLibrary(ATRAC9) -> 0", call("sceAudiodecTermLibrary", SCE_AUDIODEC_TYPE_AT9, 0) == 0);
 
+#if defined(RECOMP_RAWDEC) || defined(AAC_EXPECTED)
+	/* AAC (built with RECOMP_RAWDEC: FFmpeg + rawdec.c). The info: {size, isAdts 0, 1 channel, 48000 Hz, isSbr 0}.
+	 * The frame: the smallest raw AAC-LC mono raw_data_block, from the bitstream syntax -- SCE (3 bits 0),
+	 * tag 0 (4), global_gain 100 (8), ics_info: reserved 0, ONLY_LONG (2), shape 0, max_sfb 0 (6),
+	 * no predictor (1); no sections or scale factors at max_sfb 0; no pulse/TNS/gain control (3); ID_END (3
+	 * bits 111) = 32 bits, 00 C8 00 07: silence. Two of them back to back. */
+	wr(CTRL + C_HANDLE, 0); wr(CTRL + C_ES, ES); wr(CTRL + C_PCM, PCM);
+	wr(INFO, 0x14); wr(INFO + I_AAC_ADTS, 0); wr(INFO + I_AAC_CH, 1); wr(INFO + I_AAC_RATE, 48000); wr(INFO + I_AAC_SBR, 0);
+	/* a movie player's sequence: GetContextSize, then CreateDecoderExternal with that memory -- no InitLibrary */
+	check("AAC: GetContextSize -> 0x18000", call("sceAudiodecGetContextSize", CTRL, 0x1005) == 0x18000);
+	check("AAC: CreateDecoder (not External) before InitLibrary -> NOT_INITIALIZED", call("sceAudiodecCreateDecoder", CTRL, 0x1005) == SCE_AUDIODEC_ERROR_NOT_INITIALIZED);
+	check("AAC: CreateDecoderExternal without InitLibrary -> 0", call("sceAudiodecCreateDecoderExternal", CTRL, 0x1005) == 0);
+	check("  handle set", rd(CTRL + C_HANDLE) != 0);
+	check("  maxEsSize 1536", rd(CTRL + C_ES_MAX) == 1536);
+	check("  maxPcmSize 2048 (1 ch)", rd(CTRL + C_PCM_MAX) == 2048);
+	memset(G(ES), 0, 0x1000);
+	memcpy(G(ES), "\x00\xC8\x00\x07\x00\xC8\x00\x07", 8);
+	memset(G(PCM), 0x5a, 0x1000);
+	uint32_t aac_rc = call("sceAudiodecDecode", CTRL, 0), aac_used = rd(CTRL + C_ES_USED), aac_given = rd(CTRL + C_PCM_GIVEN);
+	check("AAC: Decode -> 0", aac_rc == 0);
+	check("  the frame's 4 bytes taken", aac_used == 4);
+	wr(CTRL + C_ES, ES + aac_used);
+	aac_rc = call("sceAudiodecDecode", CTRL, 0);
+	check("AAC: second Decode -> 0, 4 bytes", aac_rc == 0 && rd(CTRL + C_ES_USED) == 4);
+	aac_given += rd(CTRL + C_PCM_GIVEN);
+	check("  1024 samples x 1 ch x 2 bytes per frame (two frames, 4096 bytes)", aac_given == 4096);
+	int aac_silent = 1; for (uint32_t k = 0; k < 2048; k++) if (RD8(PCM + k)) aac_silent = 0;
+	check("  the PCM written is silence", aac_silent);
+	check("AAC: ClearContext -> 0", call("sceAudiodecClearContext", CTRL, 0) == 0);
+	check("AAC: DeleteDecoderExternal -> 0", call("sceAudiodecDeleteDecoderExternal", CTRL, 0) == 0);
+	check("AAC: InitLibrary -> 0", call("sceAudiodecInitLibrary", 0x1005, 0) == 0);
+	check("AAC: TermLibrary -> 0", call("sceAudiodecTermLibrary", 0x1005, 0) == 0);
+#else
+	check("AAC without RECOMP_RAWDEC: GetContextSize -> INVALID_TYPE", call("sceAudiodecGetContextSize", CTRL, 0x1005) == SCE_AUDIODEC_ERROR_INVALID_TYPE);
+#endif
+
 	if (fails) { printf("%d checks FAILED\n", fails); return 1; }
 	printf("all passed\n");
 	return 0;

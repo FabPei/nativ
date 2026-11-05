@@ -165,6 +165,16 @@ frame is `API_FAIL`; other codec types are `INVALID_TYPE`; Delete of a deleted h
 `-DFAIL_BEFORE` runs the checks against the behaviour without the file (every import unresolved: 0, nothing written).
 It prints `all passed` and exits 0.
 
+With the AAC decoder (`RECOMP_RAWDEC`: the Windows toolchain's FFmpeg with `--enable-decoder=aac` and
+`libnativ_rawdec.a`) the fixture also runs an AAC case: a movie player's GetContextSize (0x18000) and
+CreateDecoderExternal without InitLibrary, two hand-built 4-byte silent raw AAC-LC mono frames back to back (each
+reports its own 4 bytes, 2048 bytes of silent PCM), ClearContext, DeleteDecoderExternal. Built for Windows with the
+toolchain's clang (`$W` = `~/toolchains/ativ-win`):
+
+    $W/llvm-mingw/bin/x86_64-w64-mingw32-clang -O1 -g -Wall -D_GNU_SOURCE -DRECOMP_RAWDEC $INC -I $W/ffmpeg/include audiodec_test.c ../../third_party/libatrac9/*.c $W/ffmpeg/lib/libnativ_rawdec.a $W/ffmpeg/lib/libavcodec.a $W/ffmpeg/lib/libavutil.a -lbcrypt -lole32 -luser32 -lpthread -o audiodec_test.exe
+
+`-DFAIL_BEFORE -DAAC_EXPECTED` runs the AAC checks against the unresolved-import behaviour too.
+
 ## SceCodecEngine's unmap-memory ranges: `codec_engine_test.c`
 
 Checks `h_ce_alloc` in `runtime/media/video.c`: a movie player's reference sequence (a 0x300000 block, then 0x80000

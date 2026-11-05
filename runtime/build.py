@@ -253,6 +253,8 @@ def main(argv):
         AVCODEC = ["-DRECOMP_AVCODEC"] + out_of(["pkg-config", "--cflags", "--libs", "libavcodec", "libavutil"])
     elif WIN and os.path.isfile(os.path.join(WT, "ffmpeg", "lib", "libavcodec.a")):   # Windows: the toolchain's static H.264-only FFmpeg (runtime/platform/win/setup-toolchain.sh)
         AVCODEC = ["-DRECOMP_AVCODEC", "-I" + os.path.join(WT, "ffmpeg", "include"), os.path.join(WT, "ffmpeg", "lib", "libavcodec.a"), os.path.join(WT, "ffmpeg", "lib", "libavutil.a"), "-lole32", "-luser32", "-lbcrypt"]
+        # the AAC decoder's raw-frame shim (runtime/platform/ffmpeg/rawdec.c, built by setup-toolchain.sh): sceAudiodec AAC
+        if os.path.isfile(os.path.join(WT, "ffmpeg", "lib", "libnativ_rawdec.a")): AVCODEC[1:1] = ["-DRECOMP_RAWDEC"]; AVCODEC.insert(3, os.path.join(WT, "ffmpeg", "lib", "libnativ_rawdec.a"))
     # libcurl: SceHttp (http.c) -- a game's HTTPS to its own (or a community) server; without it the HTTP calls stay stubs
     CURL = ["-DRECOMP_CURL"] + out_of(["pkg-config", "--cflags", "--libs", "libcurl"]) if not WIN and not LT and not MT and pkg_exists("libcurl") else []   # (none in the Linux install's toolchain: stubs, as on Windows)
     if MT: CURL = ["-DRECOMP_CURL", "-lcurl"]   # (macOS's own libcurl, its headers in the SDK)
