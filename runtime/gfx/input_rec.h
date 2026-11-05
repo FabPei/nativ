@@ -88,6 +88,10 @@ int  input_rec_replay_key_parse(const char *s);
 /* the time-keyed lookup: the largest index with rows[i].ms <= ms, else -1; v2 rows are in ms order
  * (the loader refuses ms going backwards) */
 int  input_rec_latest_ms_at_or_before(const InputRecRow *rows, int n, uint64_t ms);
+/* the RECORDED frame at elapsed `ms`, interpolated between the controller rows around it (their last
+ * frame past the end, 0 before the first): under the ms key, touch and motion rows -- frame-only --
+ * are served at this frame, so they stay in step with the controller rows */
+uint64_t input_rec_frame_at_ms(const InputRecRow *rows, int n, uint64_t ms);
 
 /* --- replay checkpoint fingerprint (N02g-7) -------------------------------------------------
  * A small stable, RUNTIME-OBSERVABLE identity of what a replay run actually did: the loaded

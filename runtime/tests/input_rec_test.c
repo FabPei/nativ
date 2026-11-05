@@ -223,6 +223,19 @@ static void test_ms_lookup(void)
 		eq[0].ms = 5; eq[0].buttons = 1; eq[1].ms = 5; eq[1].buttons = 2;
 		CK(input_rec_latest_ms_at_or_before(eq, 2, 5) == 1);
 	}
+	/* touch/motion rows carry only a frame: under the ms key they are served at the RECORDED frame the
+	 * recording reached at that elapsed time (interpolated between the controller rows around it), so a
+	 * touch made 224 s into the live session is not served at the replay's frame 1536 (~70 s) */
+	CK(input_rec_frame_at_ms(rows, 4, 0) == 12);
+	CK(input_rec_frame_at_ms(rows, 4, 31456) == 237);
+	CK(input_rec_frame_at_ms(rows, 4, 31531) == 237);                  /* halfway 237 -> 238: still 237 */
+	CK(input_rec_frame_at_ms(rows, 4, 31606) == 238);
+	CK(input_rec_frame_at_ms(rows, 4, 43990) == 321);                  /* 238 + 166 * 12384 / 24768 = 238 + 83 */
+	CK(input_rec_frame_at_ms(rows, 4, 56374) == 404);
+	CK(input_rec_frame_at_ms(rows, 4, 9999999) == 404);                /* past EOF: the last row's frame */
+	CK(input_rec_frame_at_ms(rows, 0, 5) == 0);                        /* empty trace */
+	{	InputRecRow late[1]; memset(late, 0, sizeof late); late[0].frame = 12; late[0].ms = 100;
+		CK(input_rec_frame_at_ms(late, 1, 50) == 0); }                 /* before the first row: nothing recorded yet */
 	/* the key option: unset/empty/"frame" -> frame, "ms" -> ms, anything else refused */
 	CK(input_rec_replay_key_parse(NULL) == INPUT_REC_KEY_FRAME);
 	CK(input_rec_replay_key_parse("") == INPUT_REC_KEY_FRAME);
