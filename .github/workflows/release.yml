@@ -44,6 +44,9 @@ jobs:
         run: |
           bash runtime/platform/linux/setup-toolchain.sh
           bash runtime/platform/win/setup-toolchain.sh
+      - name: toolchain logs (on failure)
+        if: failure()
+        run: for f in ~/toolchains/ativ-*/*.log; do echo "::group::$f"; tail -60 "$f"; echo "::endgroup::"; done
       - name: tag
         id: tag
         run: |
@@ -81,6 +84,9 @@ jobs:
           key: tc-mac-${{ hashFiles('runtime/platform/macos/setup-toolchain.sh', 'runtime/platform/ffmpeg/rawdec.c') }}
       - name: toolchain
         run: bash runtime/platform/macos/setup-toolchain.sh
+      - name: toolchain logs (on failure)
+        if: failure()
+        run: for f in ~/toolchains/ativ-mac/*.log; do echo "::group::$f"; tail -60 "$f"; echo "::endgroup::"; done
       - name: tag
         id: tag
         run: |
