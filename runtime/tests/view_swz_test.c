@@ -4,9 +4,16 @@
  * texture decodes from the bytes the target stores in memory. The oracle below restates
  * gfx_soft.c's target_write_of (the byte layout per target swizzle) and apply_swizzle's sw4 table
  * (the texture decode) independently. Before view_swz.h only ABGR targets had a view: every other
- * swizzle took the guest-memory path, a synchronous target download per read. Pure logic:
+ * swizzle took the guest-memory path, a synchronous target download per read (-DVIEW_SWZ_UPSTREAM_RULE
+ * builds that rule instead: the control). Pure logic:
  *   cc -O1 -g -Wall -I../gfx view_swz_test.c -o /tmp/view_swz_test && /tmp/view_swz_test */
+#ifdef VIEW_SWZ_UPSTREAM_RULE
+/* the rule before view_swz.h (gfx_gpu.c view_mode, U8U8U8U8 case): a view only for an ABGR target, selectors untouched */
+#include <stdint.h>
+static int view_swz_u8x4(uint32_t tgt_fmt, uint32_t swz[4]) { (void)swz; return (tgt_fmt & 0xF1800000u) == 0 && (tgt_fmt & 0x00300000u) == 0; }
+#else
 #include "view_swz.h"
+#endif
 #include <stdio.h>
 #include <string.h>
 
@@ -44,7 +51,7 @@ int main(void)
 			}
 		}
 	}
-	/* the owner-run case (an A8R8G8B8 target read as U8U8U8U8_ARGB tiles): the identity */
+	/* an A8R8G8B8 target read as U8U8U8U8_ARGB tiles (a texture atlas drawn by the GPU): the identity */
 	{ uint32_t swz[4] = { 2, 1, 0, 3 }; CK(view_swz_u8x4(0x00100000u, swz) == 1); CK(swz[0] == 0 && swz[1] == 1 && swz[2] == 2 && swz[3] == 3); }
 	/* not a U8U8U8U8 target: refused, selectors untouched */
 	{ uint32_t swz[4] = { 0, 1, 2, 3 }; CK(view_swz_u8x4(0x80800000u, swz) == 0); CK(swz[0] == 0 && swz[3] == 3); }
