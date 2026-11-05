@@ -9,6 +9,11 @@ SPLIT = 32                # recompiled C split into this many part files (the eb
 # modules the game loads for fonts (libpvf, libSceFt2), movies (libscemp4, libsceavplayer) and Ad Hoc Play
 # (adhoc_matching). libsmart ships in the game's sce_module but is not recompiled (as in the ss-delta toolchain).
 MODULES = "libc libgxm_es4 libgpu_es4 libfios2 libult libSceFt2 libpvf libscemp4 libsceavplayer adhoc_matching"
+# RECOMP_SRGB=1 (2026-11-05): the game samples sRGB-encoded textures (texture gamma modes; no sRGB colour surfaces
+# logged by RECOMP_LOG_GAMMA) into linear lighting. Without the modes the first snow level lit far too bright and
+# washed out to white (owner report); with them the same replayed frames show the level's detail and contrast.
+RUN_ENV = "RECOMP_SRGB=1"
+TEST_ENV = "RECOMP_SRGB=1"
 
 # The build of the game this pack plays: [versions."<version>"], the SHA-256 of its eboot.bin.elf and its status
 # (vitarecomp import refuses another version or region). "EU" is this repo's own dump's eboot, converted by
