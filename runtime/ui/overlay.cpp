@@ -869,73 +869,73 @@ void overlay_bar_dismiss(void) { if (!g_ctx) return; if (g_intro) intro_end(); e
 int overlay_mouse_captured(void) { return g_ctx && g_has_window && g_mouse_captured; }
 
 static void menu_game(void) {
-	if (ImGui::MenuItem(g_paused ? "Resume" : "Pause")) overlay_set_paused(!g_paused);
-	ImGui::TextUnformatted("Volume"); ImGui::SameLine(); volume_slider();
-	if (ImGui::MenuItem("Capture frame", "F12")) g_want_capture = true;
-	if (ImGui::MenuItem("Full menu…", "F10")) overlay_open();
+	if (ImGui::MenuItem(g_paused ? ui_tr("header.resume") : ui_tr("header.pause"))) overlay_set_paused(!g_paused);
+	ImGui::TextUnformatted("%s", ui_tr("game.volume")); ImGui::SameLine(); volume_slider();
+	if (ImGui::MenuItem(ui_tr("bar.capture"), "F12")) g_want_capture = true;
+	if (ImGui::MenuItem(ui_tr("bar.full_menu"), "F10")) overlay_open();
 	ImGui::Separator();
 	if (ImGui::MenuItem(quit_label())) g_want_quit = true;
 }
 static void menu_view(void) {
-	if (ImGui::BeginMenu("Resolution")) {
+	if (ImGui::BeginMenu(ui_tr("display.resolution"))) {
 		int rs = gfx_gpu_render_scale_wanted();
 		for (int n = 1; n <= gfx_gpu_render_scale_max(); n++) { char l[48]; scale_label(l, sizeof l, n); if (ImGui::MenuItem(l, nullptr, rs == n)) gfx_gpu_render_scale_request(n); }
 		ImGui::Separator();
 		int mw = scale_for_window();
-		if (mw) { char l[48]; std::snprintf(l, sizeof l, "Match window (%dx)", mw); if (ImGui::MenuItem(l)) gfx_gpu_render_scale_request(mw); }
-		if (ImGui::MenuItem("Cycle", "F2")) gfx_gpu_render_scale_cycle();
+		if (mw) { char l[48]; std::snprintf(l, sizeof l, ui_tr("bar.match_window"), mw); if (ImGui::MenuItem(l)) gfx_gpu_render_scale_request(mw); }
+		if (ImGui::MenuItem(ui_tr("bar.cycle"), "F2")) gfx_gpu_render_scale_cycle();
 		ImGui::EndMenu();
 	}
-	if (ImGui::BeginMenu("Picture fit")) {
+	if (ImGui::BeginMenu(ui_tr("display.fit"))) {
 		int am = window_get_aspect();
 		for (int i = 0; i < 3; i++) if (ImGui::MenuItem(ui_tr(g_aspect_names[i]), nullptr, am == i)) window_set_aspect(i);
 		ImGui::EndMenu();
 	}
 	bool fs = window_get_fullscreen() != 0;
-	if (ImGui::MenuItem("Fullscreen", nullptr, &fs)) window_set_fullscreen(fs ? 1 : 0);
+	if (ImGui::MenuItem(ui_tr("display.fullscreen"), nullptr, &fs)) window_set_fullscreen(fs ? 1 : 0);
 	ImGui::Separator();
 	prefs_load();
-	if (game_option("fov")) { ImGui::TextDisabled("Field of view"); ImGui::SetNextItemWidth(170 * g_ui_scale); if (ImGui::SliderFloat("##fov", &P.fov, 0.75f, 1.5f, "%.2fx")) set_fov(P.fov); }
-	if (game_option("view_distance")) { ImGui::TextDisabled("View distance"); ImGui::SetNextItemWidth(170 * g_ui_scale); if (ImGui::SliderFloat("##view", &P.view, 1.0f, 3.0f, "%.2fx")) set_view(P.view); }
-	if (game_option("scenery_detail")) { ImGui::TextDisabled("Scenery detail"); ImGui::SetNextItemWidth(170 * g_ui_scale); if (ImGui::SliderFloat("##scen", &P.scen, 1.0f, 8.0f, "%.1fx")) set_scen(P.scen); }
-	if (game_option("character_detail")) { ImGui::TextDisabled("Character detail"); ImGui::SetNextItemWidth(170 * g_ui_scale); if (ImGui::SliderFloat("##chr", &P.chr, 1.0f, 8.0f, "%.1fx")) set_chr(P.chr); }
-	if (ImGui::BeginMenu("Frame rate")) {
+	if (game_option("fov")) { ImGui::TextDisabled("%s", ui_tr("game.fov")); ImGui::SetNextItemWidth(170 * g_ui_scale); if (ImGui::SliderFloat("##fov", &P.fov, 0.75f, 1.5f, "%.2fx")) set_fov(P.fov); }
+	if (game_option("view_distance")) { ImGui::TextDisabled("%s", ui_tr("game.view")); ImGui::SetNextItemWidth(170 * g_ui_scale); if (ImGui::SliderFloat("##view", &P.view, 1.0f, 3.0f, "%.2fx")) set_view(P.view); }
+	if (game_option("scenery_detail")) { ImGui::TextDisabled("%s", ui_tr("game.scen")); ImGui::SetNextItemWidth(170 * g_ui_scale); if (ImGui::SliderFloat("##scen", &P.scen, 1.0f, 8.0f, "%.1fx")) set_scen(P.scen); }
+	if (game_option("character_detail")) { ImGui::TextDisabled("%s", ui_tr("game.chr")); ImGui::SetNextItemWidth(170 * g_ui_scale); if (ImGui::SliderFloat("##chr", &P.chr, 1.0f, 8.0f, "%.1fx")) set_chr(P.chr); }
+	if (ImGui::BeginMenu(ui_tr("game.fps"))) {
 		if (ImGui::MenuItem("30", nullptr, P.fr < 60)) set_frame_rate(30);
-		if (ImGui::MenuItem("60 (experimental)", nullptr, P.fr >= 60)) set_frame_rate(60);
+		if (ImGui::MenuItem(ui_tr("bar.fps60"), nullptr, P.fr >= 60)) set_frame_rate(60);
 		ImGui::EndMenu();
 	}
-	if (ImGui::BeginMenu("On-screen stats")) {
-		static const char *const names[3] = {"Off", "FPS", "Full"};
+	if (ImGui::BeginMenu(ui_tr("perf.osd"))) {
+		const char *const names[3] = {ui_tr("common.off"), "FPS", ui_tr("perf.osd_full")};
 		int lvl = metrics_osd_level();
 		for (int i = 0; i < 3; i++) if (ImGui::MenuItem(names[i], nullptr, lvl == i)) set_osd(i);
 		ImGui::Separator();
-		if (ImGui::MenuItem("Cycle", "F1")) metrics_osd_cycle();
+		if (ImGui::MenuItem(ui_tr("bar.cycle"), "F1")) metrics_osd_cycle();
 		ImGui::EndMenu();
 	}
 }
 static void menu_controls(void) {
 	prefs_load();
-	ImGui::TextDisabled("Touch cursor speed (hold L1/R1, either stick)");
+	ImGui::TextDisabled("%s", ui_tr("bar.touch_speed"));
 	ImGui::SetNextItemWidth(170 * g_ui_scale);
 	if (ImGui::SliderFloat("##tcs", &P.tcs, 0.25f, 3.0f, "%.2fx")) set_tcs(P.tcs);
 	ImGui::Separator();
 	bool gy = P.gyro != 0;
-	if (ImGui::MenuItem("Gyro as the Vita's motion sensor", nullptr, &gy)) set_gyro(gy);
-	if (ImGui::BeginMenu("A level pad is a Vita held")) {
-		if (ImGui::MenuItem("upright", nullptr, !P.gyro_flat)) set_gyro_pose(0);
-		if (ImGui::MenuItem("flat", nullptr, P.gyro_flat != 0)) set_gyro_pose(1);
+	if (ImGui::MenuItem(ui_tr("bar.gyro_toggle"), nullptr, &gy)) set_gyro(gy);
+	if (ImGui::BeginMenu(ui_tr("bar.gyro_pose"))) {
+		if (ImGui::MenuItem(ui_tr("bar.upright"), nullptr, !P.gyro_flat)) set_gyro_pose(0);
+		if (ImGui::MenuItem(ui_tr("bar.flat"), nullptr, P.gyro_flat != 0)) set_gyro_pose(1);
 		ImGui::EndMenu();
 	}
-	ImGui::TextDisabled("Gyro sensitivity");
+	ImGui::TextDisabled("%s", ui_tr("ctrl.gyro_sens"));
 	ImGui::SetNextItemWidth(170 * g_ui_scale);
 	if (ImGui::SliderFloat("##gs", &P.gyro_sens, 0.25f, 3.0f, "%.2fx")) set_gyro_sens(P.gyro_sens);
-	if (ImGui::MenuItem("Recentre the gyro", "R3")) motion_recenter();
+	if (ImGui::MenuItem(ui_tr("ctrl.recentre_btn"), "R3")) motion_recenter();
 	ImGui::Separator();
-	if (ImGui::MenuItem("Controls reference…")) open_page(TAB_CONTROLS);   /* (the full menu: pauses) */
+	if (ImGui::MenuItem(ui_tr("bar.controls_ref"))) open_page(TAB_CONTROLS);   /* (the full menu: pauses) */
 }
 static void menu_help(void) {
-	if (ImGui::MenuItem("Shortcuts…")) open_page(TAB_HELP);
-	if (ImGui::MenuItem("About…")) open_page(TAB_HELP);
+	if (ImGui::MenuItem(ui_tr("bar.shortcuts"))) open_page(TAB_HELP);
+	if (ImGui::MenuItem(ui_tr("bar.about"))) open_page(TAB_HELP);
 }
 /* the bar: a window the width of the display, exactly one menu-bar high, parked above the top edge by
  * (1 - vis) of its height -- the slide. Its menus are ImGui popups below it. */
@@ -961,11 +961,18 @@ static void build_bar(float w) {
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(em * 0.7f, em * 0.55f));
 		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(em * 0.6f, em * 0.45f));
 		/* (headless dump: a menu forced open -- OpenPopup here shares BeginMenu's ID scope, so the ids match) */
-		if (g_force_menu) { ImGui::OpenPopup(g_force_menu); g_force_menu = nullptr; }
-		if (ImGui::BeginMenu("Game")) { menu_game(); ImGui::EndMenu(); }
-		if (ImGui::BeginMenu("View")) { menu_view(); ImGui::EndMenu(); }
-		if (ImGui::BeginMenu("Controls")) { menu_controls(); ImGui::EndMenu(); }
-		if (ImGui::BeginMenu("Help")) { menu_help(); ImGui::EndMenu(); }
+		if (g_force_menu) {   /* (U12b) the dump's selector key -> the translated menu label, in this frame's language */
+			const char *k = g_force_menu; g_force_menu = nullptr;
+			if (!strcmp(k, "Game")) ImGui::OpenPopup(ui_tr("nav.game"));
+			else if (!strcmp(k, "View")) ImGui::OpenPopup(ui_tr("bar.view"));
+			else if (!strcmp(k, "Controls")) ImGui::OpenPopup(ui_tr("nav.controls"));
+			else if (!strcmp(k, "Help")) ImGui::OpenPopup(ui_tr("nav.help"));
+			else ImGui::OpenPopup(k);
+		}
+		if (ImGui::BeginMenu(ui_tr("nav.game"))) { menu_game(); ImGui::EndMenu(); }
+		if (ImGui::BeginMenu(ui_tr("bar.view"))) { menu_view(); ImGui::EndMenu(); }
+		if (ImGui::BeginMenu(ui_tr("nav.controls"))) { menu_controls(); ImGui::EndMenu(); }
+		if (ImGui::BeginMenu(ui_tr("nav.help"))) { menu_help(); ImGui::EndMenu(); }
 		ImGui::PopStyleVar(2);
 		ImGui::EndMenuBar();
 	}
@@ -1089,7 +1096,7 @@ static void build_toasts(float w, float hgt, double t) {
 /* Game > Pause (not the menu): the picture stays, with this over it */
 static void build_pause_banner(float w, float hgt) {
 	ImFont *font = ImGui::GetFont(); const float fs = ImGui::GetFontSize() * 2.0f;
-	static const char l1[] = "PAUSED", l2[] = "Game > Resume in the menu bar (mouse to the top), or F10";
+	const char *const l1 = ui_tr("bar.paused"), *const l2 = ui_tr("bar.paused_hint");
 	const ImVec2 s1 = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, l1), s2 = font->CalcTextSizeA(fs * 0.5f, FLT_MAX, 0.0f, l2);
 	const float pad = 12, bw = fmaxf(s1.x, s2.x) + 2 * pad, bh = s1.y + s2.y + 3 * pad;
 	const ImVec2 p0(w * 0.5f - bw * 0.5f, hgt * 0.5f - bh * 0.5f), p1(p0.x + bw, p0.y + bh);
@@ -1140,23 +1147,23 @@ static void build_perf_full(ImDrawList *dl) {
 	/* the renderer's and the picture's rows: a label and one value at the right edge */
 	char rv[8][48]; const char *rl[8]; ImU32 rc[8]; int nr = 0;
 	auto row2 = [&](const char *l, ImU32 c) -> char * { rl[nr] = l; rc[nr] = c; return rv[nr++]; };
-	perf_fmt(row2("Render (CPU) per frame", c_ren), 48, m.render_ms, "%.2f ms");
-	std::snprintf(row2("GPU busy per frame", c_ren), 48, "-");   /* (SDL's GPU API has no timestamp queries) */
-	if (m.builds >= 0) std::snprintf(row2("Shader + pipeline builds", c_ren), 48, "%.1f (%.2f ms)", m.builds, m.build_ms); else std::snprintf(row2("Shader + pipeline builds", c_ren), 48, "-");
-	perf_fmt(row2("Waits (downloads, readbacks)", c_ren), 48, m.waits_ms, "%.2f ms");
-	perf_fmt(row2("Texture uploads", c_ren), 48, m.tex_uploads, "%.1f per frame");
-	perf_fmt(row2("Draws waiting for a build", c_ren), 48, m.skipped, "%.1f per frame");
-	std::snprintf(row2("Scenes / draws", c_ren), 48, m.fallback ? "%u / %u (%u software)" : "%u / %u", m.scenes, m.draws, m.fallback);
-	std::snprintf(row2("Audio queued", c_ren), 48, m.audio_underruns ? "%u ms, %u underruns" : "%u ms", m.audio_ms, m.audio_underruns);
+	perf_fmt(row2(ui_tr("sys.render"), c_ren), 48, m.render_ms, "%.2f ms");
+	std::snprintf(row2(ui_tr("sys.gpu_busy"), c_ren), 48, "-");   /* (SDL's GPU API has no timestamp queries) */
+	if (m.builds >= 0) std::snprintf(row2(ui_tr("sys.builds"), c_ren), 48, "%.1f (%.2f ms)", m.builds, m.build_ms); else std::snprintf(row2(ui_tr("sys.builds"), c_ren), 48, "-");
+	perf_fmt(row2(ui_tr("sys.waits"), c_ren), 48, m.waits_ms, "%.2f ms");
+	perf_fmt(row2(ui_tr("sys.uploads"), c_ren), 48, m.tex_uploads, "%.1f per frame");
+	perf_fmt(row2(ui_tr("sys.draws_waiting"), c_ren), 48, m.skipped, "%.1f per frame");
+	std::snprintf(row2(ui_tr("sys.scenes"), c_ren), 48, m.fallback ? "%u / %u (%u software)" : "%u / %u", m.scenes, m.draws, m.fallback);
+	std::snprintf(row2(ui_tr("sys.audio"), c_ren), 48, m.audio_underruns ? "%u ms, %u underruns" : "%u ms", m.audio_ms, m.audio_underruns);
 	char dv[6][64]; const char *dl_[6]; int nd = 0;
 	uint32_t ww = 0, wh = 0; window_pixel_size(&ww, &wh);
 	const int rs = m.render_scale > 0 ? m.render_scale : 1;
-	dl_[nd] = "Window"; if (ww && wh) std::snprintf(dv[nd++], 64, "%ux%u", ww, wh); else std::snprintf(dv[nd++], 64, "-");
-	dl_[nd] = "Game image"; std::snprintf(dv[nd++], 64, "%dx%d (%dx)", 960 * rs, 544 * rs, rs);
-	dl_[nd] = "Upscaling"; std::snprintf(dv[nd++], 64, "%s", gfx_gpu_fsr_active() ? "FSR" : "bilinear");
-	dl_[nd] = "Frame limit"; std::snprintf(dv[nd++], 64, "%d FPS", display_frame_rate_60() ? 60 : 30);
-	dl_[nd] = "Presentation"; std::snprintf(dv[nd++], 64, "%s", window_present_mode());
-	dl_[nd] = "Renderer"; std::snprintf(dv[nd++], 64, "%s", m.gpu_backend ? "GPU" : "software");
+	dl_[nd] = ui_tr("sys.window"); if (ww && wh) std::snprintf(dv[nd++], 64, "%ux%u", ww, wh); else std::snprintf(dv[nd++], 64, "-");
+	dl_[nd] = ui_tr("sys.game_image"); std::snprintf(dv[nd++], 64, "%dx%d (%dx)", 960 * rs, 544 * rs, rs);
+	dl_[nd] = ui_tr("sys.upscaling"); std::snprintf(dv[nd++], 64, "%s", gfx_gpu_fsr_active() ? "FSR" : "bilinear");
+	dl_[nd] = ui_tr("sys.frame_limit"); std::snprintf(dv[nd++], 64, "%d FPS", display_frame_rate_60() ? 60 : 30);
+	dl_[nd] = ui_tr("sys.presentation"); std::snprintf(dv[nd++], 64, "%s", window_present_mode());
+	dl_[nd] = ui_tr("sys.renderer"); std::snprintf(dv[nd++], 64, "%s", m.gpu_backend ? "GPU" : "software");
 
 	const char *title = std::getenv("RECOMP_GAME_NAME"); if (!title || !*title) title = std::getenv("RECOMP_TITLE"); if (!title || !*title) title = "Project Nativ";
 	const float gh = fs * 2.6f;
@@ -1728,7 +1735,7 @@ void overlay_render_forced(SDL_GPUDevice *device, SDL_GPUTexture *target, uint32
 		return;
 	}
 	if (!strcmp(ui, "toast")) g_force_toast = true;
-	else { g_force_bar = true; if (strcmp(ui, "bar")) g_force_menu = ui; }
+	else { g_force_bar = true; if (strcmp(ui, "bar")) g_force_menu = ui; }   /* (U12b: the key resolves to the translated label in build_bar -- the language may load after this runs) */
 	g_nosd = metrics_osd_lines(g_osd, 6);   /* the HUD too (RECOMP_OSD), in the same frame as the bar so it layers as it does live: under it */
 	g_nft = g_nosd > 1 ? metrics_frame_times(g_ft, 240) : 0;
 	g_full = metrics_osd_level() == 2; if (g_full) metrics_snapshot(&g_snap);
