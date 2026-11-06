@@ -116,10 +116,18 @@ inline bool rows_begin(const char *id) {
 	ImGui::TableSetupColumn("control", ImGuiTableColumnFlags_WidthStretch, 1.15f);
 	return true;
 }
-inline void row(const char *label, const char *explanation = nullptr) {
+inline void row(const char *label, const char *explanation = nullptr, const char *note = nullptr) {
 	ImGui::TableNextRow(0, ImGui::GetFrameHeight() + ImGui::GetStyle().CellPadding.y * 2);
 	ImGui::TableNextColumn();
 	ImGui::TextUnformatted(label);
+	if (note && *note) {   /* (U7: a small muted mark -- "default", "next scene", "after restart") */
+		ImGui::SameLine(0, ImGui::GetFontSize() * 0.35f);
+		ImGui::PushFont(nullptr, ImGui::GetFontSize() * 0.82f);
+		ImGui::PushStyleColor(ImGuiCol_Text, muted);
+		ImGui::TextUnformatted(note);
+		ImGui::PopStyleColor();
+		ImGui::PopFont();
+	}
 	if (explanation && *explanation) { ImGui::PushFont(nullptr, ImGui::GetFontSize() * 0.88f); muted_wrapped(explanation); ImGui::PopFont(); }
 	ImGui::TableNextColumn();
 }

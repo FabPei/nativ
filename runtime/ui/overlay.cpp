@@ -50,6 +50,7 @@
 #include "savedlg_ui.h"
 #include "savedlg.h"
 #include "ui_theme.h"
+#include "setting_defaults.h"   /* (U7) the shared defaults for the rows' "default" marks */
 #include "ui_scale.h"
 #include "sysinfo.h"   /* the "Copy system info" text (U5) */
 #define STBI_NO_STDIO
@@ -112,6 +113,28 @@ const char *settings_str(const char *key, const char *def, char *buf, int bufsiz
 void settings_save(void);
 int settings_reset_all(const char *const *keep);
 extern const char *const settings_default_keep[];
+}
+
+/* (U7) a settings row's mark: "default" while the value equals the shared default (setting_defaults.h), else the
+ * row's timing note -- "next scene" (render scale applies at the game's next scene) or "after restart" (values the
+ * game reads only at start) */
+static const char *note_str(const char *key, const char *cur, const char *when = nullptr) {
+	const char *d = setting_default(key);
+	if (d && cur && !strcmp(d, cur)) return "default";
+	return when;
+}
+static const char *note_s(const char *key, const char *when = nullptr) {
+	const char *d = setting_default(key);
+	char b[64]; settings_str(key, d ? d : "", b, sizeof b);
+	return note_str(key, b, when);
+}
+static const char *note_int(const char *key, long long v, const char *when = nullptr) {
+	char b[24]; std::snprintf(b, sizeof b, "%lld", v);
+	return note_str(key, b, when);
+}
+static const char *note_flt(const char *key, double v, const char *when = nullptr) {
+	char b[32]; std::snprintf(b, sizeof b, "%g", v);
+	return note_str(key, b, when);
 }
 
 static ImGuiContext *g_ctx;
@@ -299,7 +322,7 @@ static void slider_row(const char *id, float *v, float lo, float hi, const char 
 }
 static void page_display(void) {
 	if (!ui::rows_begin("display")) return;
-	ui::row("Resolution", "The game drawn at a multiple of the Vita's 960 × 544. Higher is sharper; 4× and up want a fast GPU.");
+	ui::row("Resolution", "The game drawn at a multiple of the Vita's 960 × 544. Higher is sharper; 4× and up want a fast GPU.", note_int("render_scale", gfx_gpu_render_scale_wanted(), "next scene"));
 	{	int rs = gfx_gpu_render_scale_wanted(), mx = gfx_gpu_render_scale_max(), v = rs - 1;   /* (a pick shows at once: it applies at the game's next scene) */
 		static char names[8][16]; const char *labels[8];
 		for (int n = 1; n <= mx && n <= 8; n++) { std::snprintf(names[n - 1], sizeof names[0], "%d×##rs", n); labels[n - 1] = names[n - 1]; }
@@ -309,9 +332,9 @@ static void page_display(void) {
 		int mw = scale_for_window();
 		if (mw && mw != rs) { ImGui::SameLine(); char l[40]; std::snprintf(l, sizeof l, "Match the window (%d×)", mw); if (ImGui::TextLink(l)) gfx_gpu_render_scale_request(mw); }
 	}
-	ui::row("Picture fit", "How the picture fills the window.");
+	ui::row("Picture fit", "How the picture fills the window.", note_s("aspect"));
 	{ int am = window_get_aspect(); if (ui::segmented(g_aspect_names, 3, &am)) window_set_aspect(am); }
-	ui::row("Widescreen", window_aspect_supported() ? "Shows more of the game at the sides." : "This game has no widescreen support yet.");
+	ui::row("Widescreen", window_aspect_supported() ? "Shows more of the game at the sides." : "This game has no widescreen support yet.", note_s("aspect_ratio"));
 	{	static const char *const ids[4] = {"native", "21:9", "32:9", "window"}, *const names[4] = {"Off##ar", "21:9##ar", "32:9##ar", "Window##ar"};
 		char cur[16]; settings_str("aspect_ratio", "native", cur, sizeof cur);
 		int v = 0; for (int i = 0; i < 4; i++) if (!strcmp(cur, ids[i])) v = i;
@@ -320,7 +343,7 @@ static void page_display(void) {
 		ImGui::EndDisabled();
 	}
 	if (gfx_gpu_hud_supported()) {
-		ui::row("HUD", "With widescreen on: the HUD at its own shape, at the screen's edges or in a 16:9 frame in the middle; or stretched to the width.");
+		ui::row("HUD", "With widescreen on: the HUD at its own shape, at the screen's edges or in a 16:9 frame in the middle; or stretched to the width.", note_s("hud_layout"));
 		static const char *const ids[3] = {"edges", "16:9", "stretch"}, *const names[3] = {"Edges##hud", "16:9##hud", "Stretched##hud"};
 		char cur[16]; settings_str("hud_layout", "edges", cur, sizeof cur);
 		int v = 0; for (int i = 0; i < 3; i++) if (!strcmp(cur, ids[i])) v = i;
@@ -329,13 +352,13 @@ static void page_display(void) {
 		ImGui::EndDisabled();
 	}
 	if (gfx_gpu_target_scale_supported()) {
-		ui::row("Full-resolution world", "The game draws its 3D world below the screen's resolution; on, at the full resolution. Sharper, at a GPU cost.");
+		ui::row("Full-resolution world", "The game draws its 3D world below the screen's resolution; on, at the full resolution. Sharper, at a GPU cost.", note_int("full_res_world", settings_int("full_res_world", 1)));
 		{ bool on = settings_int("full_res_world", 1) != 0; if (ui::toggle("frw", &on)) { settings_set_int("full_res_world", on ? 1 : 0); settings_save(); } }
 	}
 	if (gfx_gpu_ssao_supported()) {
-		ui::row("Ambient occlusion", "Soft shadows where surfaces meet: corners, crevices, under objects.");
+		ui::row("Ambient occlusion", "Soft shadows where surfaces meet: corners, crevices, under objects.", note_int("ssao", settings_int("ssao", 1)));
 		{ bool on = settings_int("ssao", 1) != 0; if (ui::toggle("ssao", &on)) { settings_set_int("ssao", on ? 1 : 0); settings_save(); } }
-		ui::row("Occlusion strength");
+		ui::row("Occlusion strength", nullptr, note_flt("ssao_strength", settings_float("ssao_strength", 1.0)));
 		{	float st = (float)settings_float("ssao_strength", 1.0) * 100.0f;
 			ImGui::BeginDisabled(settings_int("ssao", 1) == 0);
 			ImGui::SetNextItemWidth(-FLT_MIN);
@@ -343,28 +366,29 @@ static void page_display(void) {
 			ImGui::EndDisabled();
 		}
 	}
-	ui::row("Fullscreen");
+	ui::row("Fullscreen", nullptr, note_int("fullscreen", window_get_fullscreen()));
 	{ bool fs = window_get_fullscreen() != 0; if (ui::toggle("fs", &fs)) window_set_fullscreen(fs ? 1 : 0); }
 	if (gfx_gpu_fsr_supported()) {   /* (this game's FSR is verified: the anti-aliasing is a choice) */
-		ui::row("Anti-aliasing", "Smooths jagged edges. FXAA: a light pass on the finished frame. FSR 3.1 (experimental): AMD's temporal anti-aliasing on the 3D world, steadier and cleaner, at a GPU cost; some surfaces may still shimmer (F4 compares it live).");
+		ui::row("Anti-aliasing", "Smooths jagged edges. FXAA: a light pass on the finished frame. FSR 3.1 (experimental): AMD's temporal anti-aliasing on the 3D world, steadier and cleaner, at a GPU cost; some surfaces may still shimmer (F4 compares it live).",
+			note_str("post_aa", (settings_int("fsr", 0) || !settings_int("post_aa", 1)) ? "0" : "1"));
 		static const char *const names[3] = {"Off##aam", "FXAA##aam", "FSR 3.1 (experimental)##aam"};
 		int v = settings_int("fsr", 0) ? 2 : settings_int("post_aa", 1) ? 1 : 0;
 		if (ui::segmented(names, 3, &v)) { settings_set_int("fsr", v == 2); settings_set_int("post_aa", v == 1); settings_save(); }
 	} else {
-		ui::row("Anti-aliasing", "Smooths jagged edges (FXAA).");
+		ui::row("Anti-aliasing", "Smooths jagged edges (FXAA).", note_int("post_aa", settings_int("post_aa", 1)));
 		{ bool aa = settings_int("post_aa", 1) != 0; if (ui::toggle("aa", &aa)) { settings_set_int("post_aa", aa ? 1 : 0); settings_save(); } }
 	}
-	ui::row("Sharpening", "Brings back detail lost to scaling and anti-aliasing.");
+	ui::row("Sharpening", "Brings back detail lost to scaling and anti-aliasing.", note_flt("sharpen", settings_float("sharpen", 0.35)));
 	{	float sh = (float)settings_float("sharpen", 0.35) * 100.0f;
 		ImGui::SetNextItemWidth(-FLT_MIN);
 		if (ImGui::SliderFloat("##sharp", &sh, 0.0f, 100.0f, sh <= 0.0f ? "Off" : "%.0f%%")) { settings_set_float("sharpen", sh / 100.0f); settings_save(); }
 	}
-	ui::row("Texture filtering", "Keeps textures crisp when seen at an angle.");
+	ui::row("Texture filtering", "Keeps textures crisp when seen at an angle.", note_int("anisotropy", settings_int("anisotropy", 16)));
 	{	static const int an[5] = {1, 2, 4, 8, 16}; static const char *const names[5] = {"Off##af", "2×##af", "4×##af", "8×##af", "16×##af"};
 		int cur = settings_int("anisotropy", 16), v = 4; for (int i = 0; i < 5; i++) if (an[i] == cur) v = i;
 		if (ui::segmented(names, 5, &v)) { settings_set_int("anisotropy", an[v]); settings_save(); }
 	}
-	ui::row("Shadow edges", "How soft the edges of shadows are.");
+	ui::row("Shadow edges", "How soft the edges of shadows are.", note_int("shadow_filter", settings_int("shadow_filter", 1)));
 	{	static const char *const names[3] = {"Original##sf", "Soft##sf", "Softer##sf"}; int v = settings_int("shadow_filter", 1);
 		if (ui::segmented(names, 3, &v)) { settings_set_int("shadow_filter", v); settings_save(); }
 	}
@@ -372,7 +396,7 @@ static void page_display(void) {
 }
 static void page_performance(void) {
 	if (!ui::rows_begin("perf")) return;
-	ui::row("On-screen stats", "Frame rate and timings drawn over the game. F1 cycles them.");
+	ui::row("On-screen stats", "Frame rate and timings drawn over the game. F1 cycles them.", note_int("osd", metrics_osd_level()));
 	{ static const char *const names[3] = {"Off##osd", "FPS##osd", "Full##osd"}; int lvl = metrics_osd_level(); if (ui::segmented(names, 3, &lvl)) set_osd(lvl); }
 	ui::row("Frame rate now");
 	{ char b[32]; std::snprintf(b, sizeof b, "%.0f fps", metrics_fps()); ImGui::PushFont(nullptr, ImGui::GetFontSize() * 1.6f); ImGui::TextUnformatted(b); ImGui::PopFont(); }
@@ -381,7 +405,7 @@ static void page_performance(void) {
 static void page_game(void) {
 	prefs_load();
 	if (!ui::rows_begin("game")) return;
-	ui::row("Frame rate", "60 is experimental: parts of a game timed in fixed 1/30 s steps can run fast.");
+	ui::row("Frame rate", "60 is experimental: parts of a game timed in fixed 1/30 s steps can run fast.", note_flt("frame_rate", P.fr));
 	{ static const char *const names[2] = {"30##fr", "60##fr"}; int v = P.fr >= 60; if (ui::segmented(names, 2, &v)) set_frame_rate(v ? 60 : 30); }
 	if (game_option("fov")) {
 		ui::row("Field of view", "A wider view. 1.00× is the game's own.");
@@ -400,13 +424,13 @@ static void page_game(void) {
 		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##chr", &P.chr, 1.0f, 8.0f, "%.1f×")) set_chr(P.chr);
 	}
 	if (display_pstv_looked()) {   /* (display.c's PS TV mode: a game with a PS TV layout of its own) */
-		ui::row("Controller layout", "How the touch screen's actions are done, chosen as the game starts and kept until you quit. Standard: the game as on a handheld, with keyboard, mouse or a controller (its touch cursor). PS TV: the game's own PS TV layout, every action on buttons and sticks, a controller only. Ask: a choice at each start while a controller is connected, Standard otherwise. Applies the next time the game starts.");
+		ui::row("Controller layout", "How the touch screen's actions are done, chosen as the game starts and kept until you quit. Standard: the game as on a handheld, with keyboard, mouse or a controller (its touch cursor). PS TV: the game's own PS TV layout, every action on buttons and sticks, a controller only. Ask: a choice at each start while a controller is connected, Standard otherwise. Applies the next time the game starts.", note_int("controller_layout", settings_int("controller_layout", 0), "after restart"));
 		static const char *const names[3] = {"Ask at start##cl", "Standard##cl", "PS TV##cl"};
 		int v = settings_int("controller_layout", 0); if (v < 0 || v > 2) v = 0;   /* (the setting's values: 0 ask, 1 standard (touch), 2 PS TV) */
 		if (ui::segmented(names, 3, &v)) { settings_set_int("controller_layout", v); settings_save(); }
 	}
 	if (game_option("online")) {
-		ui::row("Play online", "The game's online modes with other Project Nativ players, on your network and over the internet. They see your online name and your computer's IP address, as in any peer-to-peer game. Applies the next time the game starts.");
+		ui::row("Play online", "The game's online modes with other Project Nativ players, on your network and over the internet. They see your online name and your computer's IP address, as in any peer-to-peer game. Applies the next time the game starts.", note_int("online", settings_int("online", 1), "after restart"));
 		if (net_online_needs()) { char t[128]; snprintf(t, sizeof t, "Needs update %s: this copy is another version, and rooms only match their own. Add the update in the launcher.", net_online_needs()); ImGui::TextWrapped("%s", t); }
 		else { bool on = settings_int("online", 1) != 0; if (ui::toggle("online", &on)) { settings_set_int("online", on ? 1 : 0); settings_save(); } }
 		if (net_online()) {   /* how it stands (status.c), every half second */
@@ -426,7 +450,7 @@ static void page_game(void) {
 		}
 		static char oid[32], srv[128]; static int loaded, epoch;
 		if (!loaded || epoch != g_prefs_epoch) { loaded = 1; epoch = g_prefs_epoch; settings_str("online_id", "", oid, sizeof oid); for (const char *tag : {"ntv_", "nativ_", "ativ_"}) if (!strncasecmp(oid, tag, strlen(tag))) { memmove(oid, oid + strlen(tag), strlen(oid) - strlen(tag) + 1); break; } oid[10] = 0; settings_str("private_server", "", srv, sizeof srv); }
-		ui::row("Online name", "Others see ntv_ and your name: up to 10 letters, digits, '-' or '_'. Empty: a tag of your own. Applies the next time the game starts.");
+		ui::row("Online name", "Others see ntv_ and your name: up to 10 letters, digits, '-' or '_'. Empty: a tag of your own. Applies the next time the game starts.", note_s("online_id", "after restart"));
 		{	ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("ntv_"); ImGui::SameLine(0, 0);
 			ImGui::SetNextItemWidth(-FLT_MIN); ImGui::InputText("##oid", oid, 11);
 			int ok = 1, n = (int)strlen(oid);
@@ -439,7 +463,7 @@ static void page_game(void) {
 			ImGui::SetNextItemWidth(-FLT_MIN); ImGui::InputText("##srv", srv, sizeof srv); if (ImGui::IsItemDeactivatedAfterEdit()) { settings_set_str("private_server", srv); settings_save(); }
 		}
 	}
-	ui::row("Volume");
+	ui::row("Volume", nullptr, note_flt("volume", P.vol));
 	{ float pct = P.vol * 100.0f; ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##vol", &pct, 0.0f, 100.0f, "%.0f%%")) set_volume(pct / 100.0f); }
 	ui::rows_end();
 }
@@ -465,39 +489,39 @@ static void page_controls(void) {
 	section_label("Input");
 	if (ui::rows_begin("input")) {
 		ui::row("Play with", window_kbm_active() ? "Keyboard and mouse in use. Hold Alt (Option) to free the cursor -- it is then the touch screen."
-		                                          : "Controller in use. Automatic follows the last device you touch.");
+		                                          : "Controller in use. Automatic follows the last device you touch.", note_s("input_mode"));
 		{	static const char *const ids[3] = {"auto", "pad", "kbm"}, *const names[3] = {"Automatic##in", "Controller##in", "Keyboard & mouse##in"};
 			char cur[8]; settings_str("input_mode", "auto", cur, sizeof cur);
 			int v = 0; for (int i = 0; i < 3; i++) if (!strcmp(cur, ids[i])) v = i;
 			if (ui::segmented(names, 3, &v)) { settings_set_str("input_mode", ids[v]); settings_save(); }
 		}
-		ui::row("Mouse look", "The mouse turns the camera and aims; left button R, right button L.");
+		ui::row("Mouse look", "The mouse turns the camera and aims; left button R, right button L.", note_int("mouse_look", settings_int("mouse_look", 1)));
 		{ bool look = settings_int("mouse_look", 1) != 0; if (ui::toggle("ml", &look)) { settings_set_int("mouse_look", look ? 1 : 0); settings_save(); } }
-		ui::row("Mouse aim", "Direct: the game turns exactly as far as the mouse moves (games with direct aim; the others use Stick by themselves). Stick: the mouse moves the right stick. F8 switches.");
+		ui::row("Mouse aim", "Direct: the game turns exactly as far as the mouse moves (games with direct aim; the others use Stick by themselves). Stick: the mouse moves the right stick. F8 switches.", note_int("raw_look", window_raw_look()));
 		{ static const char *const names[2] = {"Direct##ma", "Stick##ma"}; int v = window_raw_look() ? 0 : 1; if (ui::segmented(names, 2, &v)) window_set_raw_look(v == 0); }
-		ui::row("Mouse sensitivity");
+		ui::row("Mouse sensitivity", nullptr, note_flt("mouse_sens", settings_float("mouse_sens", 1.0)));
 		{ static float sens = -1; static int epoch; if (sens < 0 || epoch != g_prefs_epoch) { sens = (float)settings_float("mouse_sens", 1.0); epoch = g_prefs_epoch; } ImGui::SetNextItemWidth(-FLT_MIN);
 		  if (ImGui::SliderFloat("##ms", &sens, 0.1f, 5.0f, "%.2f×", ImGuiSliderFlags_Logarithmic)) { settings_set_float("mouse_sens", sens); settings_save(); } }
-		ui::row("Invert vertical look");
+		ui::row("Invert vertical look", nullptr, note_int("mouse_invert", settings_int("mouse_invert", 0)));
 		{ bool inv = settings_int("mouse_invert", 0) != 0; if (ui::toggle("mi", &inv)) { settings_set_int("mouse_invert", inv ? 1 : 0); settings_save(); } }
-		ui::row("L and R buttons", "The shoulder pair that is the game's L and R (aim and fire in a shooter). The other pair holds the touch cursor, or is L2 and R2 in a PS TV layout.");
+		ui::row("L and R buttons", "The shoulder pair that is the game's L and R (aim and fire in a shooter). The other pair holds the touch cursor, or is L2 and R2 in a PS TV layout.", note_s("shoulder_buttons"));
 		{ static const char *const names[2] = {"Triggers (L2 / R2)##sb", "Bumpers (L1 / R1)##sb"}; char cur[16]; int v = !strcmp(settings_str("shoulder_buttons", "triggers", cur, sizeof cur), "bumpers");
 		  if (ui::segmented(names, 2, &v)) { settings_set_str("shoulder_buttons", v ? "bumpers" : "triggers"); settings_save(); } }
-		ui::row("Touch cursor speed", "Hold the shoulder pair that isn't L and R, and move a stick: the cursor is a finger on the touch screen (Cross, L or R presses). Move both sticks for two fingers.");
+		ui::row("Touch cursor speed", "Hold the shoulder pair that isn't L and R, and move a stick: the cursor is a finger on the touch screen (Cross, L or R presses). Move both sticks for two fingers.", note_flt("touch_cursor_speed", settings_float("touch_cursor_speed", 1.0)));
 		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##tcs", &P.tcs, 0.25f, 3.0f, "%.2f×")) set_tcs(P.tcs);
 		ui::rows_end();
 	}
 	section_label("Motion");
 	if (ui::rows_begin("motion")) {
-		ui::row("Gyro", window_gyro_present() ? "This controller has one: it stands in for the Vita's motion sensor." : "This controller has no gyro. Tilt sections use the keys or the left stick.");
+		ui::row("Gyro", window_gyro_present() ? "This controller has one: it stands in for the Vita's motion sensor." : "This controller has no gyro. Tilt sections use the keys or the left stick.", note_int("gyro", P.gyro));
 		{ bool on = P.gyro != 0; if (ui::toggle("gy", &on)) set_gyro(on); }
-		ui::row("A level controller is a Vita held", "Upright, as in your hands, or flat on a table.");
+		ui::row("A level controller is a Vita held", "Upright, as in your hands, or flat on a table.", note_s("gyro_pose"));
 		{ static const char *const names[2] = {"Upright##gp", "Flat##gp"}; int v = P.gyro_flat ? 1 : 0; if (ui::segmented(names, 2, &v)) set_gyro_pose(v); }
-		ui::row("Gyro sensitivity");
+		ui::row("Gyro sensitivity", nullptr, note_flt("gyro_sens", settings_float("gyro_sens", 1.0)));
 		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##gs", &P.gyro_sens, 0.25f, 3.0f, "%.2f×")) set_gyro_sens(P.gyro_sens);
 		ui::row("Recentre", "Makes the way the controller points now the centre. R3 does the same.");
 		if (ImGui::Button("Recentre the gyro")) motion_recenter();
-		ui::row("Rear camera", "What the Vita's camera sees -- Uncharted's parchment puzzles want a light. F7 switches the lamp.");
+		ui::row("Rear camera", "What the Vita's camera sees -- Uncharted's parchment puzzles want a light. F7 switches the lamp.", note_s("camera"));
 		{	static const char *const ids[3] = {"light", "webcam", "dark"}, *const names[3] = {"A lamp##cam", "This computer's camera##cam", "Darkness##cam"};
 			char cur[16]; settings_str("camera", "light", cur, sizeof cur);
 			int v = 0; for (int i = 0; i < 3; i++) if (!strcmp(cur, ids[i])) v = i;
