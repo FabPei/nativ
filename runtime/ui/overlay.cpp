@@ -649,22 +649,22 @@ static void version_line(char *out, size_t n) {
 	if (right[0]) snprintf(out + strlen(out), n - strlen(out), "%s%s", out[0] ? " · " : "", right);
 }
 static void page_help(void) {
-	section_label("Shortcuts");
+	section_label(ui_tr("ctrl.shortcuts"));
 	reference_table("shortcuts", shortcuts_count, shortcuts_row);
-	section_label("About");
+	section_label(ui_tr("help.about"));
 	{	ImGui::Dummy(ImVec2(0, ImGui::GetFontSize() * 0.2f));
 		ImVec2 p = ImGui::GetCursorScreenPos(); const float h = ImGui::GetFontSize() * 1.5f;
 		ImGui::Dummy(ImVec2(ui::wordmark(ImGui::GetWindowDrawList(), p, h), h));
 	}
-	ImGui::TextWrapped("Project Nativ: this PS Vita game, statically recompiled to native code, running on this computer's own CPU and GPU.");
+	ImGui::TextWrapped("%s", ui_tr("help.about.body"));
 	const char *title = std::getenv("RECOMP_TITLE");
 	int v = SDL_GetVersion();
-	ImGui::TextDisabled("%s  ·  Dear ImGui %s  ·  SDL %d.%d.%d", title && *title ? title : "unknown title", IMGUI_VERSION, SDL_VERSIONNUM_MAJOR(v), SDL_VERSIONNUM_MINOR(v), SDL_VERSIONNUM_MICRO(v));
+	ImGui::TextDisabled("%s  ·  Dear ImGui %s  ·  SDL %d.%d.%d", title && *title ? title : ui_tr("help.unknown_title"), IMGUI_VERSION, SDL_VERSIONNUM_MAJOR(v), SDL_VERSIONNUM_MINOR(v), SDL_VERSIONNUM_MICRO(v));
 	{	char line[192]; version_line(line, sizeof line); if (*line) ImGui::TextDisabled("%s", line); }   /* (U4) */
 	ImGui::Dummy(ImVec2(0, ImGui::GetFontSize() * 0.3f));
-	ui::muted_wrapped("The menu bar: move the mouse to the top edge of the window (or tap the tab there). This menu: F10, or the PS button; the game pauses while it's up.");
+	ui::muted_wrapped(ui_tr("help.bar_hint"));
 	{	static double copied_until;   /* "Copied" shows for 2 s next to the button (U5) */
-		if (ImGui::Button("Copy system info")) {
+		if (ImGui::Button(ui_tr("help.copy_sysinfo"))) {
 			MetricsSnapshot m; metrics_snapshot(&m);
 			char ver[192], sdl[32], cwd[1024];
 			version_line(ver, sizeof ver);
@@ -685,9 +685,9 @@ static void page_help(void) {
 			SDL_SetClipboardText(text);
 			copied_until = ImGui::GetTime() + 2.0;
 		}
-		if (copied_until > ImGui::GetTime()) { ImGui::SameLine(); ImGui::TextDisabled("Copied"); }
+		if (copied_until > ImGui::GetTime()) { ImGui::SameLine(); ImGui::TextDisabled("%s", ui_tr("help.copied")); }
 		ImGui::SameLine();
-		if (ImGui::Button("Open log folder")) {   /* hub.cpp's open_folder pattern */
+		if (ImGui::Button(ui_tr("help.open_log"))) {   /* hub.cpp's open_folder pattern */
 			char d[1024], url[1200];
 			d[0] = 0; if (char *c = SDL_GetCurrentDirectory()) { snprintf(d, sizeof d, "%s", c); SDL_free(c); }
 			for (char *p = d; *p; p++) if (*p == '\\') *p = '/';
@@ -699,16 +699,16 @@ static void page_help(void) {
 			SDL_OpenURL(url);
 		}
 	}
-	ui::muted_wrapped("For a full bug report use the launcher: the game's ⋯ menu → Report a problem.");
-	if (ImGui::Button("Reset all settings…")) ImGui::OpenPopup("Reset all settings");   /* (U6: confirmed below) */
-	if ((g_modal_open = ImGui::BeginPopupModal("Reset all settings", nullptr, ImGuiWindowFlags_AlwaysAutoResize))) {
-		ImGui::TextWrapped("Every setting goes back to its default. These stay: open_psid (the saves are one player's), online_id, the np_* network keys, menu_hint_shown.");
+	ui::muted_wrapped(ui_tr("help.bug_hint"));
+	if (ImGui::Button(ui_tr("help.reset_all"))) ImGui::OpenPopup(ui_tr("help.reset_all"));   /* (U6: confirmed below) */
+	if ((g_modal_open = ImGui::BeginPopupModal(ui_tr("help.reset_all"), nullptr, ImGuiWindowFlags_AlwaysAutoResize))) {
+		ImGui::TextWrapped("%s", ui_tr("help.reset_all_help"));
 		if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();   /* Cancel is the focused button first */
 		if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight)) ImGui::CloseCurrentPopup();   /* B/Esc = Cancel (window.c leaves Esc to a modal) */
-		if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+		if (ImGui::Button(ui_tr("common.cancel"))) ImGui::CloseCurrentPopup();
 		ImGui::SameLine();
-		if (ImGui::Button("Reset")) {
-			if (!settings_reset_all(settings_default_keep)) overlay_toast("Settings could not be saved", 3.0);   /* the one keep list (settings.c): saves and the server know the player by these */
+		if (ImGui::Button(ui_tr("help.reset_btn"))) {
+			if (!settings_reset_all(settings_default_keep)) overlay_toast(ui_tr("help.not_saved"), 3.0);   /* the one keep list (settings.c): saves and the server know the player by these */
 			g_prefs_epoch++; P.loaded = false; prefs_load();   /* the pages re-read the way the menu does on open */
 			ImGui::CloseCurrentPopup();
 		}
