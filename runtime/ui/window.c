@@ -242,6 +242,12 @@ void window_set_fullscreen(int on) {
 	if (win) SDL_SetWindowFullscreen(win, on != 0);
 	settings_set_int("fullscreen", on != 0); settings_save();
 }
+/* the windowed window at n times the Vita's 960x544 (U9's "Window size": the menu's Display page; windowed only --
+ * the same direct call on the window's thread as window_set_fullscreen) */
+void window_set_size(int mult) {
+	if (mult < 1 || mult > 4 || !win) return;
+	SDL_SetWindowSize(win, 960 * mult, 544 * mult);
+}
 /* ---- wider aspect ratios (settings "aspect_ratio": native | 21:9 | 32:9 | window): the factor k the game's
  * horizontal view is widened by -- its camera hook (hooks.c, aspect_widen) builds the projection that
  * much wider into the same 960x544 frame, and the window shows that frame k times wider than native.
@@ -945,7 +951,9 @@ void window_run(void *(*fn)(void *), void *arg) {
 		 * refresh too. Killzone's CPU reads of its exposure target waited ~6 ms each: 40 fps windowed against 66 headless
 		 * (RTX laptop, 2026-10-26), 47 with mailbox. Mailbox doesn't block, so this loop paces itself (self_paced, below).
 		 * Metal blocks the CPU in nextDrawable instead, not the queue: vsync there. RECOMP_PRESENT_MODE=fifo|mailbox|immediate */
+		char pm_set[16];
 		const char *pe = getenv("RECOMP_PRESENT_MODE"), *dv = SDL_GetGPUDeviceDriver(gpu);
+		if (!pe) { settings_str("present_mode", "", pm_set, sizeof pm_set); if (pm_set[0]) pe = pm_set; }   /* (U9: the menu's Presentation choice, read at start; RECOMP_PRESENT_MODE still wins) */
 		/* (with mailbox, Killzone at 3x and 21:9 lost the device in about half its runs: the FRAGCOLOR copy, a blit since,
 		 * gfx_gpu.c fetch_blit) */
 		SDL_GPUPresentMode pm = pe ? (!strcmp(pe, "immediate") ? SDL_GPU_PRESENTMODE_IMMEDIATE : !strcmp(pe, "mailbox") ? SDL_GPU_PRESENTMODE_MAILBOX : SDL_GPU_PRESENTMODE_VSYNC)

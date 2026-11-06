@@ -15,6 +15,8 @@
  * Keys (consumer, values):
  *   render_scale  gfx_gpu.c   1..6                      internal resolution (5760x3264 at 6)
  *   aspect        window.c    fit | stretch | fill      how the 960x544 picture meets the window
+ *   present_mode  window.c    vsync | mailbox | immediate (default empty = today's rule: mailbox on Vulkan, else vsync)
+ *                             how frames reach the screen; read once at the swapchain setup (RECOMP_PRESENT_MODE wins)
  *   post_aa       post.c      0 | 1 (default 1)         FXAA on the finished frame (RECOMP_POST_AA wins)
  *   sharpen       post.c      0..1 (default 0.35)       CAS sharpening at output resolution, 0 off (RECOMP_SHARPEN wins)
  *   anisotropy    gfx_gpu.c   1 | 2 | 4 | 8 | 16 (default 16)   anisotropic texture filtering (RECOMP_ANISO wins)

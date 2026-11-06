@@ -73,7 +73,7 @@ int net_online(void); const char *net_online_needs(void);
 void display_set_paused(int on);
 /* window.c */
 int window_get_aspect(void); void window_set_aspect(int mode);
-int window_get_fullscreen(void); void window_set_fullscreen(int on);
+int window_get_fullscreen(void); void window_set_fullscreen(int on); void window_set_size(int mult);
 int window_raw_look(void); void window_set_raw_look(int on);
 int window_controls_count(void);
 int window_gyro_present(void);
@@ -373,6 +373,20 @@ static void page_display(void) {
 	}
 	ui::row("Fullscreen", nullptr, note_int("fullscreen", window_get_fullscreen()));
 	{ bool fs = window_get_fullscreen() != 0; if (ui::toggle("fs", &fs)) window_set_fullscreen(fs ? 1 : 0); }
+	ui::row("Presentation", "How frames reach the screen. Vsync waits for the screen's refresh: no tearing. Mailbox and Immediate do not wait -- less input lag, the frame rate paces itself -- and Immediate can tear. Applies after restart.", "after restart");
+	{	static const char *const names[3] = {"Vsync##pm", "Mailbox##pm", "Immediate##pm"}, *const ids[3] = {"vsync", "mailbox", "immediate"};
+		char cur[16]; settings_str("present_mode", "", cur, sizeof cur);
+		int v = !strcmp(cur, "mailbox") ? 1 : !strcmp(cur, "immediate") ? 2 : 0;
+		if (ui::segmented(names, 3, &v)) { settings_set_str("present_mode", ids[v]); save_settings(); }
+	}
+	if (!window_get_fullscreen()) {
+		ui::row("Window size", "The window at a multiple of the Vita's 960 × 544.");
+		for (int n = 1; n <= 4; n++) {
+			char l[10]; std::snprintf(l, sizeof l, "%d×##ws", n);
+			if (n > 1) ImGui::SameLine();
+			if (ImGui::Button(l)) window_set_size(n);
+		}
+	}
 	if (gfx_gpu_fsr_supported()) {   /* (this game's FSR is verified: the anti-aliasing is a choice) */
 		ui::row("Anti-aliasing", "Smooths jagged edges. FXAA: a light pass on the finished frame. FSR 3.1 (experimental): AMD's temporal anti-aliasing on the 3D world, steadier and cleaner, at a GPU cost; some surfaces may still shimmer (F4 compares it live).",
 			note_str("post_aa", (settings_int("fsr", 0) || !settings_int("post_aa", 1)) ? "0" : "1"));
