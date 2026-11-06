@@ -534,7 +534,7 @@ extern "C" int camera_light(void); extern "C" void camera_light_set(int on);
 static void section_label(const char *s) { ImGui::Dummy(ImVec2(0, ImGui::GetFontSize() * 0.4f)); ImGui::PushStyleColor(ImGuiCol_Text, ui::accent); ImGui::TextUnformatted(s); ImGui::PopStyleColor(); }
 static void reference_table(const char *id, int (*count)(void), void (*row)(int, const char **, const char **, const char **)) {
 	if (!ImGui::BeginTable(id, 3, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) return;
-	ImGui::TableSetupColumn("Action"); ImGui::TableSetupColumn("Keyboard and mouse"); ImGui::TableSetupColumn("Controller");
+	ImGui::TableSetupColumn(ui_tr("ctrl.action")); ImGui::TableSetupColumn(ui_tr("ctrl.kbm")); ImGui::TableSetupColumn(ui_tr("common.controller"));
 	ImGui::PushStyleColor(ImGuiCol_Text, ui::muted); ImGui::TableHeadersRow(); ImGui::PopStyleColor();
 	for (int i = 0, n = count(); i < n; i++) {
 		const char *a, *k, *p; row(i, &a, &k, &p);
@@ -549,83 +549,92 @@ static int shortcuts_count(void) { return (int)(sizeof g_shortcuts / sizeof g_sh
 static void shortcuts_row(int i, const char **a, const char **k, const char **p) { *a = g_shortcuts[i][0]; *k = g_shortcuts[i][1]; *p = g_shortcuts[i][2]; }
 static void page_controls(void) {
 	prefs_load();
-	section_label("Input");
+	section_label(ui_tr("ctrl.input"));
 	if (ui::rows_begin("input")) {
-		ui::row("Play with", window_kbm_active() ? "Keyboard and mouse in use. Hold Alt (Option) to free the cursor -- it is then the touch screen."
-		                                          : "Controller in use. Automatic follows the last device you touch.", note_s("input_mode"));
-		{	static const char *const ids[3] = {"auto", "pad", "kbm"}, *const names[3] = {"Automatic##in", "Controller##in", "Keyboard & mouse##in"};
+		ui::row(ui_tr("ctrl.play_with"), window_kbm_active() ? ui_tr("ctrl.play_with_kbm") : ui_tr("ctrl.play_with_pad"), note_s("input_mode"));
+		{	static const char *const ids[3] = {"auto", "pad", "kbm"}; char t0[48], t1[48], t2[48];
+			const char *names[3] = {tr_suf(ui_tr("ctrl.in_auto"), "##in", t0, sizeof t0), tr_suf(ui_tr("common.controller"), "##in", t1, sizeof t1),
+			                        tr_suf(ui_tr("ctrl.in_kbm"), "##in", t2, sizeof t2)};
 			char cur[8]; settings_str("input_mode", "auto", cur, sizeof cur);
 			int v = 0; for (int i = 0; i < 3; i++) if (!strcmp(cur, ids[i])) v = i;
 			if (ui::segmented(names, 3, &v)) { settings_set_str("input_mode", ids[v]); save_settings(); }
 		}
-		ui::row("Mouse look", "The mouse turns the camera and aims; left button R, right button L.", note_int("mouse_look", settings_int("mouse_look", 1)));
+		ui::row(ui_tr("ctrl.mouse_look"), ui_tr("ctrl.mouse_look_help"), note_int("mouse_look", settings_int("mouse_look", 1)));
 		{ bool look = settings_int("mouse_look", 1) != 0; if (ui::toggle("ml", &look)) { settings_set_int("mouse_look", look ? 1 : 0); save_settings(); } }
-		ui::row("Mouse aim", "Direct: the game turns exactly as far as the mouse moves (games with direct aim; the others use Stick by themselves). Stick: the mouse moves the right stick. F8 switches.", note_int("raw_look", window_raw_look()));
-		{ static const char *const names[2] = {"Direct##ma", "Stick##ma"}; int v = window_raw_look() ? 0 : 1; if (ui::segmented(names, 2, &v)) window_set_raw_look(v == 0); }
-		ui::row("Mouse sensitivity", nullptr, note_flt("mouse_sens", settings_float("mouse_sens", 1.0)));
+		ui::row(ui_tr("ctrl.mouse_aim"), ui_tr("ctrl.mouse_aim_help"), note_int("raw_look", window_raw_look()));
+		{ char t0[48], t1[48];
+			const char *names[2] = {tr_suf(ui_tr("ctrl.aim_direct"), "##ma", t0, sizeof t0), tr_suf(ui_tr("ctrl.aim_stick"), "##ma", t1, sizeof t1)};
+			int v = window_raw_look() ? 0 : 1; if (ui::segmented(names, 2, &v)) window_set_raw_look(v == 0); }
+		ui::row(ui_tr("ctrl.mouse_sens"), nullptr, note_flt("mouse_sens", settings_float("mouse_sens", 1.0)));
 		{ static float sens = -1; static int epoch; if (sens < 0 || epoch != g_prefs_epoch) { sens = (float)settings_float("mouse_sens", 1.0); epoch = g_prefs_epoch; } ImGui::SetNextItemWidth(-FLT_MIN);
 		  if (ImGui::SliderFloat("##ms", &sens, 0.1f, 5.0f, "%.2f×", ImGuiSliderFlags_Logarithmic)) { settings_set_float("mouse_sens", sens); save_settings(); } }
-		ui::row("Invert vertical look", nullptr, note_int("mouse_invert", settings_int("mouse_invert", 0)));
+		ui::row(ui_tr("ctrl.mouse_invert"), nullptr, note_int("mouse_invert", settings_int("mouse_invert", 0)));
 		{ bool inv = settings_int("mouse_invert", 0) != 0; if (ui::toggle("mi", &inv)) { settings_set_int("mouse_invert", inv ? 1 : 0); save_settings(); } }
-		ui::row("L and R buttons", "The shoulder pair that is the game's L and R (aim and fire in a shooter). The other pair holds the touch cursor, or is L2 and R2 in a PS TV layout.", note_s("shoulder_buttons"));
-		{ static const char *const names[2] = {"Triggers (L2 / R2)##sb", "Bumpers (L1 / R1)##sb"}; char cur[16]; int v = !strcmp(settings_str("shoulder_buttons", "triggers", cur, sizeof cur), "bumpers");
-		  if (ui::segmented(names, 2, &v)) { settings_set_str("shoulder_buttons", v ? "bumpers" : "triggers"); save_settings(); } }
-		ui::row("Touch cursor speed", "Hold the shoulder pair that isn't L and R, and move a stick: the cursor is a finger on the touch screen (Cross, L or R presses). Move both sticks for two fingers.", note_flt("touch_cursor_speed", settings_float("touch_cursor_speed", 1.0)));
+		ui::row(ui_tr("ctrl.shoulder"), ui_tr("ctrl.shoulder_help"), note_s("shoulder_buttons"));
+		{ char t0[48], t1[48];
+			const char *names[2] = {tr_suf(ui_tr("ctrl.shoulder_trig"), "##sb", t0, sizeof t0), tr_suf(ui_tr("ctrl.shoulder_bump"), "##sb", t1, sizeof t1)};
+			char cur[16]; int v = !strcmp(settings_str("shoulder_buttons", "triggers", cur, sizeof cur), "bumpers");
+			if (ui::segmented(names, 2, &v)) { settings_set_str("shoulder_buttons", v ? "bumpers" : "triggers"); save_settings(); } }
+		ui::row(ui_tr("ctrl.touch_speed"), ui_tr("ctrl.touch_speed_help"), note_flt("touch_cursor_speed", settings_float("touch_cursor_speed", 1.0)));
 		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##tcs", &P.tcs, 0.25f, 3.0f, "%.2f×")) set_tcs(P.tcs);
 		ui::rows_end();
 	}
-	section_label("Motion");
+	section_label(ui_tr("ctrl.motion"));
 	if (ui::rows_begin("motion")) {
-		ui::row("Gyro", window_gyro_present() ? "This controller has one: it stands in for the Vita's motion sensor." : "This controller has no gyro. Tilt sections use the keys or the left stick.", note_int("gyro", P.gyro));
+		ui::row(ui_tr("ctrl.gyro"), window_gyro_present() ? ui_tr("ctrl.gyro_present") : ui_tr("ctrl.gyro_absent"), note_int("gyro", P.gyro));
 		{ bool on = P.gyro != 0; if (ui::toggle("gy", &on)) set_gyro(on); }
-		ui::row("A level controller is a Vita held", "Upright, as in your hands, or flat on a table.", note_s("gyro_pose"));
-		{ static const char *const names[2] = {"Upright##gp", "Flat##gp"}; int v = P.gyro_flat ? 1 : 0; if (ui::segmented(names, 2, &v)) set_gyro_pose(v); }
-		ui::row("Gyro sensitivity", nullptr, note_flt("gyro_sens", settings_float("gyro_sens", 1.0)));
+		ui::row(ui_tr("ctrl.gyro_pose"), ui_tr("ctrl.gyro_pose_help"), note_s("gyro_pose"));
+		{ char t0[48], t1[48];
+			const char *names[2] = {tr_suf(ui_tr("ctrl.gyro_upright"), "##gp", t0, sizeof t0), tr_suf(ui_tr("ctrl.gyro_flat"), "##gp", t1, sizeof t1)};
+			int v = P.gyro_flat ? 1 : 0; if (ui::segmented(names, 2, &v)) set_gyro_pose(v); }
+		ui::row(ui_tr("ctrl.gyro_sens"), nullptr, note_flt("gyro_sens", settings_float("gyro_sens", 1.0)));
 		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##gs", &P.gyro_sens, 0.25f, 3.0f, "%.2f×")) set_gyro_sens(P.gyro_sens);
-		ui::row("Recentre", "Makes the way the controller points now the centre. R3 does the same.");
-		if (ImGui::Button("Recentre the gyro")) motion_recenter();
-		ui::row("Rear camera", "What the Vita's camera sees -- Uncharted's parchment puzzles want a light. F7 switches the lamp.", note_s("camera"));
-		{	static const char *const ids[3] = {"light", "webcam", "dark"}, *const names[3] = {"A lamp##cam", "This computer's camera##cam", "Darkness##cam"};
+		ui::row(ui_tr("ctrl.recentre"), ui_tr("ctrl.recentre_help"));
+		if (ImGui::Button(ui_tr("ctrl.recentre_btn"))) motion_recenter();
+		ui::row(ui_tr("ctrl.camera"), ui_tr("ctrl.camera_help"), note_s("camera"));
+		{	static const char *const ids[3] = {"light", "webcam", "dark"}; char t0[48], t1[48], t2[48];
+			const char *names[3] = {tr_suf(ui_tr("ctrl.cam_lamp"), "##cam", t0, sizeof t0), tr_suf(ui_tr("ctrl.cam_webcam"), "##cam", t1, sizeof t1),
+			                        tr_suf(ui_tr("ctrl.cam_dark"), "##cam", t2, sizeof t2)};
 			char cur[16]; settings_str("camera", "light", cur, sizeof cur);
 			int v = 0; for (int i = 0; i < 3; i++) if (!strcmp(cur, ids[i])) v = i;
 			if (ui::segmented(names, 3, &v)) { settings_set_str("camera", ids[v]); save_settings(); }
-			if (v == 0) { bool lit = camera_light() != 0; ImGui::SameLine(); ImGui::TextDisabled("lamp"); ImGui::SameLine(); if (ui::toggle("lamp", &lit)) camera_light_set(lit ? 1 : 0); }
+			if (v == 0) { bool lit = camera_light() != 0; ImGui::SameLine(); ImGui::TextDisabled("%s", ui_tr("ctrl.cam_lamp_lbl")); ImGui::SameLine(); if (ui::toggle("lamp", &lit)) camera_light_set(lit ? 1 : 0); }
 		}
 		ui::rows_end();
 	}
-	section_label("Keys");
+	section_label(ui_tr("ctrl.keys"));
 	if (ImGui::BeginTable("kbbinds", 3, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
-		ImGui::TableSetupColumn("Action"); ImGui::TableSetupColumn("Key"); ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
+		ImGui::TableSetupColumn(ui_tr("ctrl.action")); ImGui::TableSetupColumn(ui_tr("ctrl.key")); ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
 		ImGui::PushStyleColor(ImGuiCol_Text, ui::muted); ImGui::TableHeadersRow(); ImGui::PopStyleColor();
 		for (int i = 0, n = window_kb_count(); i < n; i++) {
 			ImGui::TableNextRow();
 			ImGui::TableNextColumn(); ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted(window_kb_label(i));
 			ImGui::TableNextColumn(); ImGui::AlignTextToFramePadding();
 			const char *k = window_kb_key_name(i);
-			if (g_rebind == i) ImGui::TextColored(ui::accent, "Press a key…"); else ui::chip(k && *k ? k : "none", ui::text);
-			ImGui::TableNextColumn(); ImGui::PushID(i); if (ImGui::Button("Change")) g_rebind = i; ImGui::PopID();
+			if (g_rebind == i) ImGui::TextColored(ui::accent, "%s", ui_tr("ctrl.press_key")); else ui::chip(k && *k ? k : ui_tr("ctrl.none"), ui::text);
+			ImGui::TableNextColumn(); ImGui::PushID(i); if (ImGui::Button(ui_tr("ctrl.change"))) g_rebind = i; ImGui::PopID();
 		}
 		ImGui::EndTable();
 	}
-	if (ImGui::Button("Reset keys to the defaults")) { window_kb_reset(); g_rebind = -1; }
-	section_label("Controller buttons");   /* (U11) the pad -> Vita bindings, a Change/Reset like the keys */
+	if (ImGui::Button(ui_tr("ctrl.reset_keys"))) { window_kb_reset(); g_rebind = -1; }
+	section_label(ui_tr("ctrl.pad"));   /* (U11) the pad -> Vita bindings, a Change/Reset like the keys */
 	if (ImGui::BeginTable("padbinds", 3, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
-		ImGui::TableSetupColumn("Action"); ImGui::TableSetupColumn("Button"); ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
+		ImGui::TableSetupColumn(ui_tr("ctrl.action")); ImGui::TableSetupColumn(ui_tr("ctrl.button")); ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
 		ImGui::PushStyleColor(ImGuiCol_Text, ui::muted); ImGui::TableHeadersRow(); ImGui::PopStyleColor();
 		for (int i = 0, n = window_pad_count(); i < n; i++) {
 			ImGui::TableNextRow();
 			ImGui::TableNextColumn(); ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted(window_pad_label(i));
 			ImGui::TableNextColumn(); ImGui::AlignTextToFramePadding();
 			const char *k = window_pad_button_name(i);
-			if (g_pad_rebind == i) ImGui::TextColored(ui::accent, "Press a gamepad button…"); else ui::chip(k && *k ? k : "none", ui::text);
-			ImGui::TableNextColumn(); ImGui::PushID(1000 + i); if (ImGui::Button("Change")) g_pad_rebind = i; ImGui::PopID();
+			if (g_pad_rebind == i) ImGui::TextColored(ui::accent, "%s", ui_tr("ctrl.press_pad")); else ui::chip(k && *k ? k : ui_tr("ctrl.none"), ui::text);
+			ImGui::TableNextColumn(); ImGui::PushID(1000 + i); if (ImGui::Button(ui_tr("ctrl.change"))) g_pad_rebind = i; ImGui::PopID();
 		}
 		ImGui::EndTable();
 	}
-	if (ImGui::Button("Reset controller buttons to the defaults")) { window_pad_reset(); g_pad_rebind = -1; }
-	section_label("The game's controls");
+	if (ImGui::Button(ui_tr("ctrl.reset_pad"))) { window_pad_reset(); g_pad_rebind = -1; }
+	section_label(ui_tr("ctrl.game_controls"));
 	reference_table("controls", window_controls_count, window_controls_row);
-	section_label("Shortcuts");
+	section_label(ui_tr("ctrl.shortcuts"));
 	reference_table("shortcuts", shortcuts_count, shortcuts_row);
 }
 /* the version line the menu's header and About draw: "Nativ <tools version> · <title id> <game version>" with every
