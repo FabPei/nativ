@@ -42,6 +42,11 @@ static const Str catalog[] = {
 	{"foot.quit_launcher", "Back to the library", "Zurück zur Bibliothek"},
 	{"help.about.body", "Project Nativ: this PS Vita game, statically recompiled to native code, running on this computer's own CPU and GPU.",
 	 "Project Nativ: Dieses PS-Vita-Spiel, statisch in nativen Code übersetzt, läuft auf der CPU und GPU dieses Computers."},
+	/* the Performance page */
+	{"perf.osd", "On-screen stats", "Bildschirm-Statistiken"},
+	{"perf.osd_help", "Frame rate and timings drawn over the game. F1 cycles them.", "Bildrate und Zeiten über dem Spiel. F1 schaltet sie um."},
+	{"perf.osd_full", "Full", "Voll"},
+	{"perf.fps_now", "Frame rate now", "Bildrate jetzt"},
 	/* the Display page */
 	{"display.resolution", "Resolution", "Auflösung"},
 	{"display.resolution_help", "The game drawn at a multiple of the Vita's 960 × 544. Higher is sharper; 4× and up want a fast GPU.",

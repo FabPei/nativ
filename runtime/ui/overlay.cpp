@@ -452,9 +452,12 @@ static void page_display(void) {
 }
 static void page_performance(void) {
 	if (!ui::rows_begin("perf")) return;
-	ui::row("On-screen stats", "Frame rate and timings drawn over the game. F1 cycles them.", note_int("osd", metrics_osd_level()));
-	{ static const char *const names[3] = {"Off##osd", "FPS##osd", "Full##osd"}; int lvl = metrics_osd_level(); if (ui::segmented(names, 3, &lvl)) set_osd(lvl); }
-	ui::row("Frame rate now");
+	ui::row(ui_tr("perf.osd"), ui_tr("perf.osd_help"), note_int("osd", metrics_osd_level()));
+	{	char t0[48], t1[48], t2[48];
+		const char *names[3] = {tr_suf(ui_tr("common.off"), "##osd", t0, sizeof t0), tr_suf("FPS", "##osd", t1, sizeof t1),
+		                        tr_suf(ui_tr("perf.osd_full"), "##osd", t2, sizeof t2)};
+		int lvl = metrics_osd_level(); if (ui::segmented(names, 3, &lvl)) set_osd(lvl); }
+	ui::row(ui_tr("perf.fps_now"));
 	{ char b[32]; std::snprintf(b, sizeof b, "%.0f fps", metrics_fps()); ImGui::PushFont(nullptr, ImGui::GetFontSize() * 1.6f); ImGui::TextUnformatted(b); ImGui::PopFont(); }
 	ui::rows_end();
 }
