@@ -226,10 +226,20 @@ int overlay_wants_capture(void) { return g_want_capture.exchange(false); }
 
 extern "C" { int window_kb_count(void); const char *window_kb_label(int i); const char *window_kb_key_name(int i);
              void window_kb_bind(int i, SDL_Keycode k); void window_kb_reset(void); int window_kbm_active(void); }
+extern "C" { int window_pad_count(void); const char *window_pad_label(int i); const char *window_pad_button_name(int i);
+             int window_pad_bind(int i, int button); void window_pad_reset(void); }
 static int g_rebind = -1;   /* the Controls page's Rebind: the next key pressed goes to this action */
+static int g_pad_rebind = -1;   /* (U11) the Controller buttons' Change: the next pad button goes to this action */
 void overlay_process_event(const SDL_Event *event) {
 	if (!g_ctx || !g_has_window) return;
 	if (g_rebind >= 0 && event->type == SDL_EVENT_KEY_DOWN && !event->key.repeat) { window_kb_bind(g_rebind, event->key.key); g_rebind = -1; return; }   /* (Escape and F10 close the menu first: window.c) */
+	if (g_pad_rebind >= 0) {   /* (U11) the pad capture: the next pad button becomes the binding and reaches nothing;
+	                            * a nameless button (Guide, the shoulders) is refused and keeps the capture; Escape
+	                            * or B cancels (a gamepad press would be a binding, so cancel is the keyboard's) */
+		if (event->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) { if (window_pad_bind(g_pad_rebind, event->gbutton.button)) g_pad_rebind = -1; return; }
+		if (event->type == SDL_EVENT_GAMEPAD_BUTTON_UP) return;
+		if (event->type == SDL_EVENT_KEY_DOWN && !event->key.repeat && (event->key.key == SDLK_ESCAPE || event->key.key == SDLK_B)) { g_pad_rebind = -1; return; }
+	}
 	ImGui::SetCurrentContext(g_ctx);
 	/* the save dialog's pad (SAVE-DLG-01): the pad events routed here become the dialog's ImGui keys --
 	 * the SDL3 backend's own gamepad list goes stale when a pad connects after the overlay's first frame,
@@ -564,6 +574,21 @@ static void page_controls(void) {
 		ImGui::EndTable();
 	}
 	if (ImGui::Button("Reset keys to the defaults")) { window_kb_reset(); g_rebind = -1; }
+	section_label("Controller buttons");   /* (U11) the pad -> Vita bindings, a Change/Reset like the keys */
+	if (ImGui::BeginTable("padbinds", 3, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+		ImGui::TableSetupColumn("Action"); ImGui::TableSetupColumn("Button"); ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
+		ImGui::PushStyleColor(ImGuiCol_Text, ui::muted); ImGui::TableHeadersRow(); ImGui::PopStyleColor();
+		for (int i = 0, n = window_pad_count(); i < n; i++) {
+			ImGui::TableNextRow();
+			ImGui::TableNextColumn(); ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted(window_pad_label(i));
+			ImGui::TableNextColumn(); ImGui::AlignTextToFramePadding();
+			const char *k = window_pad_button_name(i);
+			if (g_pad_rebind == i) ImGui::TextColored(ui::accent, "Press a gamepad button…"); else ui::chip(k && *k ? k : "none", ui::text);
+			ImGui::TableNextColumn(); ImGui::PushID(1000 + i); if (ImGui::Button("Change")) g_pad_rebind = i; ImGui::PopID();
+		}
+		ImGui::EndTable();
+	}
+	if (ImGui::Button("Reset controller buttons to the defaults")) { window_pad_reset(); g_pad_rebind = -1; }
 	section_label("The game's controls");
 	reference_table("controls", window_controls_count, window_controls_row);
 	section_label("Shortcuts");

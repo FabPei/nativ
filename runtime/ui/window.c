@@ -41,6 +41,7 @@
 #include "hle.h"
 #include "metrics.h"
 #include "settings.h"
+#include "pad_bind.h"
 #include "overlay.h"
 #include "audio_pace.h"
 #include "dump_fit.h"
@@ -178,6 +179,48 @@ void window_kb_bind(int i, SDL_Keycode k) {   /* the menu's Rebind: that action 
 }
 void window_kb_reset(void) { for (int i = 0; i < KB_N; i++) settings_set_str(kb_binds[i].key, kb_binds[i].def); settings_save(); kb_reload(); }
 int window_kbm_active(void) { return kbm_on; }
+/* U11: the pad -> Vita bindings (settings key, label, the Vita bit); the pad button itself lives in pad_map, from
+ * the pad_bind_* settings ("" = the built-in default, "none" = unbound). pad_bind.c owns the mapping; this is the
+ * settings table and the menu's flow (window_pad_*: a Change/Reset like the keys, "a button another action had is
+ * taken from it"). Guide and the Back+Start combo stay the menu's -- a nameless button is refused in the bind. */
+typedef struct { const char *key, *label; uint32_t bit; } PadBind;
+static const PadBind pad_binds[] = {
+	{"pad_bind_cross", "Cross", CROSS}, {"pad_bind_circle", "Circle", CIRCLE},
+	{"pad_bind_square", "Square", SQUARE}, {"pad_bind_triangle", "Triangle", TRIANGLE},
+	{"pad_bind_start", "Start", START}, {"pad_bind_select", "Select", SELECT},
+	{"pad_bind_up", "D-pad up", UP}, {"pad_bind_down", "D-pad down", DOWN},
+	{"pad_bind_left", "D-pad left", LEFT}, {"pad_bind_right", "D-pad right", RIGHT},
+	{"pad_bind_l3", "L3", L3}, {"pad_bind_r3", "R3", R3},
+};
+enum { PAD_N = (int)(sizeof pad_binds / sizeof pad_binds[0]) };
+static int pad_map[PADB_N];
+static void pad_reload(void) {   /* the bindings from settings (at start, and with the keys' reload) */
+	for (int i = 0; i < PADB_N; i++) {
+		char b[24]; const char *name = settings_str(pad_binds[i].key, "", b, sizeof b);
+		if (!name[0]) pad_map[i] = pad_bind_default(i);
+		else if (!strcmp(name, "none")) pad_map[i] = -1;
+		else { int btn = pad_bind_name_button(name); pad_map[i] = btn >= 0 ? btn : pad_bind_default(i); }
+	}
+}
+int window_pad_count(void) { return PAD_N; }
+const char *window_pad_label(int i) { return i >= 0 && i < PAD_N ? pad_binds[i].label : ""; }
+const char *window_pad_button_name(int i) {
+	if (i < 0 || i >= PAD_N) return "";
+	if (pad_map[i] < 0) return "none";
+	const char *n = pad_bind_button_name(pad_map[i]);
+	return n ? n : "none";
+}
+int window_pad_bind(int i, int button) {   /* the menu's Change: that action now on this button (a button another
+                                            * action had is taken from it). 1 = bound; 0 = refused (Guide, the
+                                            * shoulders and anything else nameless: the menu's or the touch rules') */
+	if (i < 0 || i >= PAD_N || !pad_bind_button_name(button)) return 0;
+	for (int j = 0; j < PAD_N; j++) if (j != i && pad_map[j] == button) { pad_map[j] = -1; settings_set_str(pad_binds[j].key, "none"); }
+	pad_map[i] = button;
+	settings_set_str(pad_binds[i].key, pad_bind_button_name(button));
+	settings_save();
+	return 1;
+}
+void window_pad_reset(void) { for (int i = 0; i < PAD_N; i++) settings_set_str(pad_binds[i].key, ""); settings_save(); pad_reload(); }
 /* a game's raw-look hook, once per game frame: the mouse's motion since its last call, in counts (y down),
  * and whether the mouse is looking at all (0: nothing to apply, the deltas are 0) */
 /* RECOMP_INPUT_MOUSE="from-to:dx,dy;...": mouse counts per call over presented-frame ranges -- a headless
@@ -842,16 +885,9 @@ void window_input_pad2(uint32_t *b, uint8_t s[4]) {
 	*b = (*b & ~(LTRIG | RTRIG)) | (v & LTRIG ? L1 : 0) | (v & RTRIG ? R1 : 0) | (v & PAD_L2 ? LTRIG : 0) | (v & PAD_R2 ? RTRIG : 0) | (v & (L3 | R3));
 }
 
-static uint32_t pad_bit(int b) {
-	switch (b) {
-	case SDL_GAMEPAD_BUTTON_SOUTH: return CROSS; case SDL_GAMEPAD_BUTTON_EAST: return CIRCLE;
-	case SDL_GAMEPAD_BUTTON_WEST: return SQUARE; case SDL_GAMEPAD_BUTTON_NORTH: return TRIANGLE;
-	case SDL_GAMEPAD_BUTTON_START: return START; case SDL_GAMEPAD_BUTTON_BACK: return SELECT;
-	case SDL_GAMEPAD_BUTTON_DPAD_UP: return UP; case SDL_GAMEPAD_BUTTON_DPAD_DOWN: return DOWN;
-	case SDL_GAMEPAD_BUTTON_DPAD_LEFT: return LEFT; case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: return RIGHT;
-	case SDL_GAMEPAD_BUTTON_LEFT_STICK: return L3; case SDL_GAMEPAD_BUTTON_RIGHT_STICK: return R3;
-	default: return 0;
-	}
+static uint32_t pad_bit(int b) {   /* (U11) the map: which Vita button this pad press is bound to */
+	int i = pad_bind_find(pad_map, b);
+	return i >= 0 ? pad_binds[i].bit : 0;
 }
 /* The two shoulder pairs, whichever physical pair each is ("shoulder_buttons": the triggers by default are pad_main).
  * pad_main: the game's L and R; with the touch cursor up (the other pair held) a press is the cursor's touch, like
@@ -870,7 +906,7 @@ static void pad_second(SDL_Gamepad *pad, int k, int dn) {
 	if (k) rb_held = dn; else lb_held = dn;
 	int m = rb_held ? 2 : lb_held ? 1 : 0;
 	if (m != cur_mode) { cur_cross = cur_trig[0] = cur_trig[1] = 0; cur2_on = 0; cur_used_l = cur_used_r = 0; }   /* a cursor touch (and the split) ends with its mode */
-	if (m && !cur_mode && pad && SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH)) { cur_cross = 1; buttons &= ~CROSS; }   /* Cross already held: it's the touch now, not Cross */
+	if (m && !cur_mode && pad && pad_map[PADB_CROSS] >= 0 && SDL_GetGamepadButton(pad, pad_map[PADB_CROSS])) { cur_cross = 1; buttons &= ~CROSS; }   /* Cross already held (on whatever button it is bound -- U11): it's the touch now, not Cross */
 	if (m && !cur_mode) for (int j = 0; j < 2; j++) if (j ? rtrig_on : ltrig_on) { cur_trig[j] = trig_touch[j] = 1; buttons &= ~(j ? RTRIG : LTRIG); }   /* L or R already held: the touch too */
 	cur_mode = m;
 	cur_down = m && (cur_cross || cur_trig[0] || cur_trig[1]);
@@ -1085,7 +1121,7 @@ void window_run(void *(*fn)(void *), void *arg) {
 				if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER || b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) {
 					const int k = b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER;
 					if (shoulders_swapped) pad_main(pad, k, dn); else pad_second(pad, k, dn);
-				} else if (b == SDL_GAMEPAD_BUTTON_SOUTH && (cur_mode || cur_down || cur_cross)) {
+				} else if (b == pad_map[PADB_CROSS] && pad_map[PADB_CROSS] >= 0 && (cur_mode || cur_down || cur_cross)) {
 					cur_cross = dn && cur_mode;            /* Cross is the touch while a bumper is held */
 					cur_down = cur_mode && (cur_cross || cur_trig[0] || cur_trig[1]);
 					if (!dn) buttons &= ~CROSS;            /* (a Cross pressed before the bumper, let go after) */
@@ -1169,7 +1205,7 @@ void window_run(void *(*fn)(void *), void *arg) {
 		{	/* keyboard + mouse, once a loop: which scheme, the capture, WASD as the left stick, the look's stand-in */
 			static uint64_t last; uint64_t t = now_us(); double dt = last ? (t - last) / 1e6 : 0; last = t;
 			if (dt > 0.1) dt = 0.1;
-			static int loaded; if (!loaded) { loaded = 1; kb_reload(); }
+			static int loaded; if (!loaded) { loaded = 1; kb_reload(); pad_reload(); }
 			char mb[8]; const char *mode = settings_str("input_mode", "auto", mb, sizeof mb);
 			int on = !strcmp(mode, "kbm") ? 1 : !strcmp(mode, "pad") ? 0 : kbm_auto;
 			const int pstv = display_pstv_active();   /* the PS TV layout is a controller's only: no keyboard-and-mouse scheme, no capture */
