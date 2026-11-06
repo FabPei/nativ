@@ -5,34 +5,34 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting. The quickest fix starts with the report zip: press **F5** right after the problem happens, then in the launcher open the game's **⋯** menu and choose **Report a problem** ([how it works](https://github.com/TheLostPantheon/nativ/blob/main/docs/player-guide.md#reporting-a-bug)).
-        Please don't attach game files, firmware, saves or licences.
-  - type: dropdown
+        Thanks for reporting. Two files make a report reproducible: the launcher's `session.log` and an input
+        recording (`.rec`) of the session where the problem happened
+        ([how to record one](https://github.com/FabPei/nativ/blob/fp/main/docs/input-recording.md)).
+
+        **Never attach game files, firmware, keys, decrypted modules, or saves that contain personal data.**
+        Logs, input recordings and hashes are enough.
+  - type: input
     id: game
     attributes:
-      label: Game
-      options:
-        - "Killzone: Mercenary"
-        - "Uncharted: Golden Abyss"
-        - Unit 13
-        - Shovel Knight
-        - The launcher, no game
-        - Another game
+      label: Game title ID and version
+      description: The title ID shown in the launcher, and the game's version.
+      placeholder: PCSF00532, v1.00
     validations:
       required: true
   - type: input
-    id: version
+    id: release
     attributes:
-      label: Nativ version
-      placeholder: v0.1.0
+      label: Nativ release tag
+      description: The release you ran (from the GitHub release page or the launcher's About view).
+      placeholder: v0.1.5-fp2
     validations:
       required: true
   - type: input
     id: computer
     attributes:
       label: Your computer
-      description: The operating system and its version, and the CPU or GPU if you know them.
-      placeholder: macOS 15.3, MacBook Air M2
+      description: The operating system and its version, and the GPU (and CPU if you know them).
+      placeholder: Windows 11, NVIDIA RTX 3070
     validations:
       required: true
   - type: textarea
@@ -48,7 +48,7 @@ body:
       label: How to make it happen
       description: Where in the game, and what you did just before. Does it happen every time?
   - type: textarea
-    id: report
+    id: logs
     attributes:
-      label: Report zip
-      description: Drag the zip from **Report a problem** here. Over 25 MB (with F5 pictures), share a link to it instead.
+      label: session.log and input recording
+      description: Drag the launcher's `session.log` and the session's `.rec` input recording here. Over 25 MB, share a link instead of the file.
