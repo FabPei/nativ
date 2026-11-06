@@ -43,6 +43,22 @@ static const Str catalog[] = {
 	{"foot.quit_launcher", "Back to the library", "Zurück zur Bibliothek"},
 	{"help.about.body", "Project Nativ: this PS Vita game, statically recompiled to native code, running on this computer's own CPU and GPU.",
 	 "Project Nativ: Dieses PS-Vita-Spiel, statisch in nativen Code übersetzt, läuft auf der CPU und GPU dieses Computers."},
+	/* the Shortcuts table's data (key names fall through ui_tr untouched) */
+	{"sb.bar", "Menu bar", "Menüleiste"},
+	{"sb.bar_kbd", "Move the mouse to the top edge (Esc hides it)", "Maus an den oberen Rand bewegen (Esc verbirgt sie)"},
+	{"sb.bar_pad", "Tap the tab at the top centre (touch screen)", "Auf den Reiter oben in der Mitte tippen (Touchscreen)"},
+	{"sb.menu", "This menu (pauses the game)", "Dieses Menü (pausiert das Spiel)"},
+	{"sb.menu_kbd", "F10 (Esc closes it)", "F10 (Esc schließt es)"},
+	{"sb.menu_pad", "Guide, or Back + Start together", "Guide oder Back + Start zusammen"},
+	{"sb.osd", "On-screen stats: off, FPS, full", "Bildschirm-Statistiken: aus, FPS, voll"},
+	{"sb.res", "Resolution: 1× to 6×", "Auflösung: 1× bis 6×"},
+	{"sb.lamp", "The rear camera's lamp", "Die Lampe der hinteren Kamera"},
+	{"sb.capture", "Capture a frame (to captures/)", "Ein Bild aufnehmen (nach captures/)"},
+	{"sb.mark", "Mark the log (for a bug report: \"that just happened\")", "Das Log markieren (für einen Fehlerbericht: \"das ist gerade passiert\")"},
+	{"sb.gyro", "Recentre the gyro", "Gyro neu zentrieren"},
+	/* the language row (U12b: the menu's own language switch) */
+	{"set.lang", "Language", "Sprache"},
+	{"set.lang_auto", "Auto", "Auto"},
 	/* the Help page and the dialogs */
 	{"help.about", "About", "Über"},
 	{"help.unknown_title", "unknown title", "unbekannter Titel"},

@@ -149,6 +149,7 @@ static ImGuiContext *g_ctx;
 static bool g_has_window;      /* overlay_init was given a real SDL_Window: the platform backend is live */
 static SDL_Window *g_window;   /* that window (its display's content scale: render_frame's scale) */
 static ImGuiStyle g_base_style; /* the look at scale 1 (ui::apply(15, 1)): every scale is applied from it, never compounded */
+static char g_sys_locale[16] = "";   /* (U12b) the system locale for menu_lang "auto"; the language row re-applies it live */
 static float g_ui_scale = 1.0f; /* the scale in effect (ui_scale.h) */
 /* written by the window thread, read by the game thread (display.c's pause, window.c's audio): atomic,
  * like every other flag that crosses those threads (rscale_req, osd_level_v). g_paused: Game > Pause
@@ -178,7 +179,9 @@ int overlay_init(SDL_GPUDevice *device, SDL_Window *window, SDL_GPUTextureFormat
 	/* (U12a) the menu's language: menu_lang, "auto" = the system's preference */
 	char ml[8]; const char *pref = settings_str("menu_lang", "auto", ml, sizeof ml);
 	int nloc = 0; SDL_Locale **locs = SDL_GetPreferredLocales(&nloc);
-	ui_text_lang_load(pref, locs && nloc > 0 && locs[0] && locs[0]->language ? locs[0]->language : NULL);
+	const char *lc = locs && nloc > 0 && locs[0] && locs[0]->language ? locs[0]->language : NULL;   /* (U12b) kept for the language row's live switch */
+	if (lc) snprintf(g_sys_locale, sizeof g_sys_locale, "%s", lc);
+	ui_text_lang_load(pref, g_sys_locale[0] ? g_sys_locale : NULL);
 	g_base_style = ImGui::GetStyle(); g_ui_scale = 1.0f;   /* (scaled per window size in render_frame: ui_scale.h) */
 	g_has_window = window != nullptr; g_window = window;
 	if (g_has_window && !ImGui_ImplSDL3_InitForSDLGPU(window)) { ImGui::DestroyContext(g_ctx); g_ctx = nullptr; return 0; }
@@ -308,14 +311,14 @@ static void set_osd(int level) { metrics_osd_set(level); settings_set_int("osd",
  * table both draw it (the game's controls are window.c's ctrl_rows; these are the keys window.c binds
  * beside them -- keep in sync with its event loop). The bar's own shortcut texts name the same keys. */
 static const char *const g_shortcuts[][3] = {
-	{"Menu bar", "Move the mouse to the top edge (Esc hides it)", "Tap the tab at the top centre (touch screen)"},
-	{"This menu (pauses the game)", "F10 (Esc closes it)", "Guide, or Back + Start together"},
-	{"On-screen stats: off, FPS, full", "F1", "\u2014"},
-	{"Resolution: 1\u00d7 to 6\u00d7", "F2", "\u2014"},
-	{"The rear camera's lamp", "F7", "\u2014"},
-	{"Capture a frame (to captures/)", "F12", "\u2014"},
-	{"Mark the log (for a bug report: \"that just happened\")", "F5", "\u2014"},
-	{"Recentre the gyro", "\u2014", "R3"},
+	{"sb.bar", "sb.bar_kbd", "sb.bar_pad"},
+	{"sb.menu", "sb.menu_kbd", "sb.menu_pad"},
+	{"sb.osd", "F1", "—"},
+	{"sb.res", "F2", "—"},
+	{"sb.lamp", "F7", "—"},
+	{"sb.capture", "F12", "—"},
+	{"sb.mark", "F5", "—"},
+	{"sb.gyro", "—", "R3"},
 };
 static void volume_slider(void) {   /* (the bar's Game menu) */
 	prefs_load();
@@ -546,7 +549,7 @@ static void reference_table(const char *id, int (*count)(void), void (*row)(int,
 	ImGui::EndTable();
 }
 static int shortcuts_count(void) { return (int)(sizeof g_shortcuts / sizeof g_shortcuts[0]); }
-static void shortcuts_row(int i, const char **a, const char **k, const char **p) { *a = g_shortcuts[i][0]; *k = g_shortcuts[i][1]; *p = g_shortcuts[i][2]; }
+static void shortcuts_row(int i, const char **a, const char **k, const char **p) { *a = ui_tr(g_shortcuts[i][0]); *k = ui_tr(g_shortcuts[i][1]); *p = ui_tr(g_shortcuts[i][2]); }   /* (U12b) key names fall through ui_tr */
 static void page_controls(void) {
 	prefs_load();
 	section_label(ui_tr("ctrl.input"));
@@ -649,6 +652,16 @@ static void version_line(char *out, size_t n) {
 	if (right[0]) snprintf(out + strlen(out), n - strlen(out), "%s%s", out[0] ? " · " : "", right);
 }
 static void page_help(void) {
+	if (ui::rows_begin("lang")) {   /* (U12b) the language row: menu_lang, applied live (flag icons would need glyphs the font range excludes) */
+		ui::row(ui_tr("set.lang"), nullptr, note_s("menu_lang", ui_tr("mark.default")));
+		{	char t0[48], cur[8]; static const char *const ids[3] = {"auto", "en", "de"};
+			const char *names[3] = {tr_suf(ui_tr("set.lang_auto"), "##lang", t0, sizeof t0), "English##lang", "Deutsch##lang"};
+			settings_str("menu_lang", "auto", cur, sizeof cur);
+			int v = 0; for (int i = 0; i < 3; i++) if (!strcmp(cur, ids[i])) v = i;
+			if (ui::segmented(names, 3, &v)) { settings_set_str("menu_lang", ids[v]); save_settings(); ui_text_lang_load(ids[v], g_sys_locale[0] ? g_sys_locale : NULL); }
+		}
+		ui::rows_end();
+	}
 	section_label(ui_tr("ctrl.shortcuts"));
 	reference_table("shortcuts", shortcuts_count, shortcuts_row);
 	section_label(ui_tr("help.about"));
