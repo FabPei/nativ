@@ -8,11 +8,11 @@ ELF = "eboot.bin.elf"     # the main module (the decrypted eboot)
 # task scheduler) and the firmware's GXM + GPU services (GXM runs as Sony's code) plus the font and movie
 # modules the game loads (libpvf, libSceFt2, libscemp4, libsceavplayer). Import coverage checked at import.
 MODULES = "libc libgxm_es4 libgpu_es4 libfios2 libult libSceFt2 libpvf libscemp4 libsceavplayer"
-TEST_FRAMES = 2000      # a boot probe: the PSN prompt answered, then the title (reached 2026-11-06)
+TEST_FRAMES = 20000     # a boot probe: prompt -> title (reached) -> opening movie (plays!) -> toward the first mission
 # The boot probe's taps: a v2 recording (increasing poll+ms rows) replayed by RECOMP_INPUT_REPLAY --
 # NOT TEST_INPUT (that feeds RECOMP_INPUT, the legacy script path, which never reads .rec rows).
 # The path is relative to the test run dir (recomp/test_win).
-TEST_ENV = "RECOMP_INPUT_REPLAY=../../rec/boot-probe.rec"
+TEST_ENV = "RECOMP_INPUT_REPLAY=../rec/boot-probe.rec"
 
 [versions."1.00"]
 sha256 = "3010b6cd5abb043e9937fec2a5e307f50419d0f1b8fc3a2c810702d80fb0b3d0"   # app0/eboot.bin.elf, measured 2026-11-06
