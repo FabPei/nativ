@@ -47,6 +47,7 @@
 #include "backends/imgui_impl_sdlgpu3.h"
 #include "gpulock.h"   /* the SDL submit below is the locked one, and ImGui's own submits run under the same lock (render_frame): Homebrew SDL 3.4.16's Metal fence race, see that header */
 #include "overlay.h"
+#include "ui_text.h"
 #include "savedlg_ui.h"
 #include "savedlg.h"
 #include "ui_theme.h"
@@ -172,6 +173,10 @@ int overlay_init(SDL_GPUDevice *device, SDL_Window *window, SDL_GPUTextureFormat
 	ui::load_system_font(io);   /* an explicit face: without one, ImGui 1.92's own automatic choice (vector vs. bitmap)
 		depends on a DPI scale the headless path never sets, and picks a degenerate (zero-size) one */
 	ui::apply(15.0f, 1.0f);     /* the launcher's look (ui_theme.h), a point smaller: the menu sits over a 960x544 game */
+	/* (U12a) the menu's language: menu_lang, "auto" = the system's preference */
+	char ml[8]; const char *pref = settings_str("menu_lang", "auto", ml, sizeof ml);
+	int nloc = 0; SDL_Locale **locs = SDL_GetPreferredLocales(&nloc);
+	ui_text_lang_load(pref, locs && nloc > 0 && locs[0] && locs[0]->language ? locs[0]->language : NULL);
 	g_base_style = ImGui::GetStyle(); g_ui_scale = 1.0f;   /* (scaled per window size in render_frame: ui_scale.h) */
 	g_has_window = window != nullptr; g_window = window;
 	if (g_has_window && !ImGui_ImplSDL3_InitForSDLGPU(window)) { ImGui::DestroyContext(g_ctx); g_ctx = nullptr; return 0; }

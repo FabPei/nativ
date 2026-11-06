@@ -53,7 +53,7 @@ inline ImFont *load_system_font(ImGuiIO &io) {
 	static const char *const faces[] = {"/System/Library/Fonts/SFNS.ttf", "/System/Library/Fonts/Helvetica.ttc", "C:\\Windows\\Fonts\\segoeui.ttf",
 		"/usr/share/fonts/noto/NotoSans-Regular.ttf", "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf",
 		"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/cantarell/Cantarell-VF.otf", 0};
-	for (int i = 0; faces[i]; i++) { struct stat st; if (stat(faces[i], &st) == 0) if (ImFont *f = io.Fonts->AddFontFromFileTTF(faces[i])) return f; }
+	for (int i = 0; faces[i]; i++) { struct stat st; if (stat(faces[i], &st) == 0) if (ImFont *f = io.Fonts->AddFontFromFileTTF(faces[i], 0, nullptr, io.Fonts->GetGlyphRangesDefault())) return f; }   /* (U12a: the default ranges -- Basic Latin + Latin-1 -- are the catalog's contract: English and German both; ui_text_test asserts every string stays in them) */
 	return io.Fonts->AddFontDefaultVector();
 }
 

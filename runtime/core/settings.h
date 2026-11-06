@@ -17,6 +17,8 @@
  *   aspect        window.c    fit | stretch | fill      how the 960x544 picture meets the window
  *   present_mode  window.c    vsync | mailbox | immediate (default empty = today's rule: mailbox on Vulkan, else vsync)
  *                             how frames reach the screen; read once at the swapchain setup (RECOMP_PRESENT_MODE wins)
+ *   menu_lang     overlay.cpp  auto | en | de (default auto)   the menu's language; auto = the system's
+ *                             preference (SDL_GetPreferredLocales); the catalog is runtime/ui/ui_text.c
  *   pad_bind_<vita>  window.c   "" (default) | none | south | east | west | north | start | back | dpad_up |
  *                             dpad_down | dpad_left | dpad_right | left_stick | right_stick   the pad button bound
  *                             to that Vita button (Controls > Controller buttons); the shoulders keep their
