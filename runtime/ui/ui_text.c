@@ -1,4 +1,4 @@
-/* ui_text.c — the menu's string catalog (U12a). See ui_text.h.
+/* ui_text.c - the menu's string catalog (U12a). See ui_text.h.
  *
  * The seed below is real menu text (the foot and the Help page's About); U12b moves the overlay's strings in page
  * by page and keeps the German with them. */
@@ -47,7 +47,7 @@ static const Str catalog[] = {
 	{"header.pause", "Pause", "Pause"},
 	{"bar.view", "View", "Ansicht"},
 	{"bar.capture", "Capture frame", "Bild aufnehmen"},
-	{"bar.full_menu", "Full menu…", "Vollständiges Menü…"},
+	{"bar.full_menu", "Full menu...", "Vollständiges Menü..."},
 	{"bar.match_window", "Match window (%dx)", "Fenster anpassen (%dx)"},
 	{"bar.cycle", "Cycle", "Umschalten"},
 	{"bar.fps60", "60 (experimental)", "60 (experimentell)"},
@@ -56,9 +56,9 @@ static const Str catalog[] = {
 	{"bar.gyro_pose", "A level pad is a Vita held", "Ein waagerechtes Pad ist eine gehaltene Vita"},
 	{"bar.upright", "upright", "aufrecht"},
 	{"bar.flat", "flat", "flach"},
-	{"bar.controls_ref", "Controls reference…", "Steuerungsübersicht…"},
-	{"bar.shortcuts", "Shortcuts…", "Kürzel…"},
-	{"bar.about", "About…", "Über…"},
+	{"bar.controls_ref", "Controls reference...", "Steuerungsübersicht..."},
+	{"bar.shortcuts", "Shortcuts...", "Kürzel..."},
+	{"bar.about", "About...", "Über..."},
 	{"bar.paused", "PAUSED", "PAUSIERT"},
 	{"bar.paused_hint", "Game > Resume in the menu bar (mouse to the top), or F10", "Spiel > Weiter in der Menüleiste (Maus an den oberen Rand), oder F10"},
 	/* the system-info dialog's metric names (GPU/VRAM/CPU/FPS stay as the units) */
@@ -99,8 +99,8 @@ static const Str catalog[] = {
 	{"help.copy_sysinfo", "Copy system info", "Systeminfo kopieren"},
 	{"help.copied", "Copied", "Kopiert"},
 	{"help.open_log", "Open log folder", "Log-Ordner öffnen"},
-	{"help.bug_hint", "For a full bug report use the launcher: the game's ⋯ menu → Report a problem.", "Für einen vollständigen Fehlerbericht nutze den Launcher: Das ⋯-Menü des Spiels → Problem melden."},
-	{"help.reset_all", "Reset all settings…", "Alle Einstellungen zurücksetzen…"},
+	{"help.bug_hint", "For a full bug report use the launcher: the game's ... menu -> Report a problem.", "Für einen vollständigen Fehlerbericht nutze den Launcher: Das ...-Menü des Spiels -> Problem melden."},
+	{"help.reset_all", "Reset all settings...", "Alle Einstellungen zurücksetzen..."},
 	{"help.reset_all_help", "Every setting goes back to its default. These stay: open_psid (the saves are one player's), online_id, the np_* network keys, menu_hint_shown.", "Jede Einstellung geht auf ihren Standard zurück. Diese bleiben: open_psid (die Saves gehören zu einem Spieler), online_id, die np_*-Netzwerkschlüssel, menu_hint_shown."},
 	{"common.cancel", "Cancel", "Abbrechen"},
 	{"help.reset_btn", "Reset", "Zurücksetzen"},
@@ -149,8 +149,8 @@ static const Str catalog[] = {
 	{"ctrl.action", "Action", "Aktion"},
 	{"ctrl.key", "Key", "Taste"},
 	{"ctrl.button", "Button", "Knopf"},
-	{"ctrl.press_key", "Press a key…", "Taste drücken…"},
-	{"ctrl.press_pad", "Press a gamepad button…", "Gamepad-Knopf drücken…"},
+	{"ctrl.press_key", "Press a key...", "Taste drücken..."},
+	{"ctrl.press_pad", "Press a gamepad button...", "Gamepad-Knopf drücken..."},
 	{"ctrl.change", "Change", "Ändern"},
 	{"ctrl.none", "none", "keine"},
 	{"ctrl.reset_keys", "Reset keys to the defaults", "Tasten auf die Standardbelegung zurücksetzen"},

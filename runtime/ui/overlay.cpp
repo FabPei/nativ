@@ -313,12 +313,12 @@ static void set_osd(int level) { metrics_osd_set(level); settings_set_int("osd",
 static const char *const g_shortcuts[][3] = {
 	{"sb.bar", "sb.bar_kbd", "sb.bar_pad"},
 	{"sb.menu", "sb.menu_kbd", "sb.menu_pad"},
-	{"sb.osd", "F1", "—"},
-	{"sb.res", "F2", "—"},
-	{"sb.lamp", "F7", "—"},
-	{"sb.capture", "F12", "—"},
-	{"sb.mark", "F5", "—"},
-	{"sb.gyro", "—", "R3"},
+	{"sb.osd", "F1", "-"},
+	{"sb.res", "F2", "-"},
+	{"sb.lamp", "F7", "-"},
+	{"sb.capture", "F12", "-"},
+	{"sb.mark", "F5", "-"},
+	{"sb.gyro", "-", "R3"},
 };
 static void volume_slider(void) {   /* (the bar's Game menu) */
 	prefs_load();
