@@ -519,6 +519,17 @@ static void page_controls(void) {
 	section_label("Shortcuts");
 	reference_table("shortcuts", shortcuts_count, shortcuts_row);
 }
+/* the version line the menu's header and About draw: "Nativ <tools version> · <title id> <game version>" with every
+ * empty part skipped (missing env -> nothing, never "unknown") */
+static void version_line(char *out, size_t n) {
+	const char *tv = std::getenv("RECOMP_TOOLS_VERSION"), *tid = std::getenv("RECOMP_TITLE"), *gv = std::getenv("RECOMP_GAME_VERSION");
+	char right[96] = "";
+	if (tid && *tid) snprintf(right, sizeof right, "%s", tid);
+	if (gv && *gv) snprintf(right + strlen(right), sizeof right - strlen(right), "%s%s", right[0] ? " " : "", gv);
+	out[0] = 0;
+	if (tv && *tv) snprintf(out, n, "Nativ %s", tv);
+	if (right[0]) snprintf(out + strlen(out), n - strlen(out), "%s%s", out[0] ? " · " : "", right);
+}
 static void page_help(void) {
 	section_label("Shortcuts");
 	reference_table("shortcuts", shortcuts_count, shortcuts_row);
@@ -531,6 +542,7 @@ static void page_help(void) {
 	const char *title = std::getenv("RECOMP_TITLE");
 	int v = SDL_GetVersion();
 	ImGui::TextDisabled("%s  ·  Dear ImGui %s  ·  SDL %d.%d.%d", title && *title ? title : "unknown title", IMGUI_VERSION, SDL_VERSIONNUM_MAJOR(v), SDL_VERSIONNUM_MINOR(v), SDL_VERSIONNUM_MICRO(v));
+	{	char line[192]; version_line(line, sizeof line); if (*line) ImGui::TextDisabled("%s", line); }   /* (U4) */
 	ImGui::Dummy(ImVec2(0, ImGui::GetFontSize() * 0.3f));
 	ui::muted_wrapped("The menu bar: move the mouse to the top edge of the window (or tap the tab there). This menu: F10, or the PS button; the game pauses while it's up.");
 }
@@ -563,6 +575,9 @@ static void build_ui(void) {
 		float rw = ImGui::CalcTextSize("Resume").x + ImGui::GetStyle().FramePadding.x * 2;
 		ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - rw);
 		if (ui::primary_button("Resume")) overlay_close();
+	}
+	{	char line[192]; version_line(line, sizeof line);   /* (U4: right-aligned under the header row) */
+		if (*line) { float lw = ImGui::CalcTextSize(line).x; ImGui::SetCursorPosX(ImMax(0.0f, ImGui::GetWindowContentRegionMax().x - lw)); ImGui::TextDisabled("%s", line); }
 	}
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
 	const float foot = ImGui::GetFrameHeightWithSpacing() + em * 0.9f;

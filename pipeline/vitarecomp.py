@@ -605,7 +605,8 @@ def cmd_run(g, frames):
     shipped = os.path.join(PACKS, g.PACK, "shaders.txt")
     icon = os.path.join(ROOT, "assets", "brand", "png", "icon-" + ("macos-512" if sys.platform == "darwin" else "256") + ".png")   # (the window's: window.c)
     fixed = ([("RECOMP_SHADER_RECIPES_SHIPPED", shipped)] if os.path.isfile(shipped) else []) + ([("RECOMP_ICON", icon)] if os.path.isfile(icon) and sys.platform != "win32" else []) + [
-        ("RECOMP_TITLE", g.TITLE_ID), ("RECOMP_GAME_NAME", g.NAME), ("RECOMP_LOG", ENV.get("RECOMP_LOG") or "0"),
+        ("RECOMP_TITLE", g.TITLE_ID), ("RECOMP_GAME_NAME", g.NAME), ("RECOMP_TOOLS_VERSION", tools_version()), ("RECOMP_GAME_VERSION", g.VERSION or ""),
+        ("RECOMP_LOG", ENV.get("RECOMP_LOG") or "0"),
         ("RECOMP_HITCH_LOG", ENV.get("RECOMP_HITCH_LOG") or "50"), ("RECOMP_STALL_PROF", ENV.get("RECOMP_STALL_PROF") or "150")]
     # ATIV_PRE_LAUNCH / ATIV_POST_EXIT (the environment): commands run before the game starts and after it exits. On a machine
     # whose GPU is shared (a local AI model kept in VRAM, say) the GPU must be free BEFORE the game starts: a game that starts
@@ -656,7 +657,7 @@ def cmd_test(g):
     # Uncharted's main thread, string compares under a lock, which no play run pays)
     frames = g.TEST_FRAMES; every = ENV.get("SHOT_EVERY") or ""
     e = game_env(g, g.TEST_ENV.split() + (ENV.get("EXTRA_ENV") or "").split(), [
-        ("RECOMP_GFX_COVERAGE", "" if ENV.get("TEST_COVERAGE") == "0" else "gfxcov.json"), ("RECOMP_TITLE", g.TITLE_ID), ("RECOMP_GAME_NAME", g.NAME), ("RECOMP_INPUT", g.TEST_INPUT),
+        ("RECOMP_GFX_COVERAGE", "" if ENV.get("TEST_COVERAGE") == "0" else "gfxcov.json"), ("RECOMP_TITLE", g.TITLE_ID), ("RECOMP_GAME_NAME", g.NAME), ("RECOMP_TOOLS_VERSION", tools_version()), ("RECOMP_GAME_VERSION", g.VERSION or ""), ("RECOMP_INPUT", g.TEST_INPUT),
         ("RECOMP_TOUCH", g.TEST_TOUCH), ("RECOMP_HEADLESS", "1"), ("RECOMP_FS", "fs"), ("RECOMP_LOG", "0"), ("RECOMP_SHOT", every or frames),
         ("RECOMP_SHOT_LAST", frames)])   # (a series too ends at the test frame: it ran on to the timeout, 15 minutes for shots it had long since taken)
     with open(os.path.join(td, "test.log"), "wb") as log:
