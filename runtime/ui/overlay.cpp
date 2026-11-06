@@ -1735,7 +1735,10 @@ void overlay_render_forced(SDL_GPUDevice *device, SDL_GPUTexture *target, uint32
 		return;
 	}
 	if (!strcmp(ui, "toast")) g_force_toast = true;
-	else { g_force_bar = true; if (strcmp(ui, "bar")) g_force_menu = ui; }   /* (U12b: the key resolves to the translated label in build_bar -- the language may load after this runs) */
+	else { g_force_bar = true; if (strcmp(ui, "bar")) {
+		const char *colon = strrchr(ui, ':');   /* (U12b fix) "bar:Game" (ui_shots' page names) or bare "Game" (window.c's list): the menu key is the part after the last ':' */
+		g_force_menu = colon ? colon + 1 : ui;
+	} }
 	g_nosd = metrics_osd_lines(g_osd, 6);   /* the HUD too (RECOMP_OSD), in the same frame as the bar so it layers as it does live: under it */
 	g_nft = g_nosd > 1 ? metrics_frame_times(g_ft, 240) : 0;
 	g_full = metrics_osd_level() == 2; if (g_full) metrics_snapshot(&g_snap);
