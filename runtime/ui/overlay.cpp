@@ -464,65 +464,69 @@ static void page_performance(void) {
 static void page_game(void) {
 	prefs_load();
 	if (!ui::rows_begin("game")) return;
-	ui::row("Frame rate", "60 is experimental: parts of a game timed in fixed 1/30 s steps can run fast.", note_flt("frame_rate", P.fr));
+	ui::row(ui_tr("game.fps"), ui_tr("game.fps_help"), note_flt("frame_rate", P.fr));
 	{ static const char *const names[2] = {"30##fr", "60##fr"}; int v = P.fr >= 60; if (ui::segmented(names, 2, &v)) set_frame_rate(v ? 60 : 30); }
 	if (game_option("fov")) {
-		ui::row("Field of view", "A wider view. 1.00× is the game's own.");
+		ui::row(ui_tr("game.fov"), ui_tr("game.fov_help"));
 		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##fov", &P.fov, 0.75f, 1.5f, "%.2f×")) set_fov(P.fov);
 	}
 	if (game_option("view_distance")) {
-		ui::row("View distance", "How far fading scenery reaches. 1.00× is the game's own.");
+		ui::row(ui_tr("game.view"), ui_tr("game.view_help"));
 		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##view", &P.view, 1.0f, 3.0f, "%.2f×")) set_view(P.view);
 	}
 	if (game_option("scenery_detail")) {
-		ui::row("Scenery detail", "How far small scenery details stay visible. 1.00× is the game's own; walls and buildings keep the game's own detail switching.");
+		ui::row(ui_tr("game.scen"), ui_tr("game.scen_help"));
 		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##scen", &P.scen, 1.0f, 8.0f, "%.1f×")) set_scen(P.scen);
 	}
 	if (game_option("character_detail")) {
-		ui::row("Character detail", "How far characters and props keep their full detail. 1.00× is the game's own.");
+		ui::row(ui_tr("game.chr"), ui_tr("game.chr_help"));
 		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##chr", &P.chr, 1.0f, 8.0f, "%.1f×")) set_chr(P.chr);
 	}
 	if (display_pstv_looked()) {   /* (display.c's PS TV mode: a game with a PS TV layout of its own) */
-		ui::row("Controller layout", "How the touch screen's actions are done, chosen as the game starts and kept until you quit. Standard: the game as on a handheld, with keyboard, mouse or a controller (its touch cursor). PS TV: the game's own PS TV layout, every action on buttons and sticks, a controller only. Ask: a choice at each start while a controller is connected, Standard otherwise. Applies the next time the game starts.", note_int("controller_layout", settings_int("controller_layout", 0), "after restart"));
-		static const char *const names[3] = {"Ask at start##cl", "Standard##cl", "PS TV##cl"};
-		int v = settings_int("controller_layout", 0); if (v < 0 || v > 2) v = 0;   /* (the setting's values: 0 ask, 1 standard (touch), 2 PS TV) */
-		if (ui::segmented(names, 3, &v)) { settings_set_int("controller_layout", v); save_settings(); }
+		ui::row(ui_tr("game.layout"), ui_tr("game.layout_help"), note_int("controller_layout", settings_int("controller_layout", 0), ui_tr("mark.after_restart")));
+		{	char t0[48], t1[48], t2[48];
+			const char *names[3] = {tr_suf(ui_tr("game.layout_ask"), "##cl", t0, sizeof t0), tr_suf(ui_tr("common.std"), "##cl", t1, sizeof t1),
+			                        tr_suf("PS TV", "##cl", t2, sizeof t2)};
+			int v = settings_int("controller_layout", 0); if (v < 0 || v > 2) v = 0;   /* (the setting's values: 0 ask, 1 standard (touch), 2 PS TV) */
+			if (ui::segmented(names, 3, &v)) { settings_set_int("controller_layout", v); save_settings(); } }
 	}
 	if (game_option("online")) {
-		ui::row("Play online", "The game's online modes with other Project Nativ players, on your network and over the internet. They see your online name and your computer's IP address, as in any peer-to-peer game. Applies the next time the game starts.", note_int("online", settings_int("online", 1), "after restart"));
-		if (net_online_needs()) { char t[128]; snprintf(t, sizeof t, "Needs update %s: this copy is another version, and rooms only match their own. Add the update in the launcher.", net_online_needs()); ImGui::TextWrapped("%s", t); }
+		ui::row(ui_tr("game.online"), ui_tr("game.online_help"), note_int("online", settings_int("online", 1), ui_tr("mark.after_restart")));
+		if (net_online_needs()) { char t[160]; snprintf(t, sizeof t, ui_tr("game.needs_update"), net_online_needs()); ImGui::TextWrapped("%s", t); }
 		else { bool on = settings_int("online", 1) != 0; if (ui::toggle("online", &on)) { settings_set_int("online", on ? 1 : 0); save_settings(); } }
 		if (net_online()) {   /* how it stands (status.c), every half second */
 			static OnlineStatus st; static double at = -1; const double now = ImGui::GetTime();
 			if (at < 0 || now - at > 0.5) { online_status(&st); at = now; }
 			char a[160], b[160], c2[160];
-			if (!st.started) { snprintf(a, sizeof a, "Starts when the game goes online"); b[0] = c2[0] = 0; }
+			if (!st.started) { snprintf(a, sizeof a, "%s", ui_tr("game.status_starting")); b[0] = c2[0] = 0; }
 			else {
-				if (st.linked) snprintf(a, sizeof a, "Linked with %d other %s", st.linked, st.linked == 1 ? "copy" : "copies"); else snprintf(a, sizeof a, "Looking for other players");
-				snprintf(b, sizeof b, "%d %s open%s", st.rooms_heard + st.rooms_mine, st.rooms_heard + st.rooms_mine == 1 ? "room" : "rooms", st.rooms_mine ? " (yours among them)" : "");
-				if (!st.port) snprintf(c2, sizeof c2, "Your network only (online_overlay is off)");
-				else if (st.pub[0]) snprintf(c2, sizeof c2, "On the internet as %s (%d DHT nodes)", st.pub, st.dht_nodes);
-				else snprintf(c2, sizeof c2, st.dht_nodes ? "Reaching the internet (%d DHT nodes)" : "Reaching the internet", st.dht_nodes);
+				if (st.linked) snprintf(a, sizeof a, ui_tr(st.linked == 1 ? "game.status_linked_1" : "game.status_linked_n"), st.linked);
+				else snprintf(a, sizeof a, "%s", ui_tr("game.status_looking"));
+				{	const int n = st.rooms_heard + st.rooms_mine;
+					snprintf(b, sizeof b, ui_tr(n == 1 ? "game.rooms_1" : "game.rooms_n"), n, st.rooms_mine ? ui_tr("game.rooms_yours") : ""); }
+				if (!st.port) snprintf(c2, sizeof c2, "%s", ui_tr("game.status_port_none"));
+				else if (st.pub[0]) snprintf(c2, sizeof c2, ui_tr("game.status_internet"), st.pub, st.dht_nodes);
+				else snprintf(c2, sizeof c2, st.dht_nodes ? ui_tr("game.status_reaching") : ui_tr("game.status_reaching0"), st.dht_nodes);
 			}
-			ui::row("Online now", st.clash ? "Another player in this game has your online name: you get two digits after it from the next start." : nullptr);
+			ui::row(ui_tr("game.online_now"), st.clash ? ui_tr("game.clash") : nullptr);
 			ImGui::TextUnformatted(a); if (b[0]) { ImGui::PushStyleColor(ImGuiCol_Text, ui::muted); ImGui::TextUnformatted(b); ImGui::TextUnformatted(c2); ImGui::PopStyleColor(); }
 		}
 		static char oid[32], srv[128]; static int loaded, epoch;
 		if (!loaded || epoch != g_prefs_epoch) { loaded = 1; epoch = g_prefs_epoch; settings_str("online_id", "", oid, sizeof oid); for (const char *tag : {"ntv_", "nativ_", "ativ_"}) if (!strncasecmp(oid, tag, strlen(tag))) { memmove(oid, oid + strlen(tag), strlen(oid) - strlen(tag) + 1); break; } oid[10] = 0; settings_str("private_server", "", srv, sizeof srv); }
-		ui::row("Online name", "Others see ntv_ and your name: up to 10 letters, digits, '-' or '_'. Empty: a tag of your own. Applies the next time the game starts.", note_s("online_id", "after restart"));
+		ui::row(ui_tr("game.online_name"), ui_tr("game.online_name_help"), note_s("online_id", ui_tr("mark.after_restart")));
 		{	ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("ntv_"); ImGui::SameLine(0, 0);
 			ImGui::SetNextItemWidth(-FLT_MIN); ImGui::InputText("##oid", oid, 11);
 			int ok = 1, n = (int)strlen(oid);
 			for (int i = 0; i < n; i++) if (!isalnum((unsigned char)oid[i]) && oid[i] != '-' && oid[i] != '_') ok = 0;
 			if (ImGui::IsItemDeactivatedAfterEdit() && ok) { settings_set_str("online_id", oid); save_settings(); }
-			if (!ok) { ImGui::PushStyleColor(ImGuiCol_Text, ui::muted); ImGui::TextUnformatted("Not saved: letters, digits, '-' or '_' only"); ImGui::PopStyleColor(); }
+			if (!ok) { ImGui::PushStyleColor(ImGuiCol_Text, ui::muted); ImGui::TextUnformatted(ui_tr("game.name_invalid")); ImGui::PopStyleColor(); }
 		}
 		if (game_option("private_server")) {   /* (a game whose online needs its makers' servers) */
-			ui::row("Private server", "The community server that stands in for the game's own (host, or host:port). Empty: the game's own, long offline.");
+			ui::row(ui_tr("game.private_server"), ui_tr("game.private_server_help"));
 			ImGui::SetNextItemWidth(-FLT_MIN); ImGui::InputText("##srv", srv, sizeof srv); if (ImGui::IsItemDeactivatedAfterEdit()) { settings_set_str("private_server", srv); save_settings(); }
 		}
 	}
-	ui::row("Volume", nullptr, note_flt("volume", P.vol));
+	ui::row(ui_tr("game.volume"), nullptr, note_flt("volume", P.vol));
 	{ float pct = P.vol * 100.0f; ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##vol", &pct, 0.0f, 100.0f, "%.0f%%")) set_volume(pct / 100.0f); }
 	ui::rows_end();
 }
