@@ -31,7 +31,7 @@ void plat_random(void *buf, size_t n) { memset(buf, 0x5a, n); }
 const char *settings_str(const char *key, const char *def, char *buf, int bufsize) { (void)key; (void)buf; (void)bufsize; return def; }
 void settings_set_str(const char *key, const char *v) { (void)key; (void)v; }
 void settings_set_own(const char *key, const char *v) { (void)key; (void)v; }
-void settings_save(void) {}
+int settings_save(void) { return 1; }
 
 static int fails;
 static void check(const char *what, int ok) {

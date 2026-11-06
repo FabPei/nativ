@@ -153,11 +153,13 @@ static int save_layer(int layer, const char *header, const char *const *keep) {
 	                                * write keeps the change pending, so the next save retries it (kept values included) */
 	return 1;
 }
-void settings_save(void) {
+int settings_save(void) {
+	int ok;
 	pthread_mutex_lock(&mx);
-	save_layer(GAME, HDR_GAME, NULL);
-	save_layer(SHARED, HDR_SHARED, NULL);
+	ok = save_layer(GAME, HDR_GAME, NULL);
+	ok = save_layer(SHARED, HDR_SHARED, NULL) && ok;   /* (both run; ok covers either) */
 	pthread_mutex_unlock(&mx);
+	return ok;
 }
 int settings_reset_all(const char *const *keep) {
 	pthread_mutex_lock(&mx);

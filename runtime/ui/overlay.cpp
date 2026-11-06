@@ -110,7 +110,7 @@ void settings_set_int(const char *key, int v);
 void settings_set_float(const char *key, double v);
 void settings_set_str(const char *key, const char *v);
 const char *settings_str(const char *key, const char *def, char *buf, int bufsize);
-void settings_save(void);
+int settings_save(void);
 int settings_reset_all(const char *const *keep);
 extern const char *const settings_default_keep[];
 }
@@ -136,6 +136,11 @@ static const char *note_flt(const char *key, double v, const char *when = nullpt
 	char b[32]; std::snprintf(b, sizeof b, "%g", v);
 	return note_str(key, b, when);
 }
+
+/* (U8) the last settings save's result: the foot says "Settings could not be saved" in ui::error until a later save
+ * succeeds */
+static bool g_save_failed;
+static void save_settings(void) { g_save_failed = settings_save() == 0; }
 
 static ImGuiContext *g_ctx;
 static bool g_has_window;      /* overlay_init was given a real SDL_Window: the platform backend is live */
@@ -196,7 +201,7 @@ static void apply_pause(void) { display_set_paused(g_open || g_paused); }
 void overlay_open(void) { if (g_ctx) { intro_end(); g_open = true; apply_pause(); } }   /* (F10 over the touch card: it's skipped) */
 static void intro_end(void) {   /* the touch card, done or skipped: never again */
 	if (!g_intro) return;
-	g_intro = false; settings_set_int("touch_intro_shown", 1); settings_save();
+	g_intro = false; settings_set_int("touch_intro_shown", 1); save_settings();
 	g_paused = false; apply_pause();
 }
 void overlay_close(void) {   /* closing the menu resumes: a Game > Pause doesn't outlive it */
@@ -260,10 +265,10 @@ static void prefs_load(void) {
 	P.vol = (float)settings_float("volume", 1.0);
 	P.loaded = true;
 }
-static void set_fov(float v) { P.fov = v; settings_set_float("fov", v); settings_save(); }
-static void set_view(float v) { P.view = v; settings_set_float("view_distance", v); settings_save(); }
-static void set_scen(float v) { P.scen = v; settings_set_float("scenery_detail", v); settings_save(); }
-static void set_chr(float v) { P.chr = v; settings_set_float("character_detail", v); settings_save(); }
+static void set_fov(float v) { P.fov = v; settings_set_float("fov", v); save_settings(); }
+static void set_view(float v) { P.view = v; settings_set_float("view_distance", v); save_settings(); }
+static void set_scen(float v) { P.scen = v; settings_set_float("scenery_detail", v); save_settings(); }
+static void set_chr(float v) { P.chr = v; settings_set_float("character_detail", v); save_settings(); }
 /* the per-game options this game's hooks honour, from its conf (RECOMP_GAME_OPTIONS in RUN_ENV, e.g. "fov,view_distance"):
  * a row is shown only where it does something -- Uncharted's view distance and Killzone's scenery detail are different
  * hooks, and Shovel Knight has none */
@@ -274,13 +279,13 @@ static bool game_option(const char *name) {
 		if ((p == e || p[-1] == ',' || p[-1] == ' ') && (p[n] == 0 || p[n] == ',' || p[n] == ' ')) return true;
 	return false;
 }
-static void set_frame_rate(int fr) { P.fr = fr; settings_set_int("frame_rate", fr); settings_save(); }
-static void set_tcs(float v) { P.tcs = v; settings_set_float("touch_cursor_speed", v); settings_save(); }
-static void set_gyro(int on) { P.gyro = on != 0; settings_set_int("gyro", P.gyro); settings_save(); }
-static void set_gyro_pose(int flat) { P.gyro_flat = flat != 0; settings_set_str("gyro_pose", flat ? "flat" : "upright"); settings_save(); }
-static void set_gyro_sens(float v) { P.gyro_sens = v; settings_set_float("gyro_sens", v); settings_save(); }
-static void set_volume(float v) { P.vol = v; settings_set_float("volume", v); settings_save(); }   /* window.c applies it to every output port */
-static void set_osd(int level) { metrics_osd_set(level); settings_set_int("osd", level); settings_save(); }
+static void set_frame_rate(int fr) { P.fr = fr; settings_set_int("frame_rate", fr); save_settings(); }
+static void set_tcs(float v) { P.tcs = v; settings_set_float("touch_cursor_speed", v); save_settings(); }
+static void set_gyro(int on) { P.gyro = on != 0; settings_set_int("gyro", P.gyro); save_settings(); }
+static void set_gyro_pose(int flat) { P.gyro_flat = flat != 0; settings_set_str("gyro_pose", flat ? "flat" : "upright"); save_settings(); }
+static void set_gyro_sens(float v) { P.gyro_sens = v; settings_set_float("gyro_sens", v); save_settings(); }
+static void set_volume(float v) { P.vol = v; settings_set_float("volume", v); save_settings(); }   /* window.c applies it to every output port */
+static void set_osd(int level) { metrics_osd_set(level); settings_set_int("osd", level); save_settings(); }
 
 /* ---- the host's own hotkeys, one table: the Help page's Shortcuts list and the Controls page's second
  * table both draw it (the game's controls are window.c's ctrl_rows; these are the keys window.c binds
@@ -339,7 +344,7 @@ static void page_display(void) {
 		char cur[16]; settings_str("aspect_ratio", "native", cur, sizeof cur);
 		int v = 0; for (int i = 0; i < 4; i++) if (!strcmp(cur, ids[i])) v = i;
 		ImGui::BeginDisabled(!window_aspect_supported());
-		if (ui::segmented(names, 4, &v)) { settings_set_str("aspect_ratio", ids[v]); settings_save(); }
+		if (ui::segmented(names, 4, &v)) { settings_set_str("aspect_ratio", ids[v]); save_settings(); }
 		ImGui::EndDisabled();
 	}
 	if (gfx_gpu_hud_supported()) {
@@ -348,21 +353,21 @@ static void page_display(void) {
 		char cur[16]; settings_str("hud_layout", "edges", cur, sizeof cur);
 		int v = 0; for (int i = 0; i < 3; i++) if (!strcmp(cur, ids[i])) v = i;
 		ImGui::BeginDisabled(!window_aspect_supported() || window_aspect_widen() < 1.01f);
-		if (ui::segmented(names, 3, &v)) { settings_set_str("hud_layout", ids[v]); settings_save(); }
+		if (ui::segmented(names, 3, &v)) { settings_set_str("hud_layout", ids[v]); save_settings(); }
 		ImGui::EndDisabled();
 	}
 	if (gfx_gpu_target_scale_supported()) {
 		ui::row("Full-resolution world", "The game draws its 3D world below the screen's resolution; on, at the full resolution. Sharper, at a GPU cost.", note_int("full_res_world", settings_int("full_res_world", 1)));
-		{ bool on = settings_int("full_res_world", 1) != 0; if (ui::toggle("frw", &on)) { settings_set_int("full_res_world", on ? 1 : 0); settings_save(); } }
+		{ bool on = settings_int("full_res_world", 1) != 0; if (ui::toggle("frw", &on)) { settings_set_int("full_res_world", on ? 1 : 0); save_settings(); } }
 	}
 	if (gfx_gpu_ssao_supported()) {
 		ui::row("Ambient occlusion", "Soft shadows where surfaces meet: corners, crevices, under objects.", note_int("ssao", settings_int("ssao", 1)));
-		{ bool on = settings_int("ssao", 1) != 0; if (ui::toggle("ssao", &on)) { settings_set_int("ssao", on ? 1 : 0); settings_save(); } }
+		{ bool on = settings_int("ssao", 1) != 0; if (ui::toggle("ssao", &on)) { settings_set_int("ssao", on ? 1 : 0); save_settings(); } }
 		ui::row("Occlusion strength", nullptr, note_flt("ssao_strength", settings_float("ssao_strength", 1.0)));
 		{	float st = (float)settings_float("ssao_strength", 1.0) * 100.0f;
 			ImGui::BeginDisabled(settings_int("ssao", 1) == 0);
 			ImGui::SetNextItemWidth(-FLT_MIN);
-			if (ImGui::SliderFloat("##ssaost", &st, 0.0f, 200.0f, "%.0f%%")) { settings_set_float("ssao_strength", st / 100.0f); settings_save(); }
+			if (ImGui::SliderFloat("##ssaost", &st, 0.0f, 200.0f, "%.0f%%")) { settings_set_float("ssao_strength", st / 100.0f); save_settings(); }
 			ImGui::EndDisabled();
 		}
 	}
@@ -373,24 +378,24 @@ static void page_display(void) {
 			note_str("post_aa", (settings_int("fsr", 0) || !settings_int("post_aa", 1)) ? "0" : "1"));
 		static const char *const names[3] = {"Off##aam", "FXAA##aam", "FSR 3.1 (experimental)##aam"};
 		int v = settings_int("fsr", 0) ? 2 : settings_int("post_aa", 1) ? 1 : 0;
-		if (ui::segmented(names, 3, &v)) { settings_set_int("fsr", v == 2); settings_set_int("post_aa", v == 1); settings_save(); }
+		if (ui::segmented(names, 3, &v)) { settings_set_int("fsr", v == 2); settings_set_int("post_aa", v == 1); save_settings(); }
 	} else {
 		ui::row("Anti-aliasing", "Smooths jagged edges (FXAA).", note_int("post_aa", settings_int("post_aa", 1)));
-		{ bool aa = settings_int("post_aa", 1) != 0; if (ui::toggle("aa", &aa)) { settings_set_int("post_aa", aa ? 1 : 0); settings_save(); } }
+		{ bool aa = settings_int("post_aa", 1) != 0; if (ui::toggle("aa", &aa)) { settings_set_int("post_aa", aa ? 1 : 0); save_settings(); } }
 	}
 	ui::row("Sharpening", "Brings back detail lost to scaling and anti-aliasing.", note_flt("sharpen", settings_float("sharpen", 0.35)));
 	{	float sh = (float)settings_float("sharpen", 0.35) * 100.0f;
 		ImGui::SetNextItemWidth(-FLT_MIN);
-		if (ImGui::SliderFloat("##sharp", &sh, 0.0f, 100.0f, sh <= 0.0f ? "Off" : "%.0f%%")) { settings_set_float("sharpen", sh / 100.0f); settings_save(); }
+		if (ImGui::SliderFloat("##sharp", &sh, 0.0f, 100.0f, sh <= 0.0f ? "Off" : "%.0f%%")) { settings_set_float("sharpen", sh / 100.0f); save_settings(); }
 	}
 	ui::row("Texture filtering", "Keeps textures crisp when seen at an angle.", note_int("anisotropy", settings_int("anisotropy", 16)));
 	{	static const int an[5] = {1, 2, 4, 8, 16}; static const char *const names[5] = {"Off##af", "2×##af", "4×##af", "8×##af", "16×##af"};
 		int cur = settings_int("anisotropy", 16), v = 4; for (int i = 0; i < 5; i++) if (an[i] == cur) v = i;
-		if (ui::segmented(names, 5, &v)) { settings_set_int("anisotropy", an[v]); settings_save(); }
+		if (ui::segmented(names, 5, &v)) { settings_set_int("anisotropy", an[v]); save_settings(); }
 	}
 	ui::row("Shadow edges", "How soft the edges of shadows are.", note_int("shadow_filter", settings_int("shadow_filter", 1)));
 	{	static const char *const names[3] = {"Original##sf", "Soft##sf", "Softer##sf"}; int v = settings_int("shadow_filter", 1);
-		if (ui::segmented(names, 3, &v)) { settings_set_int("shadow_filter", v); settings_save(); }
+		if (ui::segmented(names, 3, &v)) { settings_set_int("shadow_filter", v); save_settings(); }
 	}
 	ui::rows_end();
 }
@@ -427,12 +432,12 @@ static void page_game(void) {
 		ui::row("Controller layout", "How the touch screen's actions are done, chosen as the game starts and kept until you quit. Standard: the game as on a handheld, with keyboard, mouse or a controller (its touch cursor). PS TV: the game's own PS TV layout, every action on buttons and sticks, a controller only. Ask: a choice at each start while a controller is connected, Standard otherwise. Applies the next time the game starts.", note_int("controller_layout", settings_int("controller_layout", 0), "after restart"));
 		static const char *const names[3] = {"Ask at start##cl", "Standard##cl", "PS TV##cl"};
 		int v = settings_int("controller_layout", 0); if (v < 0 || v > 2) v = 0;   /* (the setting's values: 0 ask, 1 standard (touch), 2 PS TV) */
-		if (ui::segmented(names, 3, &v)) { settings_set_int("controller_layout", v); settings_save(); }
+		if (ui::segmented(names, 3, &v)) { settings_set_int("controller_layout", v); save_settings(); }
 	}
 	if (game_option("online")) {
 		ui::row("Play online", "The game's online modes with other Project Nativ players, on your network and over the internet. They see your online name and your computer's IP address, as in any peer-to-peer game. Applies the next time the game starts.", note_int("online", settings_int("online", 1), "after restart"));
 		if (net_online_needs()) { char t[128]; snprintf(t, sizeof t, "Needs update %s: this copy is another version, and rooms only match their own. Add the update in the launcher.", net_online_needs()); ImGui::TextWrapped("%s", t); }
-		else { bool on = settings_int("online", 1) != 0; if (ui::toggle("online", &on)) { settings_set_int("online", on ? 1 : 0); settings_save(); } }
+		else { bool on = settings_int("online", 1) != 0; if (ui::toggle("online", &on)) { settings_set_int("online", on ? 1 : 0); save_settings(); } }
 		if (net_online()) {   /* how it stands (status.c), every half second */
 			static OnlineStatus st; static double at = -1; const double now = ImGui::GetTime();
 			if (at < 0 || now - at > 0.5) { online_status(&st); at = now; }
@@ -455,12 +460,12 @@ static void page_game(void) {
 			ImGui::SetNextItemWidth(-FLT_MIN); ImGui::InputText("##oid", oid, 11);
 			int ok = 1, n = (int)strlen(oid);
 			for (int i = 0; i < n; i++) if (!isalnum((unsigned char)oid[i]) && oid[i] != '-' && oid[i] != '_') ok = 0;
-			if (ImGui::IsItemDeactivatedAfterEdit() && ok) { settings_set_str("online_id", oid); settings_save(); }
+			if (ImGui::IsItemDeactivatedAfterEdit() && ok) { settings_set_str("online_id", oid); save_settings(); }
 			if (!ok) { ImGui::PushStyleColor(ImGuiCol_Text, ui::muted); ImGui::TextUnformatted("Not saved: letters, digits, '-' or '_' only"); ImGui::PopStyleColor(); }
 		}
 		if (game_option("private_server")) {   /* (a game whose online needs its makers' servers) */
 			ui::row("Private server", "The community server that stands in for the game's own (host, or host:port). Empty: the game's own, long offline.");
-			ImGui::SetNextItemWidth(-FLT_MIN); ImGui::InputText("##srv", srv, sizeof srv); if (ImGui::IsItemDeactivatedAfterEdit()) { settings_set_str("private_server", srv); settings_save(); }
+			ImGui::SetNextItemWidth(-FLT_MIN); ImGui::InputText("##srv", srv, sizeof srv); if (ImGui::IsItemDeactivatedAfterEdit()) { settings_set_str("private_server", srv); save_settings(); }
 		}
 	}
 	ui::row("Volume", nullptr, note_flt("volume", P.vol));
@@ -493,20 +498,20 @@ static void page_controls(void) {
 		{	static const char *const ids[3] = {"auto", "pad", "kbm"}, *const names[3] = {"Automatic##in", "Controller##in", "Keyboard & mouse##in"};
 			char cur[8]; settings_str("input_mode", "auto", cur, sizeof cur);
 			int v = 0; for (int i = 0; i < 3; i++) if (!strcmp(cur, ids[i])) v = i;
-			if (ui::segmented(names, 3, &v)) { settings_set_str("input_mode", ids[v]); settings_save(); }
+			if (ui::segmented(names, 3, &v)) { settings_set_str("input_mode", ids[v]); save_settings(); }
 		}
 		ui::row("Mouse look", "The mouse turns the camera and aims; left button R, right button L.", note_int("mouse_look", settings_int("mouse_look", 1)));
-		{ bool look = settings_int("mouse_look", 1) != 0; if (ui::toggle("ml", &look)) { settings_set_int("mouse_look", look ? 1 : 0); settings_save(); } }
+		{ bool look = settings_int("mouse_look", 1) != 0; if (ui::toggle("ml", &look)) { settings_set_int("mouse_look", look ? 1 : 0); save_settings(); } }
 		ui::row("Mouse aim", "Direct: the game turns exactly as far as the mouse moves (games with direct aim; the others use Stick by themselves). Stick: the mouse moves the right stick. F8 switches.", note_int("raw_look", window_raw_look()));
 		{ static const char *const names[2] = {"Direct##ma", "Stick##ma"}; int v = window_raw_look() ? 0 : 1; if (ui::segmented(names, 2, &v)) window_set_raw_look(v == 0); }
 		ui::row("Mouse sensitivity", nullptr, note_flt("mouse_sens", settings_float("mouse_sens", 1.0)));
 		{ static float sens = -1; static int epoch; if (sens < 0 || epoch != g_prefs_epoch) { sens = (float)settings_float("mouse_sens", 1.0); epoch = g_prefs_epoch; } ImGui::SetNextItemWidth(-FLT_MIN);
-		  if (ImGui::SliderFloat("##ms", &sens, 0.1f, 5.0f, "%.2f×", ImGuiSliderFlags_Logarithmic)) { settings_set_float("mouse_sens", sens); settings_save(); } }
+		  if (ImGui::SliderFloat("##ms", &sens, 0.1f, 5.0f, "%.2f×", ImGuiSliderFlags_Logarithmic)) { settings_set_float("mouse_sens", sens); save_settings(); } }
 		ui::row("Invert vertical look", nullptr, note_int("mouse_invert", settings_int("mouse_invert", 0)));
-		{ bool inv = settings_int("mouse_invert", 0) != 0; if (ui::toggle("mi", &inv)) { settings_set_int("mouse_invert", inv ? 1 : 0); settings_save(); } }
+		{ bool inv = settings_int("mouse_invert", 0) != 0; if (ui::toggle("mi", &inv)) { settings_set_int("mouse_invert", inv ? 1 : 0); save_settings(); } }
 		ui::row("L and R buttons", "The shoulder pair that is the game's L and R (aim and fire in a shooter). The other pair holds the touch cursor, or is L2 and R2 in a PS TV layout.", note_s("shoulder_buttons"));
 		{ static const char *const names[2] = {"Triggers (L2 / R2)##sb", "Bumpers (L1 / R1)##sb"}; char cur[16]; int v = !strcmp(settings_str("shoulder_buttons", "triggers", cur, sizeof cur), "bumpers");
-		  if (ui::segmented(names, 2, &v)) { settings_set_str("shoulder_buttons", v ? "bumpers" : "triggers"); settings_save(); } }
+		  if (ui::segmented(names, 2, &v)) { settings_set_str("shoulder_buttons", v ? "bumpers" : "triggers"); save_settings(); } }
 		ui::row("Touch cursor speed", "Hold the shoulder pair that isn't L and R, and move a stick: the cursor is a finger on the touch screen (Cross, L or R presses). Move both sticks for two fingers.", note_flt("touch_cursor_speed", settings_float("touch_cursor_speed", 1.0)));
 		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##tcs", &P.tcs, 0.25f, 3.0f, "%.2f×")) set_tcs(P.tcs);
 		ui::rows_end();
@@ -525,7 +530,7 @@ static void page_controls(void) {
 		{	static const char *const ids[3] = {"light", "webcam", "dark"}, *const names[3] = {"A lamp##cam", "This computer's camera##cam", "Darkness##cam"};
 			char cur[16]; settings_str("camera", "light", cur, sizeof cur);
 			int v = 0; for (int i = 0; i < 3; i++) if (!strcmp(cur, ids[i])) v = i;
-			if (ui::segmented(names, 3, &v)) { settings_set_str("camera", ids[v]); settings_save(); }
+			if (ui::segmented(names, 3, &v)) { settings_set_str("camera", ids[v]); save_settings(); }
 			if (v == 0) { bool lit = camera_light() != 0; ImGui::SameLine(); ImGui::TextDisabled("lamp"); ImGui::SameLine(); if (ui::toggle("lamp", &lit)) camera_light_set(lit ? 1 : 0); }
 		}
 		ui::rows_end();
@@ -703,6 +708,12 @@ static void build_ui(void) {
 	ImGui::Dummy(ImVec2(0, em * 0.15f));
 	if (ImGui::Button("Capture frame (F12)")) g_want_capture = true;
 	ImGui::SameLine(); ImGui::TextDisabled(SDL_HasGamepad() ? "L1 / R1: sections   Esc, F10 or the PS button closes this menu" : "Esc, F10 or the PS button closes this menu");
+	if (g_save_failed) {   /* (U8: until a later save succeeds) */
+		ImGui::SameLine();
+		ImGui::PushStyleColor(ImGuiCol_Text, ui::error);
+		ImGui::TextUnformatted("Settings could not be saved");
+		ImGui::PopStyleColor();
+	}
 	const char *quit = quit_label();
 	float qw = ImGui::CalcTextSize(quit).x + ImGui::GetStyle().FramePadding.x * 2;
 	ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - qw);
@@ -1129,8 +1140,8 @@ static void build_closed(void) {
 		if (!g_toast_checked) {   /* the hint, once per game, on this overlay's first windowed frame */
 			g_toast_checked = true;
 			if (!settings_has("touch_intro_shown")) {   /* the player's first game: the touch card first (it says where the menu is too) */
-				g_intro = true; settings_set_int("menu_hint_shown", 1); settings_save(); g_paused = true; apply_pause();
-			} else if (!settings_has("menu_hint_shown")) { g_toast_until = t + TOAST_S; overlay_toast_titled("Menu", "Move the mouse to the top, or press [F10] or the PS button", TOAST_S); settings_set_int("menu_hint_shown", 1); settings_save(); }
+				g_intro = true; settings_set_int("menu_hint_shown", 1); save_settings(); g_paused = true; apply_pause();
+			} else if (!settings_has("menu_hint_shown")) { g_toast_until = t + TOAST_S; overlay_toast_titled("Menu", "Move the mouse to the top, or press [F10] or the PS button", TOAST_S); settings_set_int("menu_hint_shown", 1); save_settings(); }
 		}
 		const ImVec2 m = io.MousePos;
 		const bool inside = ImGui::IsMousePosValid(&m) && m.x >= 0 && m.x < w && m.y >= 0 && m.y < hgt;   /* (focused but outside the window, e.g. on the title bar: the backend reports a position there too) */
@@ -1480,7 +1491,7 @@ static void build_prep(void) {
  * buttons and sticks, a controller only) or a handheld (touch, with keyboard, mouse or a controller's touch cursor), and
  * keeps it. Touch is the default; the PS TV layout is the player's choice, offered before the title */
 static void layout_choose(int v) {
-	if (g_layout_remember) { settings_set_int("controller_layout", v); settings_save(); }
+	if (g_layout_remember) { settings_set_int("controller_layout", v); save_settings(); }
 	g_layout_card = false; g_layout_ask = 0; g_layout_answer = v;
 	g_open = false; g_paused = false; apply_pause();
 }
