@@ -110,6 +110,8 @@ void settings_set_float(const char *key, double v);
 void settings_set_str(const char *key, const char *v);
 const char *settings_str(const char *key, const char *def, char *buf, int bufsize);
 void settings_save(void);
+int settings_reset_all(const char *const *keep);
+extern const char *const settings_default_keep[];
 }
 
 static ImGuiContext *g_ctx;
@@ -211,6 +213,10 @@ void overlay_process_event(const SDL_Event *event) {
 	if (event->type == SDL_EVENT_GAMEPAD_AXIS_MOTION) { savedlg_ui_gamepad_axis(event->gaxis.axis, event->gaxis.value); return; }
 	ImGui_ImplSDL3_ProcessEvent(event);
 }
+/* (U6) g_prefs_epoch: a reset changes settings under the pages' feet, so the once-loaded page values re-read it.
+ * g_modal_open: the reset dialog is up -- window.c must leave Esc to it (the dialog cancels, not the menu). */
+static int g_prefs_epoch;
+static bool g_modal_open;
 
 /* ---- the settings both the full menu's pages and the menu bar's menus edit: read once from settings.c
  * (it has no "changed since" signal, and a slider mid-drag must not snap back to the file's value on the
@@ -418,8 +424,8 @@ static void page_game(void) {
 			ui::row("Online now", st.clash ? "Another player in this game has your online name: you get two digits after it from the next start." : nullptr);
 			ImGui::TextUnformatted(a); if (b[0]) { ImGui::PushStyleColor(ImGuiCol_Text, ui::muted); ImGui::TextUnformatted(b); ImGui::TextUnformatted(c2); ImGui::PopStyleColor(); }
 		}
-		static char oid[32], srv[128]; static int loaded;
-		if (!loaded) { loaded = 1; settings_str("online_id", "", oid, sizeof oid); for (const char *tag : {"ntv_", "nativ_", "ativ_"}) if (!strncasecmp(oid, tag, strlen(tag))) { memmove(oid, oid + strlen(tag), strlen(oid) - strlen(tag) + 1); break; } oid[10] = 0; settings_str("private_server", "", srv, sizeof srv); }
+		static char oid[32], srv[128]; static int loaded, epoch;
+		if (!loaded || epoch != g_prefs_epoch) { loaded = 1; epoch = g_prefs_epoch; settings_str("online_id", "", oid, sizeof oid); for (const char *tag : {"ntv_", "nativ_", "ativ_"}) if (!strncasecmp(oid, tag, strlen(tag))) { memmove(oid, oid + strlen(tag), strlen(oid) - strlen(tag) + 1); break; } oid[10] = 0; settings_str("private_server", "", srv, sizeof srv); }
 		ui::row("Online name", "Others see ntv_ and your name: up to 10 letters, digits, '-' or '_'. Empty: a tag of your own. Applies the next time the game starts.");
 		{	ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("ntv_"); ImGui::SameLine(0, 0);
 			ImGui::SetNextItemWidth(-FLT_MIN); ImGui::InputText("##oid", oid, 11);
@@ -470,7 +476,7 @@ static void page_controls(void) {
 		ui::row("Mouse aim", "Direct: the game turns exactly as far as the mouse moves (games with direct aim; the others use Stick by themselves). Stick: the mouse moves the right stick. F8 switches.");
 		{ static const char *const names[2] = {"Direct##ma", "Stick##ma"}; int v = window_raw_look() ? 0 : 1; if (ui::segmented(names, 2, &v)) window_set_raw_look(v == 0); }
 		ui::row("Mouse sensitivity");
-		{ static float sens = -1; if (sens < 0) sens = (float)settings_float("mouse_sens", 1.0); ImGui::SetNextItemWidth(-FLT_MIN);
+		{ static float sens = -1; static int epoch; if (sens < 0 || epoch != g_prefs_epoch) { sens = (float)settings_float("mouse_sens", 1.0); epoch = g_prefs_epoch; } ImGui::SetNextItemWidth(-FLT_MIN);
 		  if (ImGui::SliderFloat("##ms", &sens, 0.1f, 5.0f, "%.2f×", ImGuiSliderFlags_Logarithmic)) { settings_set_float("mouse_sens", sens); settings_save(); } }
 		ui::row("Invert vertical look");
 		{ bool inv = settings_int("mouse_invert", 0) != 0; if (ui::toggle("mi", &inv)) { settings_set_int("mouse_invert", inv ? 1 : 0); settings_save(); } }
@@ -583,6 +589,20 @@ static void page_help(void) {
 		}
 	}
 	ui::muted_wrapped("For a full bug report use the launcher: the game's ⋯ menu → Report a problem.");
+	if (ImGui::Button("Reset all settings…")) ImGui::OpenPopup("Reset all settings");   /* (U6: confirmed below) */
+	if ((g_modal_open = ImGui::BeginPopupModal("Reset all settings", nullptr, ImGuiWindowFlags_AlwaysAutoResize))) {
+		ImGui::TextWrapped("Every setting goes back to its default. These stay: open_psid (the saves are one player's), online_id, the np_* network keys, menu_hint_shown.");
+		if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();   /* Cancel is the focused button first */
+		if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight)) ImGui::CloseCurrentPopup();   /* B/Esc = Cancel (window.c leaves Esc to a modal) */
+		if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+		ImGui::SameLine();
+		if (ImGui::Button("Reset")) {
+			if (!settings_reset_all(settings_default_keep)) overlay_toast("Settings could not be saved", 3.0);   /* the one keep list (settings.c): saves and the server know the player by these */
+			g_prefs_epoch++; P.loaded = false; prefs_load();   /* the pages re-read the way the menu does on open */
+			ImGui::CloseCurrentPopup();
+		}
+		ImGui::EndPopup();
+	}
 }
 
 /* ---- the full menu (build_ui): a panel over the paused, dimmed game -- the game's name and a Paused chip, the
@@ -623,7 +643,7 @@ static void build_ui(void) {
 	 * the page are separate panels the D-pad doesn't cross -- and the new page's first row takes the focus */
 	static const int order[TAB_N] = {TAB_DISPLAY, TAB_GAME, TAB_CONTROLS, TAB_PERF, TAB_HELP};
 	static bool focus_page;
-	if (!ImGui::IsAnyItemActive()) {
+	if (!ImGui::IsAnyItemActive() && !g_modal_open) {   /* (U6) no page step under the reset dialog */
 		const bool ctrl = io.KeyCtrl, shift = io.KeyShift; int step = 0;
 		if (ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || (ctrl && shift && ImGui::IsKeyPressed(ImGuiKey_Tab, false))) step = -1;
 		if (ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) || (ctrl && !shift && ImGui::IsKeyPressed(ImGuiKey_Tab, false))) step = 1;
@@ -1056,6 +1076,11 @@ static void build_marks(void) {
 		dl->AddCircle(ImVec2(m.x, m.y), r, col, 0, 2.5f);
 		if (m.cursor) { dl->AddLine(ImVec2(m.x - r - 4, m.y), ImVec2(m.x + r + 4, m.y), col, 1.5f); dl->AddLine(ImVec2(m.x, m.y - r - 4), ImVec2(m.x, m.y + r + 4), col, 1.5f); }
 	}
+}
+/* overlay_modal_open: one of our modal dialogs is up (the menu's "Reset all settings…") -- window.c leaves Esc to
+ * it so the dialog cancels instead of the whole menu closing (U6) */
+int overlay_modal_open(void) {
+	return g_modal_open;
 }
 /* overlay_dialog_active: the save-data dialog is waiting on the player (the dialog itself is drawn
  * and answered by savedlg_ui.cpp) */

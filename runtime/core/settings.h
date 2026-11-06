@@ -77,6 +77,12 @@ void settings_set_float(const char *key, double v);
 void settings_set_str(const char *key, const char *v);
 void settings_set_own(const char *key, const char *v);   /* into the game's own file whatever the key: this game's value apart from the shared one */
 void settings_save(void);   /* writes the changed files now, merged with them as they are on disk (the setters don't) */
+int settings_reset_all(const char *const *keep);   /* every key of both files goes except keep (a NULL-terminated name
+                                                    * list; a name ending in '*' matches by prefix, "np_*" = every np
+                                                    * key), then the files are saved; 0 = a write failed. The identity
+                                                    * keys must stay: open_psid, online_id, np_*, menu_hint_shown */
+extern const char *const settings_default_keep[];   /* exactly those identity keys (settings.c): what the menu's reset
+                                                     * passes, so the list cannot drift from what a reset protects */
 int settings_shared_dir(char *buf, int n);   /* the shared file's folder, with its separator (0: none -- a test, or RECOMP_SETTINGS) */
 int settings_game_option(const char *name);   /* this game's pack offers that option (RECOMP_GAME_OPTIONS, its RUN_ENV: "fov,online") */
 

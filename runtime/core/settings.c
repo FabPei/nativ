@@ -101,38 +101,69 @@ void settings_set_own(const char *key, const char *v) { pthread_mutex_lock(&mx);
 void settings_set_int(const char *key, int v) { char b[32]; snprintf(b, sizeof b, "%d", v); settings_set_str(key, b); }
 void settings_set_float(const char *key, double v) { char b[32]; snprintf(b, sizeof b, "%g", v); settings_set_str(key, b); }
 
+/* which keys a reset keeps: an exact name, or a prefix where the name ends in '*' ("np_*": every np key, a family
+ * the network code grows) */
+static int kept(const char *const *keep, const char *key) {
+	if (!keep) return 1;
+	for (int i = 0; keep[i]; i++) {
+		size_t n = strlen(keep[i]);
+		if (n && keep[i][n - 1] == '*') { if (!strncmp(keep[i], key, n - 1)) return 1; }
+		else if (!strcmp(keep[i], key)) return 1;
+	}
+	return 0;
+}
+/* the identity keys a reset never touches (open_psid: the saves are one player's; online_id and the np_* family:
+ * the server knows the player by them; menu_hint_shown: the one-time hint) -- the one list, so the menu's reset and
+ * the test cannot drift apart */
+const char *const settings_default_keep[] = {"open_psid", "online_id", "np_*", "menu_hint_shown", NULL};
 /* saving merges: the file as it is on disk now (the launcher, or another game, may have written it since it was read),
- * with this run's changes over it -- set, or removed -- so nobody's edit is lost to a whole-table write */
+ * with this run's changes over it -- set, or removed -- so nobody's edit is lost to a whole-table write. A reset
+ * passes its keep list: unkept keys are not carried over, however they got into the file. */
 #define MAXLINE 200
-struct merged { int n; char key[MAXLINE][32], val[MAXLINE][96]; };
+#define HDR_GAME "# vitarecomp settings for this game: its own options, and where it differs from the shared settings (runtime/core/settings.h)"
+#define HDR_SHARED "# Project Nativ's settings for every game (the launcher's Settings, and each game's menu; runtime/core/settings.h)"
+struct merged { int n; const char *const *keep; char key[MAXLINE][32], val[MAXLINE][96]; };
 static void merge_in(const char *k, const char *v, void *u) {
 	struct merged *m = u;
+	if (!kept(m->keep, k)) return;
 	if (m->n == MAXLINE) return;
 	snprintf(m->key[m->n], sizeof m->key[0], "%s", k); snprintf(m->val[m->n], sizeof m->val[0], "%s", v); m->n++;
 }
-static void save_layer(int layer, const char *header) {
+/* 1: written, or nothing to write; 0: a write failed */
+static int save_layer(int layer, const char *header, const char *const *keep) {
 	int any = 0;
 	for (int i = 0; i < ntab; i++) any |= tab[i].layer == layer && tab[i].dirty;
-	if (!any || !file[layer][0]) return;
-	static struct merged m; m.n = 0;
+	if ((!any && !keep) || !file[layer][0]) return 1;
+	static struct merged m; m.n = 0; m.keep = keep;
 	read_file(file[layer], merge_in, &m);
 	for (int i = 0; i < ntab; i++) {
 		if (tab[i].layer != layer || !tab[i].dirty) continue;
 		int j = 0; while (j < m.n && strcmp(m.key[j], tab[i].key)) j++;
 		if (tab[i].gone) { if (j < m.n) { m.n--; memmove(&m.key[j], &m.key[j + 1], sizeof m.key[0] * (size_t)(m.n - j)); memmove(&m.val[j], &m.val[j + 1], sizeof m.val[0] * (size_t)(m.n - j)); } }
 		else { if (j == m.n && m.n < MAXLINE) snprintf(m.key[m.n++], sizeof m.key[0], "%s", tab[i].key); if (j < m.n) snprintf(m.val[j], sizeof m.val[0], "%s", tab[i].val); }
-		tab[i].dirty = 0;
 	}
 	char tmp[530]; snprintf(tmp, sizeof tmp, "%s.tmp", file[layer]);
 	FILE *f = fopen(tmp, "w");
-	if (!f) return;
+	if (!f) return 0;
 	fprintf(f, "%s\n", header);
 	for (int j = 0; j < m.n; j++) fprintf(f, "%s = %s\n", m.key[j], m.val[j]);
-	if (fclose(f) == 0) rename(tmp, file[layer]);   /* whole or not at all */
+	if (fclose(f) != 0) return 0;
+	if (rename(tmp, file[layer]) != 0) return 0;   /* whole or not at all */
+	for (int i = 0; i < ntab; i++) if (tab[i].layer == layer && tab[i].dirty) tab[i].dirty = 0;   /* only now: a failed
+	                                * write keeps the change pending, so the next save retries it (kept values included) */
+	return 1;
 }
 void settings_save(void) {
 	pthread_mutex_lock(&mx);
-	save_layer(GAME, "# vitarecomp settings for this game: its own options, and where it differs from the shared settings (runtime/core/settings.h)");
-	save_layer(SHARED, "# Project Nativ's settings for every game (the launcher's Settings, and each game's menu; runtime/core/settings.h)");
+	save_layer(GAME, HDR_GAME, NULL);
+	save_layer(SHARED, HDR_SHARED, NULL);
 	pthread_mutex_unlock(&mx);
+}
+int settings_reset_all(const char *const *keep) {
+	pthread_mutex_lock(&mx);
+	for (int i = 0; i < ntab; i++) if (!kept(keep, tab[i].key)) { tab[i].gone = 1; tab[i].dirty = 1; }
+	int ok = save_layer(GAME, HDR_GAME, keep);
+	ok = save_layer(SHARED, HDR_SHARED, keep) && ok;
+	pthread_mutex_unlock(&mx);
+	return ok;
 }
