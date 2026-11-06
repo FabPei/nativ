@@ -109,15 +109,33 @@ inline void chip(const char *s, const ImVec4 &c) {   /* a small rounded label, t
 	ImGui::Dummy(ImVec2(ts.x + px * 2, ts.y + py * 2));
 }
 
-/* settings rows: rows_begin, then per setting row(label, explanation) and its control(s), then rows_end */
+/* settings rows: rows_begin, then per setting row(label, explanation) and its control(s), then rows_end.
+ * (U10) two_pane: a wide window shows the rows left and the hovered row's help right (build_ui decides; the rows
+ * then carry no inline explanation). help_label/help_text are what the right pane shows -- the page's first row's
+ * help until a row is hovered or its control focused, then sticky. */
+inline bool two_pane = false;
+inline const char *help_label = nullptr, *help_text = nullptr;
+inline const char *r_prev_label = nullptr, *r_prev_help = nullptr;
+inline float r_y0 = 0, r_x0 = 0, r_x1 = 0;
+inline void row_finish(void) {   /* the row above is complete: does it want the right pane? */
+	if (!two_pane || !r_prev_label) return;
+	if (ImGui::IsMouseHoveringRect(ImVec2(r_x0, r_y0), ImVec2(r_x1, ImGui::GetCursorScreenPos().y - ImGui::GetStyle().CellPadding.y))
+	    || ImGui::IsItemFocused()) {   /* (the last item is that row's control) */
+		help_label = r_prev_label; help_text = r_prev_help;
+	}
+	r_prev_label = nullptr;
+}
 inline bool rows_begin(const char *id) {
+	r_x0 = ImGui::GetCursorScreenPos().x; r_x1 = r_x0 + ImGui::GetContentRegionAvail().x;
 	if (!ImGui::BeginTable(id, 2, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX)) return false;
 	ImGui::TableSetupColumn("setting", ImGuiTableColumnFlags_WidthStretch, 1.0f);
 	ImGui::TableSetupColumn("control", ImGuiTableColumnFlags_WidthStretch, 1.15f);
 	return true;
 }
 inline void row(const char *label, const char *explanation = nullptr, const char *note = nullptr) {
+	row_finish();   /* (U10) */
 	ImGui::TableNextRow(0, ImGui::GetFrameHeight() + ImGui::GetStyle().CellPadding.y * 2);
+	r_y0 = ImGui::GetCursorScreenPos().y;
 	ImGui::TableNextColumn();
 	ImGui::TextUnformatted(label);
 	if (note && *note) {   /* (U7: a small muted mark -- "default", "next scene", "after restart") */
@@ -128,10 +146,19 @@ inline void row(const char *label, const char *explanation = nullptr, const char
 		ImGui::PopStyleColor();
 		ImGui::PopFont();
 	}
-	if (explanation && *explanation) { ImGui::PushFont(nullptr, ImGui::GetFontSize() * 0.88f); muted_wrapped(explanation); ImGui::PopFont(); }
+	if (explanation && *explanation) {
+		if (two_pane) { if (!help_label) { help_label = label; help_text = explanation; } }
+		else { ImGui::PushFont(nullptr, ImGui::GetFontSize() * 0.88f); muted_wrapped(explanation); ImGui::PopFont(); }
+	}
 	ImGui::TableNextColumn();
+	r_prev_label = label; r_prev_help = explanation;
 }
-inline void rows_end(void) { ImGui::EndTable(); }
+inline void rows_end(void) { row_finish(); ImGui::EndTable(); }
+/* (U10) the right pane's content: the hovered row's label and its help */
+inline void help_pane(void) {
+	if (help_label) { ImGui::PushFont(nullptr, ImGui::GetFontSize() * 1.1f); ImGui::TextWrapped("%s", help_label); ImGui::PopFont(); ImGui::Dummy(ImVec2(0, ImGui::GetFontSize() * 0.35f)); }
+	if (help_text) { ImGui::PushStyleColor(ImGuiCol_Text, muted); ImGui::TextWrapped("%s", help_text); ImGui::PopStyleColor(); }
+}
 
 /* the logo, drawn (assets/brand/make.py has the same geometry as SVG). wordmark: "nativ" in lowercase monoline, the n
  * in the text colour and "ativ" (Vita, backwards) in amber, `height` px tall (its units: x -6..282, y 14..110), 3x as

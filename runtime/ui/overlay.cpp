@@ -662,7 +662,13 @@ static void build_ui(void) {
 	const float em = ImGui::GetFontSize();
 	if (g_select_tab >= 0) { g_section = g_select_tab; g_select_tab = -1; }
 	ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), io.DisplaySize, ui::u32(ui::bg, 0.62f));   /* the paused game, dimmed behind */
-	const float W = io.DisplaySize.x - 2 * em < 58 * em ? io.DisplaySize.x - 2 * em : 58 * em;
+	/* (U10) a window at least 70 em wide -- the U2 scale makes that per-aspect, not per-resolution (16:9 is 85 em
+	 * at every size, 960x544 is 64 em) -- gets the two-pane page: rows left, the hovered row's help right, in a
+	 * wider menu that holds both; below it the rows keep their one-line help */
+	const bool two_pane = io.DisplaySize.x >= 70 * em;
+	ui::two_pane = two_pane;
+	const float wcap = (two_pane ? 76 : 58) * em;
+	const float W = io.DisplaySize.x - 2 * em < wcap ? io.DisplaySize.x - 2 * em : wcap;
 	const float H = io.DisplaySize.y - 2 * em < 38 * em ? io.DisplaySize.y - 2 * em : 38 * em;
 	ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
 	ImGui::SetNextWindowSize(ImVec2(W, H), ImGuiCond_Always);
@@ -716,7 +722,17 @@ static void build_ui(void) {
 	if (focus_page) { ImGui::SetKeyboardFocusHere(); focus_page = false; }   /* (the page's first control) */
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
 	static void (*const pages[TAB_N])(void) = {page_display, page_performance, page_game, page_controls, page_help};
+	static int shown_section = -1;
+	if (shown_section != g_section) { shown_section = g_section; ui::help_label = nullptr; }   /* (U10) a new page: the pane starts at its first row */
+	if (two_pane) ImGui::BeginChild("rows-l", ImVec2(-em * 23, 0), 0);
 	pages[g_section]();
+	if (two_pane) {
+		ImGui::EndChild();
+		ImGui::SameLine(0, em * 0.8f);
+		ImGui::BeginChild("help-r", ImVec2(0, 0), ImGuiChildFlags_Borders);
+		ui::help_pane();
+		ImGui::EndChild();
+	}
 	ImGui::EndChild();
 	/* the foot */
 	ImGui::Dummy(ImVec2(0, em * 0.15f));
