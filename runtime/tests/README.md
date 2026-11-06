@@ -259,3 +259,16 @@ still finds its pipelines once the folder is gone. A macOS update that changes e
     clang -O1 -g -Wall -I ../gfx mtl_archive_test.m -framework Metal -framework Foundation -o /tmp/mtl_archive_test && /tmp/mtl_archive_test
 
 It prints `all passed`.
+
+## The menu dump at any window size: `dump_fit_test.c`
+
+`RECOMP_OVERLAY_DUMP_SIZE=WxH` (window.c's headless menu dump) shows the in-game menu as it looks in a window of
+that size: the game's frame is fitted into W x H (aspect kept, centred, opaque black bars, nearest neighbour), then
+the menu is drawn at W x H. The parser and the scaler are header-only in `runtime/ui/dump_fit.h`. The test checks
+the parser (`WxH`, 16..8192, nothing else accepted, outputs untouched on refusal), the fitted rectangle for
+1920x1088, 1920x1080 and 1280x800 from 960x544, and the scaler (2x2 into 4x4 blocks, into 6x4 with bars, same size
+a plain copy). No SDL:
+
+    cc -O1 -g -Wall -I ../ui dump_fit_test.c -o /tmp/dump_fit_test && /tmp/dump_fit_test
+
+It prints `all passed (17 ok)` and exits 0.

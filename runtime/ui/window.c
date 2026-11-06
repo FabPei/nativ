@@ -26,7 +26,8 @@
  *                           menu can be looked at without a screen (see overlay_dump_maybe below)
  *       RECOMP_OVERLAY_DUMP_UI=menu|menu:<tab>|bar|Game|View|Controls|Help|toast|intro[:pad|:touch][@<s>]|quit|layout[,...]  what that dump
  *                           shows (overlay.h: overlay_render_forced); several, comma-separated, write
- *                           one file each, f_<name>.ppm
+ *                           one file each, f_<name>.ppm (':' in a name written as '-')
+ *       RECOMP_OVERLAY_DUMP_SIZE=WxH  that dump as in a window of W x H: the frame fitted (dump_fit.h), the menu at W x H
  */
 #include <SDL3/SDL.h>
 #include "gpulock.h"   /* every SDL submit/fence call below is the locked one: Homebrew SDL 3.4.16's Metal fence race, see that header */
@@ -42,6 +43,7 @@
 #include "settings.h"
 #include "overlay.h"
 #include "audio_pace.h"
+#include "dump_fit.h"
 
 enum { SELECT = 0x1, START = 0x8, UP = 0x10, RIGHT = 0x20, DOWN = 0x40, LEFT = 0x80, LTRIG = 0x100, RTRIG = 0x200,
        TRIANGLE = 0x1000, CIRCLE = 0x2000, CROSS = 0x4000, SQUARE = 0x8000,
@@ -732,6 +734,17 @@ static void overlay_dump_maybe(uint32_t base, uint32_t w, uint32_t h, uint32_t p
 	uint8_t *tmp = malloc(4u * w * h);
 	if (!tmp) return;
 	for (uint32_t y = 0; y < h; y++) memcpy(tmp + 4u * w * y, G(base + 4 * pitch * y), 4u * w);
+	/* RECOMP_OVERLAY_DUMP_SIZE=WxH: the menu as it looks in a window of that size -- the frame fitted into W x H
+	 * first (dump_fit.h: aspect kept, centred, black bars), then everything below runs at W x H */
+	{	uint32_t W, H; const char *sz = getenv("RECOMP_OVERLAY_DUMP_SIZE");
+		if (sz && !dump_size_parse(sz, &W, &H)) fprintf(stderr, "RECOMP_OVERLAY_DUMP_SIZE: \"%s\" is not WxH (%d..%d each), using %ux%u\n", sz, DUMP_SIZE_MIN, DUMP_SIZE_MAX, w, h);
+		else if (sz && (W != w || H != h)) {
+			uint8_t *fit = malloc(4u * W * H);
+			if (!fit) { fprintf(stderr, "RECOMP_OVERLAY_DUMP_SIZE: out of memory for %ux%u\n", W, H); free(tmp); return; }
+			dump_fit(tmp, w, h, fit, W, H);
+			free(tmp); tmp = fit; w = W; h = H;
+		}
+	}
 	SDL_GPUTextureCreateInfo ci = { .type = SDL_GPU_TEXTURETYPE_2D, .format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
 		.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
 		.width = w, .height = h, .layer_count_or_depth = 1, .num_levels = 1, .sample_count = SDL_GPU_SAMPLECOUNT_1 };
@@ -776,7 +789,9 @@ static void overlay_dump_maybe(uint32_t base, uint32_t w, uint32_t h, uint32_t p
 		SDL_GPUFence *fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
 		if (fence) { SDL_WaitForGPUFences(gpu, true, &fence, 1); SDL_ReleaseGPUFence(gpu, fence); }
 		char out[600]; const char *dot = strrchr(path, '.');
-		if (several) snprintf(out, sizeof out, "%.*s_%s%s", (int)(dot ? dot - path : (long)strlen(path)), path, ui, dot ? dot : "");
+		/* the entry in the file name with ':' as '-' ("menu:Display" -> f_menu-Display.ppm): Windows refuses ':' in a name */
+		char tag[64]; snprintf(tag, sizeof tag, "%s", ui); for (char *q = tag; *q; q++) if (*q == ':') *q = '-';
+		if (several) snprintf(out, sizeof out, "%.*s_%s%s", (int)(dot ? dot - path : (long)strlen(path)), path, tag, dot ? dot : "");
 		else snprintf(out, sizeof out, "%s", path);
 		const uint8_t *px = SDL_MapGPUTransferBuffer(gpu, down, false);
 		FILE *f = px ? fopen(out, "wb") : 0;
