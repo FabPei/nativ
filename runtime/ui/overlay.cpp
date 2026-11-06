@@ -51,6 +51,7 @@
 #include "savedlg.h"
 #include "ui_theme.h"
 #include "ui_scale.h"
+#include "sysinfo.h"   /* the "Copy system info" text (U5) */
 #define STBI_NO_STDIO
 #include "third_party/stb/stb_image.h"   /* (its implementation: runtime/media/jpeg.c) */
 #include "prompts_png.h"                 /* third_party/kenney-prompts/prompts.png as bytes (runtime/build.py writes it) */
@@ -545,6 +546,43 @@ static void page_help(void) {
 	{	char line[192]; version_line(line, sizeof line); if (*line) ImGui::TextDisabled("%s", line); }   /* (U4) */
 	ImGui::Dummy(ImVec2(0, ImGui::GetFontSize() * 0.3f));
 	ui::muted_wrapped("The menu bar: move the mouse to the top edge of the window (or tap the tab there). This menu: F10, or the PS button; the game pauses while it's up.");
+	{	static double copied_until;   /* "Copied" shows for 2 s next to the button (U5) */
+		if (ImGui::Button("Copy system info")) {
+			MetricsSnapshot m; metrics_snapshot(&m);
+			char ver[192], sdl[32], cwd[1024];
+			version_line(ver, sizeof ver);
+			int sv = SDL_GetVersion(); snprintf(sdl, sizeof sdl, "%d.%d.%d", SDL_VERSIONNUM_MAJOR(sv), SDL_VERSIONNUM_MINOR(sv), SDL_VERSIONNUM_MICRO(sv));
+			uint32_t w = 0, h = 0; window_pixel_size(&w, &h);
+			SysInfo si; memset(&si, 0, sizeof si);
+			si.versions = ver; si.platform = SDL_GetPlatform(); si.sdl_version = sdl;
+			si.cpu = m.cpu_name; si.gpu = m.gpu_name;
+			si.win_w = (int)w; si.win_h = (int)h;
+			si.render_scale = settings_int("render_scale", 1);
+			si.present_mode = window_present_mode();
+			si.frame_rate = settings_int("frame_rate", 30);
+			cwd[0] = 0; if (char *d = SDL_GetCurrentDirectory()) { snprintf(cwd, sizeof cwd, "%s", d); SDL_free(d); }
+			si.log_dir = cwd;
+			si.home = getenv("USERPROFILE"); if (!si.home || !*si.home) si.home = getenv("HOME");   /* cmd_report's ~ rule */
+			char text[2048];
+			sysinfo_text(text, sizeof text, &si);
+			SDL_SetClipboardText(text);
+			copied_until = ImGui::GetTime() + 2.0;
+		}
+		if (copied_until > ImGui::GetTime()) { ImGui::SameLine(); ImGui::TextDisabled("Copied"); }
+		ImGui::SameLine();
+		if (ImGui::Button("Open log folder")) {   /* hub.cpp's open_folder pattern */
+			char d[1024], url[1200];
+			d[0] = 0; if (char *c = SDL_GetCurrentDirectory()) { snprintf(d, sizeof d, "%s", c); SDL_free(c); }
+			for (char *p = d; *p; p++) if (*p == '\\') *p = '/';
+#ifdef _WIN32
+			snprintf(url, sizeof url, "file:///%s", d);
+#else
+			snprintf(url, sizeof url, "file://%s", d);
+#endif
+			SDL_OpenURL(url);
+		}
+	}
+	ui::muted_wrapped("For a full bug report use the launcher: the game's ⋯ menu → Report a problem.");
 }
 
 /* ---- the full menu (build_ui): a panel over the paused, dimmed game -- the game's name and a Paused chip, the
