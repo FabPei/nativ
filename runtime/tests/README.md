@@ -272,3 +272,16 @@ a plain copy). No SDL:
     cc -O1 -g -Wall -I ../ui dump_fit_test.c -o /tmp/dump_fit_test && /tmp/dump_fit_test
 
 It prints `all passed (17 ok)` and exits 0.
+
+## The in-game overlay's scale: `overlay_scale_test.c`
+
+`runtime/ui/ui_scale.h` gives the overlay's scale from the window height and the display's content scale (overlay.cpp's
+`render_frame` applies it to the base style through `ScaleAllSizes` and `FontSizeBase`, never `FontScaleDpi`: sizes
+pushed as `em * x` are already scaled). Up to 720 lines the scale is 1 (the menu was laid out for 960x544); above it
+grows with the height (1080 lines 1.5, 2160 lines 3); the content scale lifts the floor to 544 lines x scale; at most 4.
+The test checks 544, 720, 800, 1080, 2160 lines, a small window at 200 %, the height winning over the floor, the
+clamps, and an unknown (0) display scale. No SDL:
+
+    cc -O1 -g -Wall -I ../ui overlay_scale_test.c -o /tmp/overlay_scale_test -lm && /tmp/overlay_scale_test
+
+It prints `all passed (11 ok)` and exits 0.

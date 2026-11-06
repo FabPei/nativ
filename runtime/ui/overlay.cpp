@@ -50,6 +50,7 @@
 #include "savedlg_ui.h"
 #include "savedlg.h"
 #include "ui_theme.h"
+#include "ui_scale.h"
 #define STBI_NO_STDIO
 #include "third_party/stb/stb_image.h"   /* (its implementation: runtime/media/jpeg.c) */
 #include "prompts_png.h"                 /* third_party/kenney-prompts/prompts.png as bytes (runtime/build.py writes it) */
@@ -112,6 +113,9 @@ void settings_save(void);
 
 static ImGuiContext *g_ctx;
 static bool g_has_window;      /* overlay_init was given a real SDL_Window: the platform backend is live */
+static SDL_Window *g_window;   /* that window (its display's content scale: render_frame's scale) */
+static ImGuiStyle g_base_style; /* the look at scale 1 (ui::apply(15, 1)): every scale is applied from it, never compounded */
+static float g_ui_scale = 1.0f; /* the scale in effect (ui_scale.h) */
 /* written by the window thread, read by the game thread (display.c's pause, window.c's audio): atomic,
  * like every other flag that crosses those threads (rscale_req, osd_level_v). g_paused: Game > Pause
  * in the menu bar -- the game held (display.c, as for the menu) with nothing but a banner on screen */
@@ -137,7 +141,8 @@ int overlay_init(SDL_GPUDevice *device, SDL_Window *window, SDL_GPUTextureFormat
 	ui::load_system_font(io);   /* an explicit face: without one, ImGui 1.92's own automatic choice (vector vs. bitmap)
 		depends on a DPI scale the headless path never sets, and picks a degenerate (zero-size) one */
 	ui::apply(15.0f, 1.0f);     /* the launcher's look (ui_theme.h), a point smaller: the menu sits over a 960x544 game */
-	g_has_window = window != nullptr;
+	g_base_style = ImGui::GetStyle(); g_ui_scale = 1.0f;   /* (scaled per window size in render_frame: ui_scale.h) */
+	g_has_window = window != nullptr; g_window = window;
 	if (g_has_window && !ImGui_ImplSDL3_InitForSDLGPU(window)) { ImGui::DestroyContext(g_ctx); g_ctx = nullptr; return 0; }
 	ImGui_ImplSDLGPU3_InitInfo info = {};
 	info.Device = device; info.ColorTargetFormat = color_fmt; info.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
@@ -668,10 +673,10 @@ static void menu_view(void) {
 	if (ImGui::MenuItem("Fullscreen", nullptr, &fs)) window_set_fullscreen(fs ? 1 : 0);
 	ImGui::Separator();
 	prefs_load();
-	if (game_option("fov")) { ImGui::TextDisabled("Field of view"); ImGui::SetNextItemWidth(170); if (ImGui::SliderFloat("##fov", &P.fov, 0.75f, 1.5f, "%.2fx")) set_fov(P.fov); }
-	if (game_option("view_distance")) { ImGui::TextDisabled("View distance"); ImGui::SetNextItemWidth(170); if (ImGui::SliderFloat("##view", &P.view, 1.0f, 3.0f, "%.2fx")) set_view(P.view); }
-	if (game_option("scenery_detail")) { ImGui::TextDisabled("Scenery detail"); ImGui::SetNextItemWidth(170); if (ImGui::SliderFloat("##scen", &P.scen, 1.0f, 8.0f, "%.1fx")) set_scen(P.scen); }
-	if (game_option("character_detail")) { ImGui::TextDisabled("Character detail"); ImGui::SetNextItemWidth(170); if (ImGui::SliderFloat("##chr", &P.chr, 1.0f, 8.0f, "%.1fx")) set_chr(P.chr); }
+	if (game_option("fov")) { ImGui::TextDisabled("Field of view"); ImGui::SetNextItemWidth(170 * g_ui_scale); if (ImGui::SliderFloat("##fov", &P.fov, 0.75f, 1.5f, "%.2fx")) set_fov(P.fov); }
+	if (game_option("view_distance")) { ImGui::TextDisabled("View distance"); ImGui::SetNextItemWidth(170 * g_ui_scale); if (ImGui::SliderFloat("##view", &P.view, 1.0f, 3.0f, "%.2fx")) set_view(P.view); }
+	if (game_option("scenery_detail")) { ImGui::TextDisabled("Scenery detail"); ImGui::SetNextItemWidth(170 * g_ui_scale); if (ImGui::SliderFloat("##scen", &P.scen, 1.0f, 8.0f, "%.1fx")) set_scen(P.scen); }
+	if (game_option("character_detail")) { ImGui::TextDisabled("Character detail"); ImGui::SetNextItemWidth(170 * g_ui_scale); if (ImGui::SliderFloat("##chr", &P.chr, 1.0f, 8.0f, "%.1fx")) set_chr(P.chr); }
 	if (ImGui::BeginMenu("Frame rate")) {
 		if (ImGui::MenuItem("30", nullptr, P.fr < 60)) set_frame_rate(30);
 		if (ImGui::MenuItem("60 (experimental)", nullptr, P.fr >= 60)) set_frame_rate(60);
@@ -689,7 +694,7 @@ static void menu_view(void) {
 static void menu_controls(void) {
 	prefs_load();
 	ImGui::TextDisabled("Touch cursor speed (hold L1/R1, either stick)");
-	ImGui::SetNextItemWidth(170);
+	ImGui::SetNextItemWidth(170 * g_ui_scale);
 	if (ImGui::SliderFloat("##tcs", &P.tcs, 0.25f, 3.0f, "%.2fx")) set_tcs(P.tcs);
 	ImGui::Separator();
 	bool gy = P.gyro != 0;
@@ -700,7 +705,7 @@ static void menu_controls(void) {
 		ImGui::EndMenu();
 	}
 	ImGui::TextDisabled("Gyro sensitivity");
-	ImGui::SetNextItemWidth(170);
+	ImGui::SetNextItemWidth(170 * g_ui_scale);
 	if (ImGui::SliderFloat("##gs", &P.gyro_sens, 0.25f, 3.0f, "%.2fx")) set_gyro_sens(P.gyro_sens);
 	if (ImGui::MenuItem("Recentre the gyro", "R3")) motion_recenter();
 	ImGui::Separator();
@@ -820,6 +825,7 @@ static int toast_tokens(const char *body, ImFont *font, float fs, float cap_pad,
 }
 static void build_toasts(float w, float hgt, double t) {
 	(void)hgt;
+	/* (GetFontSize carries the window's scale, ui_scale.h: a toast keeps the share of the window it has at 1280x720) */
 	ImFont *font = ImGui::GetFont(); const float fs = ImGui::GetFontSize() * (w >= 1000 ? 2.0f : 1.0f);   /* (the bitmap font: integer multiples stay crisp) */
 	const float pad = fs * 0.75f, edge = fs * 0.3f, cap_pad = fs * 0.3f, space = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, " ").x, lh = fs * 1.35f;
 	const float maxw = fmaxf(w / 3.0f, fs * 18.0f);
@@ -1090,6 +1096,16 @@ static void render_frame(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *target, uint
 		io.DisplaySize = ImVec2((float)w, (float)h);
 		io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
 		io.DeltaTime = dt_s > 0 ? (float)dt_s : 1.0f / 60.0f;
+	}
+	{	/* the scale for this window (ui_scale.h): from the base style each time it changes, before NewFrame lays out
+		 * anything; sizes in the code are in em (GetFontSize), so they follow the font */
+		const float dpi = have_window && g_window ? SDL_GetDisplayContentScale(SDL_GetDisplayForWindow(g_window)) : 1.0f;
+		const float k = overlay_ui_scale(io.DisplaySize.y, dpi);
+		if (std::fabs(k - g_ui_scale) > 0.005f) {
+			ImGuiStyle &st = ImGui::GetStyle();
+			st = g_base_style; st.ScaleAllSizes(k); st.FontSizeBase = g_base_style.FontSizeBase * k;   /* (not FontScaleDpi: PushFont(nullptr, em * x) passes sizes already in em, which FontScaleDpi would scale a second time) */
+			g_ui_scale = k;
+		}
 	}
 	ImGui::NewFrame();
 	g_mouse_captured = io.WantCaptureMouse;   /* (computed by NewFrame from where the pointer was: the bar, a menu, the tab) */
