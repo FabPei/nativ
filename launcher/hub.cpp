@@ -1904,9 +1904,9 @@ int main(int, char **) {
 	if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) { fprintf(stderr, "SDL_Init: %s\n", SDL_GetError()); return 1; }
 	int sw = 1280, sh = 800;
 	if (const char *s = getenv("ATIV_SHOT_SIZE")) sscanf(s, "%dx%d", &sw, &sh);
-	const float scale = shot_path ? 1.0f : SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
+	const float start_scale = shot_path ? 1.0f : SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());   /* the window's opening size only; the UI's scale comes from the window */
 	SDL_Window *win = shot_path ? SDL_CreateWindow("Project Nativ", sw, sh, SDL_WINDOW_HIDDEN)
-	                            : SDL_CreateWindow("Project Nativ", (int)(1180 * scale), (int)(760 * scale), SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+	                            : SDL_CreateWindow("Project Nativ", (int)(1180 * start_scale), (int)(760 * start_scale), SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
 	g_gpu = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_DXIL | SDL_GPU_SHADERFORMAT_METALLIB, false, nullptr);
 	if (!win || !g_gpu || (!shot_path && !SDL_ClaimWindowForGPUDevice(g_gpu, win))) { fprintf(stderr, "window/GPU: %s\n", SDL_GetError()); return 1; }
 	if (!shot_path) SDL_SetGPUSwapchainParameters(g_gpu, win, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, SDL_GPU_PRESENTMODE_VSYNC);
@@ -1919,6 +1919,7 @@ int main(int, char **) {
 	io.IniFilename = nullptr;
 	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;   /* a controller (or the arrows) moves through everything; L1/R1 the tabs */
 	ui::load_system_font(io);
+	const float scale = shot_path ? 1.0f : SDL_GetWindowDisplayScale(win);   /* the display the window is on, not the primary one */
 	ui::apply(16.0f, scale);
 	ImGui_ImplSDL3_InitForSDLGPU(win);
 	ImGui_ImplSDLGPU3_InitInfo info = {};
@@ -1960,6 +1961,7 @@ int main(int, char **) {
 		while (SDL_PollEvent(&e)) {
 			ImGui_ImplSDL3_ProcessEvent(&e);
 			if (e.type == SDL_EVENT_QUIT || (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && e.window.windowID == SDL_GetWindowID(win))) quit = true;
+			if (e.type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED && e.window.windowID == SDL_GetWindowID(win)) ui::apply(16.0f, SDL_GetWindowDisplayScale(win));   /* (apply resets the style first, so this is safe) */
 		}
 		if (SDL_GetWindowFlags(win) & SDL_WINDOW_MINIMIZED) { SDL_Delay(50); continue; }
 		pick_poll();
