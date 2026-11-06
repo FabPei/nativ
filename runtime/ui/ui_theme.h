@@ -9,6 +9,7 @@
 #ifndef ATIV_UI_THEME_H
 #define ATIV_UI_THEME_H
 #include "imgui.h"
+#include "ui_text.h"   /* (U12b) ui_tr for the toggle's Off/On */
 #include <cstdio>
 #include <initializer_list>
 #include <sys/stat.h>
@@ -81,8 +82,8 @@ inline bool segmented(const char *const *labels, int n, int *v) {
 	ImGui::PopStyleVar();
 	return ch;
 }
-inline bool toggle(const char *id, bool *on) {   /* Off / On as a segmented pair */
-	char a[64], b[64]; snprintf(a, sizeof a, "Off##%s", id); snprintf(b, sizeof b, "On##%s", id);
+inline bool toggle(const char *id, bool *on) {   /* Off / On as a segmented pair (U12b: the catalog's words) */
+	char a[64], b[64]; snprintf(a, sizeof a, "%s##%s", ui_tr("common.off"), id); snprintf(b, sizeof b, "%s##%s", ui_tr("common.on"), id);
 	const char *const ls[2] = {a, b};
 	int v = *on ? 1 : 0;
 	if (!segmented(ls, 2, &v)) return false;

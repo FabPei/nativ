@@ -121,7 +121,7 @@ extern const char *const settings_default_keep[];
  * game reads only at start) */
 static const char *note_str(const char *key, const char *cur, const char *when = nullptr) {
 	const char *d = setting_default(key);
-	if (d && cur && !strcmp(d, cur)) return "default";
+	if (d && cur && !strcmp(d, cur)) return ui_tr("mark.default");
 	return when;
 }
 static const char *note_s(const char *key, const char *when = nullptr) {
@@ -137,6 +137,8 @@ static const char *note_flt(const char *key, double v, const char *when = nullpt
 	char b[32]; std::snprintf(b, sizeof b, "%g", v);
 	return note_str(key, b, when);
 }
+/* (U12b) a translated label with its ImGui id suffix ("Off" + "##ar" -> "Aus##ar"), in the caller's buffer */
+static const char *tr_suf(const char *txt, const char *suf, char *buf, size_t n) { std::snprintf(buf, n, "%s%s", txt, suf); return buf; }
 
 /* (U8) the last settings save's result: the foot says "Settings could not be saved" in ui::error until a later save
  * succeeds */
@@ -226,7 +228,7 @@ int overlay_quit_confirm(void) {   /* (window.c, on a request to close the windo
 }
 /* quitting a game the launcher started (ATIV_LAUNCHER, hub.cpp) returns to the launcher's library, which comes to the
  * front: the button says so */
-static const char *quit_label(void) { return std::getenv("ATIV_LAUNCHER") ? "Back to the library" : "Quit game"; }
+static const char *quit_label(void) { return std::getenv("ATIV_LAUNCHER") ? ui_tr("foot.quit_launcher") : ui_tr("foot.quit_game"); }
 int overlay_wants_capture(void) { return g_want_capture.exchange(false); }
 
 extern "C" { int window_kb_count(void); const char *window_kb_label(int i); const char *window_kb_key_name(int i);
@@ -331,7 +333,7 @@ static int scale_for_window(void) {
 	int k = (int)((h + 543) / 544); if (k < 1) k = 1; if (k > gfx_gpu_render_scale_max()) k = gfx_gpu_render_scale_max();
 	return k;
 }
-static const char *const g_aspect_names[3] = {"Fit", "Stretch", "Fill"};
+static const char *const g_aspect_names[3] = {"aspect.fit", "aspect.stretch", "aspect.fill"};   /* (U12b: catalog ids -- the call sites run ui_tr) */
 
 /* ---- the full menu's pages: settings rows (ui_theme.h) -- what a setting is, a line on what it does, its
  * control on the right. Each reads its live value from its owner every frame (gfx_gpu.c, window.c,
@@ -342,7 +344,7 @@ static void slider_row(const char *id, float *v, float lo, float hi, const char 
 }
 static void page_display(void) {
 	if (!ui::rows_begin("display")) return;
-	ui::row("Resolution", "The game drawn at a multiple of the Vita's 960 × 544. Higher is sharper; 4× and up want a fast GPU.", note_int("render_scale", gfx_gpu_render_scale_wanted(), "next scene"));
+	ui::row(ui_tr("display.resolution"), ui_tr("display.resolution_help"), note_int("render_scale", gfx_gpu_render_scale_wanted(), ui_tr("mark.next_scene")));
 	{	int rs = gfx_gpu_render_scale_wanted(), mx = gfx_gpu_render_scale_max(), v = rs - 1;   /* (a pick shows at once: it applies at the game's next scene) */
 		static char names[8][16]; const char *labels[8];
 		for (int n = 1; n <= mx && n <= 8; n++) { std::snprintf(names[n - 1], sizeof names[0], "%d×##rs", n); labels[n - 1] = names[n - 1]; }
@@ -350,35 +352,44 @@ static void page_display(void) {
 		char b[48]; scale_label(b, sizeof b, rs);
 		ImGui::TextDisabled("%s", b + 5);
 		int mw = scale_for_window();
-		if (mw && mw != rs) { ImGui::SameLine(); char l[40]; std::snprintf(l, sizeof l, "Match the window (%d×)", mw); if (ImGui::TextLink(l)) gfx_gpu_render_scale_request(mw); }
+		if (mw && mw != rs) { ImGui::SameLine(); char l[64]; std::snprintf(l, sizeof l, ui_tr("display.match_window"), mw); if (ImGui::TextLink(l)) gfx_gpu_render_scale_request(mw); }
 	}
-	ui::row("Picture fit", "How the picture fills the window.", note_s("aspect"));
-	{ int am = window_get_aspect(); if (ui::segmented(g_aspect_names, 3, &am)) window_set_aspect(am); }
-	ui::row("Widescreen", window_aspect_supported() ? "Shows more of the game at the sides." : "This game has no widescreen support yet.", note_s("aspect_ratio"));
-	{	static const char *const ids[4] = {"native", "21:9", "32:9", "window"}, *const names[4] = {"Off##ar", "21:9##ar", "32:9##ar", "Window##ar"};
+	ui::row(ui_tr("display.fit"), ui_tr("display.fit_help"), note_s("aspect"));
+	{	int am = window_get_aspect();
+		const char *names[3] = {ui_tr("aspect.fit"), ui_tr("aspect.stretch"), ui_tr("aspect.fill")};
+		if (ui::segmented(names, 3, &am)) window_set_aspect(am);
+	}
+	ui::row(ui_tr("display.widescreen"), ui_tr(window_aspect_supported() ? "display.widescreen_help" : "display.widescreen_none"), note_s("aspect_ratio"));
+	{	static const char *const ids[4] = {"native", "21:9", "32:9", "window"};
 		char cur[16]; settings_str("aspect_ratio", "native", cur, sizeof cur);
 		int v = 0; for (int i = 0; i < 4; i++) if (!strcmp(cur, ids[i])) v = i;
+		char t0[48], t1[48], t2[48], t3[48];
+		const char *names[4] = {tr_suf(ui_tr("common.off"), "##ar", t0, sizeof t0), tr_suf("21:9", "##ar", t1, sizeof t1),
+		                        tr_suf("32:9", "##ar", t2, sizeof t2), tr_suf(ui_tr("display.ar_window"), "##ar", t3, sizeof t3)};
 		ImGui::BeginDisabled(!window_aspect_supported());
 		if (ui::segmented(names, 4, &v)) { settings_set_str("aspect_ratio", ids[v]); save_settings(); }
 		ImGui::EndDisabled();
 	}
 	if (gfx_gpu_hud_supported()) {
-		ui::row("HUD", "With widescreen on: the HUD at its own shape, at the screen's edges or in a 16:9 frame in the middle; or stretched to the width.", note_s("hud_layout"));
-		static const char *const ids[3] = {"edges", "16:9", "stretch"}, *const names[3] = {"Edges##hud", "16:9##hud", "Stretched##hud"};
+		ui::row(ui_tr("display.hud"), ui_tr("display.hud_help"), note_s("hud_layout"));
+		static const char *const ids[3] = {"edges", "16:9", "stretch"};
 		char cur[16]; settings_str("hud_layout", "edges", cur, sizeof cur);
 		int v = 0; for (int i = 0; i < 3; i++) if (!strcmp(cur, ids[i])) v = i;
+		char t0[48], t1[48], t2[48];
+		const char *names[3] = {tr_suf(ui_tr("display.hud_edges"), "##hud", t0, sizeof t0), tr_suf("16:9", "##hud", t1, sizeof t1),
+		                        tr_suf(ui_tr("display.hud_stretched"), "##hud", t2, sizeof t2)};
 		ImGui::BeginDisabled(!window_aspect_supported() || window_aspect_widen() < 1.01f);
 		if (ui::segmented(names, 3, &v)) { settings_set_str("hud_layout", ids[v]); save_settings(); }
 		ImGui::EndDisabled();
 	}
 	if (gfx_gpu_target_scale_supported()) {
-		ui::row("Full-resolution world", "The game draws its 3D world below the screen's resolution; on, at the full resolution. Sharper, at a GPU cost.", note_int("full_res_world", settings_int("full_res_world", 1)));
+		ui::row(ui_tr("display.full_res"), ui_tr("display.full_res_help"), note_int("full_res_world", settings_int("full_res_world", 1)));
 		{ bool on = settings_int("full_res_world", 1) != 0; if (ui::toggle("frw", &on)) { settings_set_int("full_res_world", on ? 1 : 0); save_settings(); } }
 	}
 	if (gfx_gpu_ssao_supported()) {
-		ui::row("Ambient occlusion", "Soft shadows where surfaces meet: corners, crevices, under objects.", note_int("ssao", settings_int("ssao", 1)));
+		ui::row(ui_tr("display.ssao"), ui_tr("display.ssao_help"), note_int("ssao", settings_int("ssao", 1)));
 		{ bool on = settings_int("ssao", 1) != 0; if (ui::toggle("ssao", &on)) { settings_set_int("ssao", on ? 1 : 0); save_settings(); } }
-		ui::row("Occlusion strength", nullptr, note_flt("ssao_strength", settings_float("ssao_strength", 1.0)));
+		ui::row(ui_tr("display.ssao_strength"), nullptr, note_flt("ssao_strength", settings_float("ssao_strength", 1.0)));
 		{	float st = (float)settings_float("ssao_strength", 1.0) * 100.0f;
 			ImGui::BeginDisabled(settings_int("ssao", 1) == 0);
 			ImGui::SetNextItemWidth(-FLT_MIN);
@@ -386,16 +397,19 @@ static void page_display(void) {
 			ImGui::EndDisabled();
 		}
 	}
-	ui::row("Fullscreen", nullptr, note_int("fullscreen", window_get_fullscreen()));
+	ui::row(ui_tr("display.fullscreen"), nullptr, note_int("fullscreen", window_get_fullscreen()));
 	{ bool fs = window_get_fullscreen() != 0; if (ui::toggle("fs", &fs)) window_set_fullscreen(fs ? 1 : 0); }
-	ui::row("Presentation", "How frames reach the screen. Vsync waits for the screen's refresh: no tearing. Mailbox and Immediate do not wait -- less input lag, the frame rate paces itself -- and Immediate can tear. Applies after restart.", "after restart");
-	{	static const char *const names[3] = {"Vsync##pm", "Mailbox##pm", "Immediate##pm"}, *const ids[3] = {"vsync", "mailbox", "immediate"};
+	ui::row(ui_tr("display.presentation"), ui_tr("display.presentation_help"), ui_tr("mark.after_restart"));
+	{	static const char *const ids[3] = {"vsync", "mailbox", "immediate"};
 		char cur[16]; settings_str("present_mode", "", cur, sizeof cur);
 		int v = !strcmp(cur, "mailbox") ? 1 : !strcmp(cur, "immediate") ? 2 : 0;
+		char t0[48], t1[48], t2[48];
+		const char *names[3] = {tr_suf("Vsync", "##pm", t0, sizeof t0), tr_suf("Mailbox", "##pm", t1, sizeof t1),
+		                        tr_suf(ui_tr("display.pm_immediate"), "##pm", t2, sizeof t2)};
 		if (ui::segmented(names, 3, &v)) { settings_set_str("present_mode", ids[v]); save_settings(); }
 	}
 	if (!window_get_fullscreen()) {
-		ui::row("Window size", "The window at a multiple of the Vita's 960 × 544.");
+		ui::row(ui_tr("display.window_size"), ui_tr("display.window_size_help"));
 		for (int n = 1; n <= 4; n++) {
 			char l[10]; std::snprintf(l, sizeof l, "%d×##ws", n);
 			if (n > 1) ImGui::SameLine();
@@ -403,27 +417,35 @@ static void page_display(void) {
 		}
 	}
 	if (gfx_gpu_fsr_supported()) {   /* (this game's FSR is verified: the anti-aliasing is a choice) */
-		ui::row("Anti-aliasing", "Smooths jagged edges. FXAA: a light pass on the finished frame. FSR 3.1 (experimental): AMD's temporal anti-aliasing on the 3D world, steadier and cleaner, at a GPU cost; some surfaces may still shimmer (F4 compares it live).",
+		ui::row(ui_tr("display.aa"), ui_tr("display.aa_fsr_help"),
 			note_str("post_aa", (settings_int("fsr", 0) || !settings_int("post_aa", 1)) ? "0" : "1"));
-		static const char *const names[3] = {"Off##aam", "FXAA##aam", "FSR 3.1 (experimental)##aam"};
 		int v = settings_int("fsr", 0) ? 2 : settings_int("post_aa", 1) ? 1 : 0;
+		char t0[48], t1[48], t2[64];
+		const char *names[3] = {tr_suf(ui_tr("common.off"), "##aam", t0, sizeof t0), tr_suf("FXAA", "##aam", t1, sizeof t1),
+		                        tr_suf(ui_tr("display.aa_fsr"), "##aam", t2, sizeof t2)};
 		if (ui::segmented(names, 3, &v)) { settings_set_int("fsr", v == 2); settings_set_int("post_aa", v == 1); save_settings(); }
 	} else {
-		ui::row("Anti-aliasing", "Smooths jagged edges (FXAA).", note_int("post_aa", settings_int("post_aa", 1)));
+		ui::row(ui_tr("display.aa"), ui_tr("display.aa_help"), note_int("post_aa", settings_int("post_aa", 1)));
 		{ bool aa = settings_int("post_aa", 1) != 0; if (ui::toggle("aa", &aa)) { settings_set_int("post_aa", aa ? 1 : 0); save_settings(); } }
 	}
-	ui::row("Sharpening", "Brings back detail lost to scaling and anti-aliasing.", note_flt("sharpen", settings_float("sharpen", 0.35)));
+	ui::row(ui_tr("display.sharpening"), ui_tr("display.sharpening_help"), note_flt("sharpen", settings_float("sharpen", 0.35)));
 	{	float sh = (float)settings_float("sharpen", 0.35) * 100.0f;
 		ImGui::SetNextItemWidth(-FLT_MIN);
-		if (ImGui::SliderFloat("##sharp", &sh, 0.0f, 100.0f, sh <= 0.0f ? "Off" : "%.0f%%")) { settings_set_float("sharpen", sh / 100.0f); save_settings(); }
+		if (ImGui::SliderFloat("##sharp", &sh, 0.0f, 100.0f, sh <= 0.0f ? ui_tr("common.off") : "%.0f%%")) { settings_set_float("sharpen", sh / 100.0f); save_settings(); }
 	}
-	ui::row("Texture filtering", "Keeps textures crisp when seen at an angle.", note_int("anisotropy", settings_int("anisotropy", 16)));
-	{	static const int an[5] = {1, 2, 4, 8, 16}; static const char *const names[5] = {"Off##af", "2×##af", "4×##af", "8×##af", "16×##af"};
+	ui::row(ui_tr("display.aniso"), ui_tr("display.aniso_help"), note_int("anisotropy", settings_int("anisotropy", 16)));
+	{	static const int an[5] = {1, 2, 4, 8, 16};
+		char t0[48], t1[48], t2[48], t3[48], t4[48];
+		const char *names[5] = {tr_suf(ui_tr("common.off"), "##af", t0, sizeof t0), tr_suf("2×", "##af", t1, sizeof t1),
+		                        tr_suf("4×", "##af", t2, sizeof t2), tr_suf("8×", "##af", t3, sizeof t3), tr_suf("16×", "##af", t4, sizeof t4)};
 		int cur = settings_int("anisotropy", 16), v = 4; for (int i = 0; i < 5; i++) if (an[i] == cur) v = i;
 		if (ui::segmented(names, 5, &v)) { settings_set_int("anisotropy", an[v]); save_settings(); }
 	}
-	ui::row("Shadow edges", "How soft the edges of shadows are.", note_int("shadow_filter", settings_int("shadow_filter", 1)));
-	{	static const char *const names[3] = {"Original##sf", "Soft##sf", "Softer##sf"}; int v = settings_int("shadow_filter", 1);
+	ui::row(ui_tr("display.shadow"), ui_tr("display.shadow_help"), note_int("shadow_filter", settings_int("shadow_filter", 1)));
+	{	char t0[48], t1[48], t2[48];
+		const char *names[3] = {tr_suf(ui_tr("display.sf_original"), "##sf", t0, sizeof t0), tr_suf(ui_tr("display.sf_soft"), "##sf", t1, sizeof t1),
+		                        tr_suf(ui_tr("display.sf_softer"), "##sf", t2, sizeof t2)};
+		int v = settings_int("shadow_filter", 1);
 		if (ui::segmented(names, 3, &v)) { settings_set_int("shadow_filter", v); save_settings(); }
 	}
 	ui::rows_end();
@@ -681,9 +703,11 @@ static void page_help(void) {
 /* ---- the full menu (build_ui): a panel over the paused, dimmed game -- the game's name and a Paused chip, the
  * sections down the side, the page, and Resume / Capture / Quit at the foot */
 enum { TAB_DISPLAY, TAB_PERF, TAB_GAME, TAB_CONTROLS, TAB_HELP, TAB_N };
-static const char *const g_tab_names[TAB_N] = {"Display", "Performance", "Game", "Controls", "Help"};
+static const char *const g_tab_names[TAB_N] = {"Display", "Performance", "Game", "Controls", "Help"};   /* (U12b: English names -- the dump's page selector matches them (:1656); the UI shows the catalog) */
+static const char *const g_tab_ids[TAB_N] = {"nav.display", "nav.performance", "nav.game", "nav.controls", "nav.help"};
 static const char *const g_tab_blurbs[TAB_N] = {"Resolution, picture and image quality", "Frame rate and on-screen stats",
 	"Frame rate, view and detail options, volume", "Keyboard, mouse, controller, gyro and camera", "Shortcuts and about"};
+static const char *const g_tab_blurb_ids[TAB_N] = {"blurb.display", "blurb.performance", "blurb.game", "blurb.controls", "blurb.help"};
 static int g_select_tab = -1;   /* the bar asked for this page (open_page): selected on the menu's next frame, then -1 */
 static int g_section = TAB_DISPLAY;
 static void open_page(int tab) { g_select_tab = tab; overlay_open(); }
@@ -708,10 +732,11 @@ static void build_ui(void) {
 	/* header: the game, Paused, Resume */
 	{	const char *name = std::getenv("RECOMP_GAME_NAME"); if (!name || !*name) name = std::getenv("RECOMP_TITLE"); if (!name || !*name) name = "Project Nativ";
 		ui::heading(name, em * 1.35f);
-		ImGui::SameLine(0, em * 0.7f); ImGui::SetCursorPosY(ImGui::GetCursorPosY() + em * 0.18f); ui::chip("Paused", ui::accent);
-		float rw = ImGui::CalcTextSize("Resume").x + ImGui::GetStyle().FramePadding.x * 2;
+		ImGui::SameLine(0, em * 0.7f); ImGui::SetCursorPosY(ImGui::GetCursorPosY() + em * 0.18f); ui::chip(ui_tr("header.paused"), ui::accent);
+		const char *resume = ui_tr("header.resume");
+		float rw = ImGui::CalcTextSize(resume).x + ImGui::GetStyle().FramePadding.x * 2;
 		ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - rw);
-		if (ui::primary_button("Resume")) overlay_close();
+		if (ui::primary_button(resume)) overlay_close();
 	}
 	{	char line[192]; version_line(line, sizeof line);   /* (U4: right-aligned under the header row) */
 		if (*line) { float lw = ImGui::CalcTextSize(line).x; ImGui::SetCursorPosX(ImMax(0.0f, ImGui::GetWindowContentRegionMax().x - lw)); ImGui::TextDisabled("%s", line); }
@@ -738,7 +763,7 @@ static void build_ui(void) {
 		ImDrawList *dl = ImGui::GetWindowDrawList();
 		if (on || hov) dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), ui::u32(on ? ui::card_hi : ui::card), ImGui::GetStyle().FrameRounding);
 		if (on) dl->AddRectFilled(ImVec2(p.x, p.y + h * 0.22f), ImVec2(p.x + 3, p.y + h * 0.78f), ui::u32(ui::accent), 2);
-		dl->AddText(ImVec2(p.x + em * 0.9f, p.y + (h - ImGui::GetTextLineHeight()) * 0.5f), ui::u32(on ? ui::text : ui::muted), g_tab_names[i]);
+		dl->AddText(ImVec2(p.x + em * 0.9f, p.y + (h - ImGui::GetTextLineHeight()) * 0.5f), ui::u32(on ? ui::text : ui::muted), ui_tr(g_tab_ids[i]));
 		ImGui::PopID();
 	}
 	ImGui::EndChild();
@@ -747,8 +772,8 @@ static void build_ui(void) {
 	ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::bg);
 	ImGui::BeginChild("page", ImVec2(0, -foot), ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding);
 	ImGui::PopStyleColor();
-	ui::heading(g_tab_names[g_section], em * 1.25f);
-	ImGui::TextDisabled("%s", g_tab_blurbs[g_section]);
+	ui::heading(ui_tr(g_tab_ids[g_section]), em * 1.25f);
+	ImGui::TextDisabled("%s", ui_tr(g_tab_blurb_ids[g_section]));
 	if (focus_page) { ImGui::SetKeyboardFocusHere(); focus_page = false; }   /* (the page's first control) */
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
 	static void (*const pages[TAB_N])(void) = {page_display, page_performance, page_game, page_controls, page_help};
@@ -766,12 +791,12 @@ static void build_ui(void) {
 	ImGui::EndChild();
 	/* the foot */
 	ImGui::Dummy(ImVec2(0, em * 0.15f));
-	if (ImGui::Button("Capture frame (F12)")) g_want_capture = true;
-	ImGui::SameLine(); ImGui::TextDisabled(SDL_HasGamepad() ? "L1 / R1: sections   Esc, F10 or the PS button closes this menu" : "Esc, F10 or the PS button closes this menu");
+	if (ImGui::Button(ui_tr("foot.capture"))) g_want_capture = true;
+	ImGui::SameLine(); ImGui::TextDisabled("%s", SDL_HasGamepad() ? ui_tr("foot.hint_pad") : ui_tr("foot.hint"));
 	if (g_save_failed) {   /* (U8: until a later save succeeds) */
 		ImGui::SameLine();
 		ImGui::PushStyleColor(ImGuiCol_Text, ui::error);
-		ImGui::TextUnformatted("Settings could not be saved");
+		ImGui::TextUnformatted(ui_tr("foot.save_failed"));
 		ImGui::PopStyleColor();
 	}
 	const char *quit = quit_label();
@@ -834,7 +859,7 @@ static void menu_view(void) {
 	}
 	if (ImGui::BeginMenu("Picture fit")) {
 		int am = window_get_aspect();
-		for (int i = 0; i < 3; i++) if (ImGui::MenuItem(g_aspect_names[i], nullptr, am == i)) window_set_aspect(i);
+		for (int i = 0; i < 3; i++) if (ImGui::MenuItem(ui_tr(g_aspect_names[i]), nullptr, am == i)) window_set_aspect(i);
 		ImGui::EndMenu();
 	}
 	bool fs = window_get_fullscreen() != 0;
