@@ -23,6 +23,9 @@
 #include <stdarg.h>
 #include "../input/gesture.c"
 #include "gesture_scenario.h"
+/* kernel.c is not linked here (it defines these): the watch seam's stubs (WR32 in rt.h references them) */
+uint32_t recomp_watch_lo, recomp_watch_hi;
+void recomp_watch_write(uint32_t a, uint32_t v, int width) { (void)a; (void)v; (void)width; }
 
 uint8_t *recomp_mem;
 

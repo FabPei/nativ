@@ -14,6 +14,7 @@ cc -O1 -g -Wall -Wno-unused-function -DTIMER_STUB_CONTROL -D_GNU_SOURCE $I timer
 echo "== pre-fix stub control (expected: fails > 0):"
 "$OUT/timer_ctl"; echo "rc=$?"
 
-cc -O1 -g -Wall -Wno-unused-function -D_GNU_SOURCE $I kernel_test.c ../debug/waitstats.c -o "$OUT/kernel_test" -lpthread -lm || { echo "COMPILE-FAIL kernel_test"; exit 2; }
+# kernel_test.c carries its own waitstats stubs: linking ../debug/waitstats.c too = multiple definition
+cc -O1 -g -Wall -Wno-unused-function -D_GNU_SOURCE $I kernel_test.c -o "$OUT/kernel_test" -lpthread -lm || { echo "COMPILE-FAIL kernel_test"; exit 2; }
 echo "== kernel_test gate:"
 "$OUT/kernel_test" | tail -1

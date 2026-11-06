@@ -18,6 +18,7 @@
 #include <signal.h>
 #include <stdarg.h>
 #include "../core/kernel.c"
+void ev_log(const char *kind, const char *fmt, ...) { (void)kind; (void)fmt; }   /* events.c: not linked here */
 
 /* ---- the runtime kernel.c expects (same shim set as kernel_test.c) */
 uint8_t *recomp_mem;

@@ -11,6 +11,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "../media/jpeg.c"
+/* kernel.c is not linked here (it defines these): the watch seam's stubs (WR32 in rt.h references them) */
+uint32_t recomp_watch_lo, recomp_watch_hi;
+void recomp_watch_write(uint32_t a, uint32_t v, int width) { (void)a; (void)v; (void)width; }
 
 uint8_t *recomp_mem;
 void gfx_guest_writing(uint32_t addr, uint32_t len) { (void)addr; (void)len; }
