@@ -14,6 +14,8 @@
 #ifndef RECOMP_HLE_SMALL_H
 #define RECOMP_HLE_SMALL_H
 #include <stdint.h>
+#include <stddef.h>
+#include <string.h>
 
 #define HLE_KERNEL_MODEL_VITA   0x10000u
 #define HLE_KERNEL_MODEL_VITATV 0x20000u
@@ -42,6 +44,22 @@ static inline int32_t hle_ngs_patch_sub(const HleNgsPatchSrc *p, int n, uint32_t
 		int used = 0;
 		for (int i = 0; i < n && !used; i++) used = p[i].active && p[i].src == src && p[i].out == out && p[i].sub == s;
 		if (!used) return s;
+	}
+	return 0;
+}
+/* HLE-LIB-03: an integer of a PARAM.SFO (little-endian: "\0PSF" +0, key table +8, data table +0xc, entry count +0x10;
+ * 16-byte index entries from +0x14: key offset u16, format u16 (0x0404 = u32), length u32, max u32, data offset u32).
+ * 1 and *v when the key holds an integer, else 0 */
+static inline uint32_t hle_le32(const uint8_t *p) { return p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; }
+static inline int hle_sfo_int(const uint8_t *b, size_t n, const char *key, uint32_t *v) {
+	if (n < 0x14 || hle_le32(b) != 0x46535000u) return 0;
+	const uint32_t kt = hle_le32(b + 8), dt = hle_le32(b + 0xc), cnt = hle_le32(b + 0x10);
+	for (uint32_t i = 0; i < cnt && 0x14 + 16 * (size_t)i + 16 <= n; i++) {
+		const uint8_t *e = b + 0x14 + 16 * i;
+		const uint32_t ko = kt + (e[0] | (uint32_t)e[1] << 8), fmt = e[2] | (uint32_t)e[3] << 8, doff = dt + hle_le32(e + 12);
+		if (ko >= n || doff + 4 > n) continue;
+		size_t kl = 0; while (ko + kl < n && b[ko + kl]) kl++;
+		if (kl == strlen(key) && !memcmp(b + ko, key, kl) && fmt == 0x0404) { *v = hle_le32(b + doff); return 1; }
 	}
 	return 0;
 }

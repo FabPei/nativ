@@ -19,6 +19,7 @@
 #include "savedlg.h"
 #include "settings.h"
 #include "cdlg.h"
+#include "hle_small.h"
 
 /* ---- common dialogs: one that was opened finishes at once with an OK result, as if the player
  * confirmed it; each kind has its own state (a dialog never opened reports NONE). The save-data
@@ -485,6 +486,32 @@ void savedlg_answer(int seq, int choice) {
 
 /* ---- trophies: trophy.c (HLE-LIB-02) */
 
+/* (HLE-LIB-03) sceAppUtilSaveDataGetQuota(SceSize *quotaKiB, SceSize *usedKiB, mount point): the quota is the game's
+ * PARAM.SFO SAVEDATA_MAX_SIZE (KiB), the use the files in savedata0 (each rounded up to a KiB) */
+static uint64_t dir_kib(const char *dir) {
+	uint64_t k = 0; DIR *d = opendir(dir); if (!d) return 0;
+	for (struct dirent *e; (e = readdir(d)); ) {
+		if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+		char p[1024]; snprintf(p, sizeof p, "%s/%s", dir, e->d_name); struct stat st;
+		if (stat(p, &st)) continue;
+		k += S_ISDIR(st.st_mode) ? dir_kib(p) : ((uint64_t)st.st_size + 1023) / 1024;
+	}
+	closedir(d); return k;
+}
+static void h_save_quota(Cpu *c) {
+	if (!A0 && !A1) { RET(0x80100600u); return; }   /* SCE_APPUTIL_ERROR_PARAMETER */
+	char p[1024]; snprintf(p, sizeof p, "%s/savedata0", fs_root()); const uint64_t used = dir_kib(p);
+	uint32_t quota = 0;
+	snprintf(p, sizeof p, "%s/app0/sce_sys/param.sfo", fs_root());
+	FILE *f = fopen(p, "rb");
+	if (f) { uint8_t b[16384]; const size_t n = fread(b, 1, sizeof b, f); fclose(f); hle_sfo_int(b, n, "SAVEDATA_MAX_SIZE", &quota); }
+	if (quota < used) quota = (uint32_t)used;   /* (no SFO value: what is there) */
+	if (A0) WR32(A0, quota);
+	if (A1) WR32(A1, (uint32_t)used);
+	RET(0);
+}
+/* (HLE-LIB-03) the system's screenshot settings (the host takes its own, F12) and the LiveArea frame sync: accepted */
+
 /* system events (suspend/resume and the like): none ever arrives; the real call returns an error
  * when the queue is empty, which ends a game's drain loop */
 static void h_receive_system_event(Cpu *c) { RET(0x80802016u); }
@@ -578,6 +605,9 @@ static void h_app_param_string(Cpu *c) {
 }
 const HleEntry hle_apputil[] = {
 	{"sceImeUpdate", h_ime_update},   /* (HLE-PORT-01) */
+	{"sceAppUtilSaveDataGetQuota", h_save_quota},   /* (HLE-LIB-03) */
+	{"sceScreenShotEnable", h_zero}, {"sceScreenShotDisable", h_zero}, {"sceScreenShotSetParam", h_zero}, {"sceScreenShotSetOverlayImage", h_zero},
+	{"sceLiveAreaUpdateFrameSync", h_zero},
 	/* (HLE-LIB-01) SceCommonDialog on cdlg.h */
 	{"sceImeDialogInit", h_ime_dlg_init}, {"sceImeDialogGetStatus", h_cime_status}, {"sceImeDialogGetResult", h_cime_result},
 	{"sceImeDialogTerm", h_cime_term}, {"sceImeDialogAbort", h_cime_abort},

@@ -1011,9 +1011,15 @@ static void h_vcount(Cpu *c) {
 static uint32_t ctrl_mode;
 static void h_ctrl_mode(Cpu *c) { if (A0 > 2) { RET(0x80340001u); return; } RET(__atomic_exchange_n(&ctrl_mode, A0, __ATOMIC_RELAXED)); }   /* SCE_CTRL_ERROR_INVALID_ARG */
 /* sceTouchSetSamplingState(port, state): the host samples the panels whenever asked */
+static uint32_t touch_state[2];   /* (HLE-LIB-03) what the game set, read back by GetSamplingState (STOP at boot) */
 static void h_touch_sampling(Cpu *c) {   /* (port, state): logged (rare; a game booted as a PS TV never starts it: Killzone 1.12) */
 	fprintf(stderr, "    touch: panel %u sampling %s (frame %llu, from %#x)\n", A0, A1 ? "on" : "off", (unsigned long long)frames, c->r[14]);
-	RET(A0 > 1 ? 0x80350001u : 0);   /* SCE_TOUCH_ERROR_INVALID_ARG */
+	if (A0 > 1) { RET(0x80350001u); return; }   /* SCE_TOUCH_ERROR_INVALID_ARG */
+	__atomic_store_n(&touch_state[A0], A1, __ATOMIC_RELAXED); RET(0);
+}
+static void h_touch_get_sampling(Cpu *c) {   /* (port, SceTouchSamplingState *) */
+	if (A0 > 1 || !A1) { RET(0x80350001u); return; }
+	WR32(A1, __atomic_load_n(&touch_state[A0], __ATOMIC_RELAXED)); RET(0);
 }
 
 /* ---- SceMotion. With a gamepad's gyro live (motion.c: a DS4/DualSense's gyroscope and accelerometer,
@@ -1096,6 +1102,13 @@ static void h_motion_reset(Cpu *c) { if (motion_log()) fprintf(stderr, "    moti
 
 /* set-up calls with nothing to set up (motion tuning). SceSystemGesture is gesture.c */
 static void h_input_ok(Cpu *c) { RET(0); }
+/* (HLE-LIB-03) sceMotionSet/GetDeadband, sceMotionSet/GetTiltCorrection: the game's switch is kept and read back (both on
+ * at boot, as on the console); the host's gyro fusion (motion.c) doesn't apply them */
+static int mot_deadband = 1, mot_tilt = 1;
+static void h_motion_set_deadband(Cpu *c) { __atomic_store_n(&mot_deadband, A0 ? 1 : 0, __ATOMIC_RELAXED); RET(0); }
+static void h_motion_get_deadband(Cpu *c) { RET(__atomic_load_n(&mot_deadband, __ATOMIC_RELAXED)); }
+static void h_motion_set_tilt(Cpu *c) { __atomic_store_n(&mot_tilt, A0 ? 1 : 0, __ATOMIC_RELAXED); RET(0); }
+static void h_motion_get_tilt(Cpu *c) { RET(__atomic_load_n(&mot_tilt, __ATOMIC_RELAXED)); }
 
 const HleEntry hle_display[] = {
 	{"sceDisplaySetFrameBuf", h_set_frame_buf}, {"sceDisplayWaitVblankStart", h_wait_vblank},
@@ -1114,8 +1127,9 @@ const HleEntry hle_display[] = {
 	{"sceCtrlReadBufferPositive2", h_ctrl_read2}, {"sceCtrlPeekBufferPositive2", h_ctrl_peek2},
 	{"sceAudioOutGetAdopt", h_audio_adopt},   /* (port type): 1, the type can be opened -- only voice chat or the system's music takes one */
 	{"sceDisplayGetRefreshRate", h_refresh_rate}, {"sceDisplayGetVcount", h_vcount},
-	{"sceCtrlSetSamplingMode", h_ctrl_mode}, {"sceCtrlSetSamplingModeExt", h_ctrl_mode}, {"sceTouchSetSamplingState", h_touch_sampling},
+	{"sceCtrlSetSamplingMode", h_ctrl_mode}, {"sceCtrlSetSamplingModeExt", h_ctrl_mode}, {"sceTouchSetSamplingState", h_touch_sampling}, {"sceTouchGetSamplingState", h_touch_get_sampling},
 	{"sceMotionStartSampling", h_motion_start}, {"sceMotionStopSampling", h_motion_stop}, {"sceMotionGetState", h_motion_state},
-	{"sceMotionGetBasicOrientation", h_motion_basic}, {"sceMotionReset", h_motion_reset}, {"sceMotionSetDeadband", h_input_ok}, {"sceMotionSetTiltCorrection", h_input_ok},
+	{"sceMotionGetBasicOrientation", h_motion_basic}, {"sceMotionReset", h_motion_reset}, {"sceMotionSetDeadband", h_motion_set_deadband}, {"sceMotionSetTiltCorrection", h_motion_set_tilt},
+	{"sceMotionGetDeadband", h_motion_get_deadband}, {"sceMotionGetTiltCorrection", h_motion_get_tilt},   /* (HLE-LIB-03) */
 	{0, 0},
 };

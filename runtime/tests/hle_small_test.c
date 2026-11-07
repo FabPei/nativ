@@ -41,6 +41,16 @@ int main(void) {
 	check("ngs: its slot is free again for -1", hle_ngs_patch_sub(p, n, 0x70, 0, -1) == 0);
 	check("ngs: an explicit slot is kept", hle_ngs_patch_sub(p, n, 0x70, 0, 5) == 5);
 
+	/* HLE-LIB-03: a synthetic PARAM.SFO with one string and one integer */
+	uint8_t sfo[128] = {0}; uint32_t v = 0;
+	memcpy(sfo, "\0PSF", 4); sfo[4] = 1; sfo[1 * 0 + 8] = 0x34; sfo[0xc] = 0x50; sfo[0x10] = 2;   /* keys at 0x34, data at 0x50 */
+	sfo[0x14] = 0; sfo[0x16] = 0x04; sfo[0x17] = 0x02; sfo[0x18] = 4; sfo[0x20] = 0;          /* TITLE (utf-8), data +0 */
+	sfo[0x24] = 6; sfo[0x26] = 0x04; sfo[0x27] = 0x04; sfo[0x28] = 4; sfo[0x2c] = 4; sfo[0x30] = 4;   /* SAVEDATA_MAX_SIZE (u32), data +4 */
+	memcpy(sfo + 0x34, "TITLE\0SAVEDATA_MAX_SIZE", 24); memcpy(sfo + 0x50, "abc\0", 4); sfo[0x54] = 0x00; sfo[0x55] = 0x04;   /* 1024 */
+	check("sfo: SAVEDATA_MAX_SIZE read as u32 1024", hle_sfo_int(sfo, sizeof sfo, "SAVEDATA_MAX_SIZE", &v) && v == 1024);
+	check("sfo: a string key is no integer", !hle_sfo_int(sfo, sizeof sfo, "TITLE", &v));
+	check("sfo: a missing key / bad magic", !hle_sfo_int(sfo, sizeof sfo, "NOPE", &v) && !hle_sfo_int((const uint8_t *)"xxxxxxxxxxxxxxxxxxxxxxxx", 24, "TITLE", &v));
+
 	if (fails) { printf("%d FAILED\n", fails); return 1; }
 	printf("all passed\n");
 	return 0;

@@ -236,6 +236,6 @@ static void h_setting(Cpu *c) { Cam *k = dev(c); if (!k) { RET(CAM_ERR_PARAM); r
 const HleEntry hle_camera[] = {
 	{"sceCameraOpen", h_open}, {"sceCameraClose", h_close}, {"sceCameraStart", h_start}, {"sceCameraStop", h_stop},
 	{"sceCameraRead", h_read}, {"sceCameraIsActive", h_is_active},
-	{"sceCameraSetEV", h_setting}, {"sceCameraSetWhiteBalance", h_setting}, {"sceCameraSetAutoControlHold", h_setting},
+	{"sceCameraSetEV", h_setting}, {"sceCameraSetISO", h_setting}, {"sceCameraSetWhiteBalance", h_setting}, {"sceCameraSetAutoControlHold", h_setting},
 	{0, 0},
 };
