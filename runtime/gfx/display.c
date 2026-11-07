@@ -168,6 +168,14 @@ static void load_mark(void);   /* below, with the input replay */
 static void (*frame_hook)(uint64_t);   /* display_set_frame_hook: called once per presented frame (verify.c's F6 capture steps its phases on it) */
 void display_set_frame_hook(void (*f)(uint64_t)) { frame_hook = f; }
 static int unpaced(void), frame_rate(void); static void vb_grid_follow(int);   /* below, with the vblank grid */
+/* the clock the scripted input (RECOMP_INPUT, RECOMP_INPUT_STICKS, RECOMP_TOUCH) is keyed by: presented frames, or with
+ * RECOMP_SCRIPT_MS=1 milliseconds since the first presented frame -- a script that lands at the same instants whatever
+ * the frame rate (runs at 30, 60 and 120 compared with RECOMP_SHOT_MS) */
+static uint64_t script_clock(void) {
+	static int ms = -1; if (ms < 0) { const char *e = getenv("RECOMP_SCRIPT_MS"); ms = e && *e == '1'; }
+	if (!ms) return frames;
+	return t0 ? (now_us() - t0) / 1000 : 0;
+}
 static void h_set_frame_buf(Cpu *c) {
 	metrics_game_frame();   /* once per presented game frame: frame-time stats, last frame's renderer/GPU-draw counts, the ~1 Hz RECOMP_METRICS line (metrics.c) */
 	frames++;
@@ -829,7 +837,7 @@ static void ctrl_peek(Cpu *c, int pad2) {   /* (port, SceCtrlData *, count): tim
 			unsigned long a = strtoul(q, (char **)&q, 10), z = a, m = 0;
 			if (*q == '-') z = strtoul(q + 1, (char **)&q, 10);
 			if (*q == ':') m = strtoul(q + 1, (char **)&q, 16);
-			if (frames >= a && frames <= z) {
+			if (script_clock() >= a && script_clock() <= z) {
 				WR32(p + 8, RD32(p + 8) | (uint32_t)m);
 				/* RECOMP_LOG_CTRL=1: the scripted presses as the game reads them (port, buffers asked,
 				 * the mask) -- Uncharted's menu ignored a scripted cross and this showed why */
@@ -849,7 +857,7 @@ static void ctrl_peek(Cpu *c, int pad2) {   /* (port, SceCtrlData *, count): tim
 			long v[4] = {128, 128, 128, 128};
 			if (*q == '-') z = strtoul(q + 1, (char **)&q, 10);
 			if (*q == ':') { q++; for (int k = 0; k < 4; k++) { v[k] = strtol(q, (char **)&q, 10); if (*q == ',') q++; else break; } }
-			if (frames >= a && frames <= z) for (int k = 0; k < 4; k++) WR8(p + 12 + k, (uint8_t)v[k]);
+			if (script_clock() >= a && script_clock() <= z) for (int k = 0; k < 4; k++) WR8(p + 12 + k, (uint8_t)v[k]);
 			if (*q == ';') q++; else break;
 		}
 		if (i == 0) {
@@ -959,7 +967,7 @@ static void h_touch_peek(Cpu *c) {   /* (port, SceTouchData *, count) */
 		if (*q == '-') z = strtoul(q + 1, (char **)&q, 10);
 		if (*q == ':') x = strtoul(q + 1, (char **)&q, 10);
 		if (*q == ',') y = strtoul(q + 1, (char **)&q, 10);
-		if (frames >= a && frames <= z) { keys[0] = 0; xs[0] = (int)x; ys[0] = (int)y; n = 1; break; }
+		if (script_clock() >= a && script_clock() <= z) { keys[0] = 0; xs[0] = (int)x; ys[0] = (int)y; n = 1; break; }
 		if (*q == ';') q++; else break;
 	}
 	input_rec_init();

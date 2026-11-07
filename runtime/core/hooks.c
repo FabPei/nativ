@@ -67,10 +67,10 @@ void recomp_ihook_frame_dt(Cpu *c, int reg) {   /* any game's: packs/<title>/pac
 	if (getenv("RECOMP_FRAME_DT_TRACE")) { static unsigned n; if (n++ % 100 == 0) fprintf(stderr, "frame dt: 1/30 -> %.5f at %#x (%u so far)\n", dt, c->r[14], n); }
 }
 /* any game's: IHOOKS="addr:frames30" on the instruction that sets a count of frames written for 30 fps
- * (a wait, a window): doubled at 60 fps, so it lasts as long as on the console */
+ * (a wait, a window): times the rate over 30 -- doubled at 60 fps, four times at 120 -- so it lasts as long as on the console */
 void recomp_ihook_frames30(Cpu *c, int reg) {
 	if (reg < 0 || reg > 14 || !display_frame_rate_60()) return;
-	c->r[reg] *= 2;
+	c->r[reg] *= (uint32_t)(display_frame_rate() / 30);
 }
 
 /* a register holding the native aspect, 960/544 (0x3fe1e1e2, built by a movw/movt): widened by aspect_widen(), for a
