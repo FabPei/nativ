@@ -18,6 +18,7 @@
 #include "platform.h"
 #include "savedlg.h"
 #include "settings.h"
+#include "cdlg.h"
 
 /* ---- common dialogs: one that was opened finishes at once with an OK result, as if the player
  * confirmed it; each kind has its own state (a dialog never opened reports NONE). The save-data
@@ -33,6 +34,62 @@ DIALOG(DLG_NETCHECK, net_dlg)
 DIALOG(DLG_MSG, msg_dlg)
 DIALOG(DLG_EULA, eula_dlg)
 static void h_dialog_result(Cpu *c) { if (A0) WR32(A0, 0); RET(0); }
+/* (HLE-LIB-01) Abort / Close for the kinds above: one that is in use finishes (its result stays the host's OK);
+ * one that is not is NOT_RUNNING */
+static void h_old_dialog_abort_kind(Cpu *c, int kind) { RET(dialog_open[kind] ? 0 : 0x80020404u); }
+static void h_msg_dlg_abort(Cpu *c) { h_old_dialog_abort_kind(c, DLG_MSG); }
+static void h_net_dlg_abort(Cpu *c) { h_old_dialog_abort_kind(c, DLG_NETCHECK); }
+static void h_trophy_dlg_abort(Cpu *c) { h_old_dialog_abort_kind(c, DLG_TROPHY); }
+
+/* ---- (HLE-LIB-01) the rest of SceCommonDialog on cdlg.h's state machine: the IME dialog (its initial text entered
+ * as typed -- the host has no on-screen keyboard yet) and the PSN / social / store dialogs (canceled: nothing behind
+ * them). Each kind's result struct starts with its SceInt32 result; the IME's has the button after it. */
+static CdlgState cdlg[CDLG_N];
+static pthread_mutex_t cdlg_lock = PTHREAD_MUTEX_INITIALIZER;
+static void cdlg_call(Cpu *c, int kind, int op) {   /* op: 0 init, 1 status, 2 result, 3 term, 4 abort */
+	pthread_mutex_lock(&cdlg_lock);
+	uint32_t r = 0; int32_t res = 0;
+	switch (op) {
+	case 0: r = cdlg_init(cdlg, kind); break;
+	case 1: r = (uint32_t)cdlg_status(cdlg, kind); break;
+	case 2: r = cdlg_result(cdlg, kind, &res);
+		if (!r && A0) { WR32(A0, (uint32_t)res); if (kind == CDLG_IME) WR32(A0 + 4, res == CDLG_RESULT_OK ? 2u : 0u); }   /* button: ENTER / NONE */
+		break;
+	case 3: r = cdlg_term(cdlg, kind); break;
+	case 4: r = cdlg_abort(cdlg, kind); break;
+	}
+	pthread_mutex_unlock(&cdlg_lock);
+	RET(r);
+}
+/* sceImeDialogInit(SceImeDialogParam *): maxTextLength +0x2c, initialText +0x30, inputTextBuffer +0x34 (UTF-16) */
+static void h_ime_dlg_init(Cpu *c) {
+	if (!A0) { RET(0x80020402u); return; }   /* SCE_COMMON_DIALOG_ERROR_NULL */
+	pthread_mutex_lock(&cdlg_lock);
+	const uint32_t r = cdlg_init(cdlg, CDLG_IME);
+	pthread_mutex_unlock(&cdlg_lock);
+	if (!r) {
+		const uint32_t max = RD32(A0 + 0x2c), init = RD32(A0 + 0x30), out = RD32(A0 + 0x34);
+		if (out) {
+			uint32_t n = 0;
+			if (init) while (n < max && n < 4096 && RD16(init + 2 * n)) { WR16(out + 2 * n, RD16(init + 2 * n)); n++; }
+			WR16(out + 2 * n, 0);
+		}
+		fprintf(stderr, "    ime dialog: no on-screen keyboard -- the initial text is entered as typed\n");
+	}
+	RET(r);
+}
+#define CDLG_HANDLERS(kind, name) \
+	static void h_##name##_status(Cpu *c) { cdlg_call(c, kind, 1); } \
+	static void h_##name##_result(Cpu *c) { cdlg_call(c, kind, 2); } \
+	static void h_##name##_term(Cpu *c) { cdlg_call(c, kind, 3); } \
+	static void h_##name##_abort(Cpu *c) { cdlg_call(c, kind, 4); }
+#define CDLG_INIT(kind, name) static void h_##name##_init(Cpu *c) { cdlg_call(c, kind, 0); }
+CDLG_HANDLERS(CDLG_IME, cime)
+CDLG_HANDLERS(CDLG_NP_MESSAGE, cnpmsg) CDLG_INIT(CDLG_NP_MESSAGE, cnpmsg)
+CDLG_HANDLERS(CDLG_NP_PROFILE, cnpprof) CDLG_INIT(CDLG_NP_PROFILE, cnpprof)
+CDLG_HANDLERS(CDLG_NP_SNS_FACEBOOK, cfb) CDLG_INIT(CDLG_NP_SNS_FACEBOOK, cfb)
+CDLG_HANDLERS(CDLG_TW, ctw) CDLG_INIT(CDLG_TW, ctw)
+CDLG_HANDLERS(CDLG_STORE_CHECKOUT, cstore) CDLG_INIT(CDLG_STORE_CHECKOUT, cstore)
 /* SceNetCheckDialogResult {result, psnModeSucceeded, ...}: online (net.h), connected and, in the PSN modes, signed in (np.c's
  * local account) -- with psnModeSucceeded left 0 Killzone took its Multiplayer connect as a failed sign-in and went quietly
  * back to the menu */
@@ -508,10 +565,8 @@ static uint8_t sysmodule_loaded[0x200];
 static void h_sysmodule_load(Cpu *c) { if (A0 < sizeof sysmodule_loaded) __atomic_store_n(&sysmodule_loaded[A0], 1, __ATOMIC_RELAXED); RET(0); }
 static void h_sysmodule_unload(Cpu *c) { if (A0 < sizeof sysmodule_loaded) __atomic_store_n(&sysmodule_loaded[A0], 0, __ATOMIC_RELAXED); RET(0); }
 /* (HLE-PORT-01) the IME: the host has no on-screen keyboard, so no IME is ever open and no IME dialog runs --
- * sceImeUpdate says so (SCE_IME_ERROR_NOT_OPENED, vitasdk libime.h) and the dialog status is
- * SCE_COMMON_DIALOG_STATUS_NONE (0; the placeholder answered the same 0, now on purpose and without the warning) */
+ * sceImeUpdate says so (SCE_IME_ERROR_NOT_OPENED, vitasdk libime.h); the IME dialog runs on cdlg.h (HLE-LIB-01) */
 static void h_ime_update(Cpu *c) { RET(0x80100701u); }
-static void h_ime_dialog_status(Cpu *c) { RET(0); }
 static void h_sysmodule_is_loaded(Cpu *c) {
 	RET(A0 < sizeof sysmodule_loaded && __atomic_load_n(&sysmodule_loaded[A0], __ATOMIC_RELAXED) ? 0 : 0x805a1001u);
 }
@@ -523,7 +578,22 @@ static void h_app_param_string(Cpu *c) {
 	RET(0);
 }
 const HleEntry hle_apputil[] = {
-	{"sceImeUpdate", h_ime_update}, {"sceImeDialogGetStatus", h_ime_dialog_status},   /* (HLE-PORT-01) */
+	{"sceImeUpdate", h_ime_update},   /* (HLE-PORT-01) */
+	/* (HLE-LIB-01) SceCommonDialog on cdlg.h */
+	{"sceImeDialogInit", h_ime_dlg_init}, {"sceImeDialogGetStatus", h_cime_status}, {"sceImeDialogGetResult", h_cime_result},
+	{"sceImeDialogTerm", h_cime_term}, {"sceImeDialogAbort", h_cime_abort},
+	{"sceNpMessageDialogInit", h_cnpmsg_init}, {"sceNpMessageDialogGetStatus", h_cnpmsg_status}, {"sceNpMessageDialogGetResult", h_cnpmsg_result},
+	{"sceNpMessageDialogTerm", h_cnpmsg_term}, {"sceNpMessageDialogAbort", h_cnpmsg_abort},
+	{"sceNpProfileDialogInit", h_cnpprof_init}, {"sceNpProfileDialogGetStatus", h_cnpprof_status}, {"sceNpProfileDialogGetResult", h_cnpprof_result},
+	{"sceNpProfileDialogTerm", h_cnpprof_term}, {"sceNpProfileDialogAbort", h_cnpprof_abort},
+	{"sceNpSnsFacebookDialogInit", h_cfb_init}, {"sceNpSnsFacebookDialogGetStatus", h_cfb_status}, {"sceNpSnsFacebookDialogGetResultLongToken", h_cfb_result},
+	{"sceNpSnsFacebookDialogTerm", h_cfb_term}, {"sceNpSnsFacebookDialogAbort", h_cfb_abort},
+	{"sceTwDialogInit", h_ctw_init}, {"sceTwDialogGetStatus", h_ctw_status}, {"sceTwDialogGetResult", h_ctw_result},
+	{"sceTwDialogTerm", h_ctw_term}, {"sceTwDialogAbort", h_ctw_abort},
+	{"sceStoreCheckoutDialogInit", h_cstore_init}, {"sceStoreCheckoutDialogGetStatus", h_cstore_status}, {"sceStoreCheckoutDialogGetResult", h_cstore_result},
+	{"sceStoreCheckoutDialogTerm", h_cstore_term}, {"sceStoreCheckoutDialogAbort", h_cstore_abort},
+	{"sceMsgDialogAbort", h_msg_dlg_abort}, {"sceMsgDialogClose", h_msg_dlg_abort}, {"sceNetCheckDialogAbort", h_net_dlg_abort},
+	{"sceNpTrophySetupDialogAbort", h_trophy_dlg_abort}, {"sceCommonDialogSetConfigParam", h_zero},
 	{"sceAppMgrAppParamGetString", h_app_param_string},
 	{"sceAppMgrReceiveSystemEvent", h_receive_system_event},
 	{"sceAppUtilSystemParamGetInt", h_system_param_int}, {"_sceAppMgrGetAppState", h_app_state}, {"sceSysmoduleIsLoaded", h_sysmodule_is_loaded},

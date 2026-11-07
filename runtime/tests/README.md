@@ -178,6 +178,17 @@ the pre-U12c savedlg_ui.cpp): `20 FAILED`, exit 1.
 
 It prints `all passed` and exits 0.
 
+## The common dialogs' state machine: `cdlg_test.c`
+
+HLE-LIB-01: `cdlg.h` runs every SceCommonDialog kind not handled elsewhere (IME, NP message, NP profile, Facebook,
+Twitter, store checkout) through the console contract: Init (BUSY when in use) -> FINISHED -> GetResult -> Term, with
+Abort -> ABORTED and NOT_IN_USE / NOT_RUNNING outside a dialog. The IME answers OK, the PSN/social/store kinds
+USER_CANCELED. Fail-before is the runtime's record: sceNpMessageDialogGetStatus was polled 10000+ times as a placeholder.
+
+    cc -O1 -g -Wall -I ../core cdlg_test.c -o /tmp/cdlg_test && /tmp/cdlg_test
+
+It prints `all passed` and exits 0.
+
 ## Small HLE contracts: `hle_small_test.c`
 
 HLE-PORT-01: the pure parts of `sceKernelGetModel` (0x10000 handheld / 0x20000 PS TV, vitasdk sysmem.h),
