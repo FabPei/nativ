@@ -211,4 +211,4 @@ jobs:
           Unsigned: Windows and macOS ask once before the first start. Licences: \`LICENSE\` (GPL-2.0-or-later) and
           \`THIRD_PARTY.md\` in each download.
           NOTES
-          gh release create "$TAG" out/* --repo "${{ github.repository }}" --draft --prerelease --title "Project Nativ FP ${TAG#fp-v} (unofficial fork)" --notes-file notes.md
+          gh release create "$TAG" out/* --repo "${{ github.repository }}" --draft --title "Project Nativ FP ${TAG#fp-v} (unofficial fork)" --notes-file notes.md
