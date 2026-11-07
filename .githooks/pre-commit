@@ -1,0 +1,10 @@
+#!/bin/sh
+# The content check on the files staged for this commit (CONTRIBUTING.md). Enable once per clone:
+#   git config core.hooksPath .githooks
+# A file flagged by mistake: change dev/tests/check_content.py in a pull request of its own, never --no-verify.
+# (The first Python 3.11+ that runs: on Windows "python3" can be the Store's placeholder, which only prints a hint.)
+for PY in python3 python py; do
+	"$PY" -c 'import sys, tomllib' >/dev/null 2>&1 && exec "$PY" "$(git rev-parse --show-toplevel)/dev/tests/check_content.py" --staged
+done
+echo "pre-commit: no Python 3.11 or later found for dev/tests/check_content.py" >&2
+exit 1

@@ -4,12 +4,14 @@
 #   a pushed tag fp-vX.Y.Z    the three downloads + SHA256SUMS, as a DRAFT release (published by hand after a look)
 #   a push to fp/main         the same downloads as workflow artifacts only (no release): every change is built
 #   Run workflow (manual)     the same, from the chosen branch (needs this file on the default branch)
+#   a pull request            the tests job alone: the content check and the runtime tests (no packaging)
 # Unsigned: no signing identity is configured, so Windows' SmartScreen and macOS' Gatekeeper ask the player once.
 name: release
 on:
   push:
     tags: ["fp-v*"]
     branches: [fp/main]
+  pull_request:
   workflow_dispatch:
 permissions:
   contents: read
@@ -21,12 +23,16 @@ env:
   NATIV_RELEASE_SKIP_BUILDS: "1"
 
 jobs:
-  # The runtime tests that need no game, window or GPU (runtime/tests/run_ci_tests.sh): a tag only becomes a draft
-  # release when they pass.
+  # The content check (nothing from a game in the repository; every pack parses: CONTRIBUTING.md) and the runtime tests
+  # that need no game, window or GPU (runtime/tests/run_ci_tests.sh): a tag only becomes a draft release when they pass.
   tests:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04   # (Python 3.12: the check reads the packs with tomllib, 3.11+)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+      - name: content check
+        run: |
+          python3 dev/tests/check_content_test.py
+          python3 dev/tests/check_content.py
       - name: runtime tests
         run: bash runtime/tests/run_ci_tests.sh
 
@@ -35,6 +41,7 @@ jobs:
   # 2026-11-06). Both restore and, on a miss, build both toolchains: they share one cache entry, which must hold both.
   linux:
     runs-on: ubuntu-24.04   # (Python 3.12: the pipeline needs tomllib, 3.11+)
+    if: github.event_name != 'pull_request'   # (a pull request: the tests job only)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with: { fetch-depth: 0 }
@@ -100,6 +107,7 @@ jobs:
 
   windows:
     runs-on: ubuntu-24.04
+    if: github.event_name != 'pull_request'   # (a pull request: the tests job only)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with: { fetch-depth: 0 }
@@ -154,6 +162,7 @@ jobs:
 
   mac:   # the .dmg (made on a Mac: Apple silicon, macOS 11 and later)
     runs-on: macos-15
+    if: github.event_name != 'pull_request'   # (a pull request: the tests job only)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
         with: { fetch-depth: 0 }
