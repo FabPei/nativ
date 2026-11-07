@@ -81,12 +81,61 @@ def _find_work_bin(root: str) -> str | None:
     return p if os.path.isfile(p) else None
 
 
-def _copy_tree(src: str, dst: str) -> None:
+def _same_volume(a: str, b: str) -> bool:
+    """a hard link from a's volume can reach b's (st_dev: the volume, its serial number on Windows)"""
+    return os.stat(a).st_dev == os.stat(b).st_dev
+
+
+def _is_dir_link(p: str) -> bool:
+    return os.path.islink(p) or (hasattr(os.path, "isjunction") and os.path.isjunction(p))
+
+
+def _link_dir(target: str, link: str) -> bool:
+    """a folder link to `target` (a junction on Windows: no privilege needed; a symbolic link elsewhere); False when
+    the system refuses (a junction can't point at a network share): the caller copies instead"""
+    try:
+        if os.name == "nt":
+            import _winapi
+            _winapi.CreateJunction(os.path.abspath(target), os.path.abspath(link))
+        else:
+            os.symlink(os.path.abspath(target), link)
+        return True
+    except OSError:
+        return False
+
+
+def _has_self(root: str) -> bool:
+    for dirpath, _dirnames, filenames in os.walk(root, followlinks=True):
+        for name in filenames:
+            try:
+                with open(os.path.join(dirpath, name), "rb") as f:
+                    if f.read(4) == SCE_MAGIC_BYTES:
+                        return True
+            except OSError:
+                return True   # (unreadable: not linked, the copy below says what's wrong)
+    return False
+
+
+def _copy_tree(src: str, dst: str, link_dirs: bool = False) -> list[str]:
     """An already-decrypted folder into out_dir: hard links where the filesystem allows (a copy the player keeps on the
     machine is not duplicated, gigabytes of it), copies otherwise. What is written into out_dir afterwards (the .elf
-    files, game.json) is written as new files (_write_new), never through a link into the player's copy."""
-    for dirpath, _dirnames, filenames in os.walk(src, followlinks=True):
+    files, game.json) is written as new files (_write_new), never through a link into the player's copy.
+
+    link_dirs, with the copy on another volume than out_dir (no hard link can reach it): each top-level folder of it
+    holding no SELF (data/, sound/: the gigabytes) becomes a folder link into the player's copy instead of a copy --
+    nothing is ever written there (SELFs, whose .elf goes beside them, are in the folders still copied), and the game
+    reads it in place, so it needs that drive connected. Returns the folders linked."""
+    os.makedirs(dst, exist_ok=True)
+    linked: list[str] = []
+    if link_dirs and not _same_volume(src, dst):
+        for name in sorted(os.listdir(src)):
+            s = os.path.join(src, name)
+            if os.path.isdir(s) and name != "sce_sys" and not _has_self(s) and _link_dir(os.path.realpath(s), os.path.join(dst, name)):
+                linked.append(name)
+    for dirpath, dirnames, filenames in os.walk(src, followlinks=True):
         rel = os.path.relpath(dirpath, src)
+        if rel == ".":
+            dirnames[:] = [d for d in dirnames if d not in linked]
         dest_dir = os.path.join(dst, rel) if rel != "." else dst
         os.makedirs(dest_dir, exist_ok=True)
         for name in filenames:
@@ -95,6 +144,7 @@ def _copy_tree(src: str, dst: str) -> None:
                 os.link(s, d)
             except OSError:
                 shutil.copy2(s, d)
+    return linked
 
 
 def _write_new(path: str, data: bytes) -> None:
@@ -112,7 +162,8 @@ def _decrypt_selfs_in_place(root: str, klicensee: bytes | None) -> tuple[int, in
     Returns (decrypted, failed) -- a failure (e.g. no klicensee for an NPDRM
     self) is logged and skipped, not fatal to the rest of the tree."""
     ok = failed = 0
-    for dirpath, _dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not _is_dir_link(os.path.join(dirpath, d))]   # (_copy_tree's links: no SELF there)
         for name in filenames:
             if name.endswith(".elf"):
                 continue
@@ -141,7 +192,7 @@ def _decrypt_selfs_in_place(root: str, klicensee: bytes | None) -> tuple[int, in
 
 def convert_game(
     input_path: str, out_dir: str, *, license_path: str | None = None,
-    license_out: str | None = None,
+    license_out: str | None = None, link_dirs: bool = False,
 ) -> GameInfo:
     """license_out: where to keep the licence that decrypted it (a 512-byte .rif) -- the game's update (ux0:patch) is
     decrypted with its game's licence and carries none of its own."""
@@ -193,7 +244,9 @@ def convert_game(
                     rif = _read_rif_file(wb)
                     info = RIF.parse_rif(rif)
                     klicensee, klicensee_source = info.klicensee, "work.bin (auto)"
-            _copy_tree(input_path, out_dir)
+            linked = _copy_tree(input_path, out_dir, link_dirs)
+            if linked:
+                print(f"read in place from {input_path} (another drive; keep it connected): {', '.join(linked)}")
     finally:
         if cleanup_dir:
             shutil.rmtree(cleanup_dir, ignore_errors=True)
@@ -235,6 +288,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("outdir", nargs="?")
     p.add_argument("--license", dest="license_path", help="a .rif/work.bin licence file")
     p.add_argument("--license-out", help="keep the licence used here (a .rif): its update decrypts with it")
+    p.add_argument("--link-dirs", action="store_true",
+                   help="an already-decrypted folder on another drive: its folders without programs linked, not copied")
     p.add_argument("--selftest", action="store_true")
     args = p.parse_args(argv)
 
@@ -242,7 +297,8 @@ def main(argv: list[str] | None = None) -> int:
         _selftest()
         return 0
 
-    game = convert_game(args.input, args.outdir, license_path=args.license_path, license_out=args.license_out)
+    game = convert_game(args.input, args.outdir, license_path=args.license_path, license_out=args.license_out,
+                        link_dirs=args.link_dirs)
     print(f"{game.source} {game.title_id} {game.content_id!r} {game.title!r} v{game.version} "
           f"(klicensee: {game.klicensee_source})")
     print(f"decrypted {game.selfs_decrypted} SELF(s), {game.selfs_failed} failed -> {args.outdir}/game.json")
@@ -348,6 +404,49 @@ def _selftest() -> None:
             raise AssertionError("expected GameError with no klicensee available")
         except GameError:
             pass
+
+        # --- (e) an already-decrypted folder on "another drive" (_same_volume false; ATIV_TEST_OTHER_VOLUME=<a folder on
+        # another drive> makes it real): its folders without SELFs linked in place, the rest copied, nothing written into
+        # the player's copy, and removing the result leaves the copy whole ---
+        global _same_volume
+        other = os.environ.get("ATIV_TEST_OTHER_VOLUME")
+        src_base = tempfile.mkdtemp(dir=other) if other else tmp
+        real_same = _same_volume
+        try:
+            if not other:
+                _same_volume = lambda a, b: False  # noqa: E731
+            src_e = os.path.join(src_base, "elsewhere")
+            for rel, data in (("sce_sys/param.sfo", sfo_bytes), ("eboot.bin", self_bytes), ("data/sub/big.bin", b"d" * 4096),
+                              ("sound/a.at9", b"s" * 64), ("sce_module/libx.suprx", self_bytes)):
+                os.makedirs(os.path.dirname(os.path.join(src_e, rel)), exist_ok=True)
+                with open(os.path.join(src_e, rel), "wb") as f:
+                    f.write(data)
+
+            def tree(root: str) -> dict:
+                return {os.path.relpath(os.path.join(d, n), root): open(os.path.join(d, n), "rb").read()
+                        for d, _dn, fs in os.walk(root) for n in fs}
+            before = tree(src_e)
+            out_e = os.path.join(tmp, "out_e")
+            game_e = convert_game(src_e, out_e, license_path=license_path, link_dirs=True)
+            assert game_e.selfs_decrypted == 2 and game_e.selfs_failed == 0, game_e
+            assert _is_dir_link(os.path.join(out_e, "data")) and _is_dir_link(os.path.join(out_e, "sound"))
+            assert not _is_dir_link(os.path.join(out_e, "sce_module")) and not _is_dir_link(os.path.join(out_e, "sce_sys"))
+            assert open(os.path.join(out_e, "data", "sub", "big.bin"), "rb").read() == b"d" * 4096
+            assert os.path.isfile(os.path.join(out_e, "sce_module", "libx.suprx.elf"))
+            assert tree(src_e) == before, sorted(set(tree(src_e)) ^ set(before))   # (no .elf, no game.json in the player's copy)
+            shutil.rmtree(out_e)
+            assert tree(src_e) == before, "removing the result must not touch the player's copy"
+            # the same volume: hard links as before, no folder links
+            _same_volume = real_same
+            if not other:
+                out_f = os.path.join(tmp, "out_f")
+                convert_game(src_e, out_f, license_path=license_path, link_dirs=True)
+                assert not _is_dir_link(os.path.join(out_f, "data"))
+                assert os.stat(os.path.join(out_f, "data", "sub", "big.bin")).st_ino == os.stat(os.path.join(src_e, "data", "sub", "big.bin")).st_ino
+        finally:
+            _same_volume = real_same
+            if other:
+                shutil.rmtree(src_base, ignore_errors=True)
 
     print("game.py self-test: OK")
 

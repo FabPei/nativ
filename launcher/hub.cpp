@@ -18,7 +18,9 @@
  * ATIV_DUMP=<dir>: the library (games, firmware, licences, builds, saves) there instead of the usual one, library_dir (a
  * fresh library to try setup on; the stages it runs inherit it). ATIV_SHOT=f.ppm (a verification aid, no visible window): renders the hub once into f.ppm and exits;
  * ATIV_SHOT_UI=library|setup:<0-4>|add|settings:<0-2>|game:<title>|sac|sac:again picks what is on screen, ATIV_SHOT_SIZE=WxH the size (1280x800),
- * ATIV_SHOT_SCAN=<rows> a folder search's results (vitarecomp scan's output) in the Add dialog.
+ * ATIV_SHOT_SCAN=<rows> a folder search's results (vitarecomp scan's output) in the Add dialog,
+ * ATIV_SHOT_LIBSCAN=<rows> the library folders' search (vitarecomp folders scan's output: "Found in" on the cards);
+ * the library folders themselves are <prefs>/library_folders.tsv (ATIV_PREFS=<dir> for a test's).
  * ATIV_TASK=play:<title>|build:<title>|scan:<folder>|licences:<folder>|firmware:<file> (a verification aid, no window): that
  * task run as its button runs it, its log printed, the exit status its outcome; ATIV_TASK_CANCEL=<seconds>: Cancel then.
  */
@@ -183,6 +185,10 @@ static std::string pref_dir(void) {
 	return s;
 }
 static std::map<std::string, std::string> g_prefs;
+/* the player's library folders (pipeline/folders.py keeps them: <prefs>/library_folders.tsv, one per line -- kind
+ * (folder | vita3k), the folder, the folder searched in it: a Vita3K install's ux0) */
+struct LibFolder { std::string kind, path, root; };
+static std::vector<LibFolder> g_lib_folders;
 static std::string prefs_path(void) { std::string d = pref_dir(); return d.empty() ? "" : d + "hub.ini"; }
 static void prefs_load(void) {
 	FILE *f = fopen(prefs_path().c_str(), "r"); if (!f) return;
@@ -441,6 +447,7 @@ struct Game {
 	std::string cover, icon;  /* the copy's own art (art_paths): "" when it has none */
 	std::string region;       /* the pack's REGION: the release it plays (US) */
 	bool pack = false, imported = false, built = false;
+	std::string missing;      /* a folder its copy reads in place (vitarecomp add --in-place: app0.links) that isn't there: its drive unplugged */
 };
 static std::string recommended_version(const Game &g) {
 	for (auto &v : g.versions) if (v.second == "recommended") return v.first;
@@ -503,11 +510,13 @@ static bool title_like(const char *s) {   /* PCSA00029: four letters, five digit
 }
 static void art_paths(Game &g);
 static void count_licences(void);
+static void lib_load(void);
+static std::map<std::string, std::string> g_other_of;   /* a pack's OTHER_TITLES: another release's id -> the pack that plays it */
 static void library_scan(void) {
 	count_licences();
 	for (auto it = g_tex.begin(); it != g_tex.end();) it = it->second.t ? std::next(it) : g_tex.erase(it);   /* (retry art not found before) */
 	std::map<std::string, Game> by;
-	std::map<std::string, std::string> other_of;   /* a pack's OTHER_TITLES: another release's id -> the pack that plays it */
+	std::map<std::string, std::string> &other_of = g_other_of; other_of.clear();
 	std::string packs = g_root + "/packs";
 	if (DIR *d = opendir(packs.c_str())) {
 		while (dirent *e = readdir(d)) {
@@ -552,6 +561,12 @@ static void library_scan(void) {
 		g.built = exists(w + "/recomp/" + g.base + "_host");
 #endif
 		g.version = first_line(w + "/version");
+		for (const char *lf : {"/app0.links", "/patch0.links"})
+			if (FILE *f = g.missing.empty() ? fopen((w + lf).c_str(), "r") : nullptr) {
+				char line[4096];
+				while (g.missing.empty() && fgets(line, sizeof line, f)) { std::string t = line; while (!t.empty() && (t.back() == '\n' || t.back() == '\r')) t.pop_back(); if (!t.empty() && !exists(t)) g.missing = t; }
+				fclose(f);
+			}
 		if (g.imported) art_paths(g);
 		if (g.name.empty()) g.name = g.id;
 		g_games.push_back(g);
@@ -565,6 +580,7 @@ static void library_scan(void) {
 		closedir(d);
 	}
 	if (g_firmware && g_firmware_version.empty()) g_firmware_version = "from a console dump";
+	lib_load();
 }
 /* ---- a card's art, from the copy's own sce_sys: pic0.png (960x544, the game's background picture); else its LiveArea's
  * background (template.xml <livearea-background><image>, 840x500); else its LiveArea gate's start image (280x158).
@@ -689,7 +705,8 @@ static void licence_help_link(void) { if (ImGui::TextLink("Where's my licence?")
 static int g_licences;   /* kept, counted at each library scan */
 static std::string g_vita_addr, g_lic_folder;
 static bool g_open_vita_popup;   /* (ATIV_SHOT_UI=add:vita: the popup open in a screenshot) */
-static std::string vita3k_licences(void) {   /* Vita3K's ux0/license where it keeps it by default (SDL's pref path Vita3K/Vita3K), "" none */
+static std::string vita3k_licences(void) {   /* a kept Vita3K folder's ux0/license, else Vita3K's where it keeps it by default (SDL's pref path Vita3K/Vita3K), "" none */
+	for (const LibFolder &f : g_lib_folders) if (f.kind == "vita3k" && exists(f.root + "/license")) return f.root + "/license";
 	const char *home = getenv("HOME"), *appdata = getenv("APPDATA"), *xdg = getenv("XDG_DATA_HOME");
 	std::vector<std::string> bases;
 	if (home) { bases.push_back(std::string(home) + "/Library/Application Support/Vita3K/Vita3K"); bases.push_back((xdg ? std::string(xdg) : std::string(home) + "/.local/share") + "/Vita3K/Vita3K"); }
@@ -746,7 +763,7 @@ static void licences_row(SDL_Window *win) {
 
 /* a folder search's finds (vitarecomp scan: pipeline/packs.py's rows) -- games, updates, add-ons, firmware files, each
  * with what its game pack says of that version -- picked for adding in one go */
-struct Found { std::string kind, form, id, version, status, licence, name, path, licence_file, content_id, note; bool pick = false; };
+struct Found { std::string kind, form, id, version, status, licence, name, path, licence_file, content_id, note, source; bool pick = false; };
 /* the player's licences, kept once (pipeline/licenses.py: <dump>/licenses/<content id>.rif): add finds a copy's
  * there by itself, so a row whose licence is kept -- by this search, or fetched from the Vita meanwhile -- is ready */
 static std::string kept_licence(const std::string &cid) { std::string p = g_dump + "/licenses/" + cid + ".rif"; return !cid.empty() && cid != "-" && exists(p) ? p : ""; }
@@ -754,8 +771,8 @@ static std::vector<Found> g_found;
 static bool g_found_ready;   /* a search finished: its rows (maybe none) are in g_found */
 static std::string scan_file(void) { std::string d = pref_dir(); return d.empty() ? g_dump + "/.scan.tsv" : d + "scan.tsv"; }
 static bool playable_status(const std::string &st) { return st == "recommended" || st == "supported" || st == "check"; }
-static void scan_load(const std::string &path) {
-	g_found.clear(); g_found_ready = true;
+static void scan_parse(const std::string &path, std::vector<Found> &out) {   /* (rows of a search, or of the library folders' search) */
+	out.clear();
 	FILE *f = fopen(path.c_str(), "r"); if (!f) return;
 	char line[4096];
 	while (fgets(line, sizeof line, f)) {
@@ -766,50 +783,56 @@ static void scan_load(const std::string &path) {
 		if (c.size() > 8) x.licence_file = c[8];   /* (licence "file": a kept one, or one found elsewhere in the folder) */
 		if (c.size() > 9) x.content_id = c[9];
 		if (c.size() > 10) x.note = c[10];   /* (a copy Nativ can't play as it is: which release and version it does) */
+		if (c.size() > 11) x.source = c[11];   /* (vitarecomp folders scan: the library folder it was found in) */
 		/* picked to start with: what plays and needs nothing typed in; the firmware when none is installed (the newest file) */
 		if (x.kind == "game" || x.kind == "update") {
-			bool dup = false; for (const Found &y : g_found) dup |= y.pick && y.kind == x.kind && y.id == x.id;
+			bool dup = false; for (const Found &y : out) dup |= y.pick && y.kind == x.kind && y.id == x.id;
 			x.pick = !dup && playable_status(x.status);   /* (one still needing its licence is ticked, its field showing; it's added once it has one) */
 		} else if (x.kind == "firmware" && x.status == "firmware" && !g_firmware) {
-			for (Found &y : g_found) if (y.kind == "firmware") y.pick = false;   /* (rows come sorted by version) */
+			for (Found &y : out) if (y.kind == "firmware") y.pick = false;   /* (rows come sorted by version) */
 			x.pick = true;
 		}
-		g_found.push_back(x);
+		out.push_back(x);
 	}
 	fclose(f);
 }
-static bool found_ready(const Found &x) {   /* it has what adding it needs */
+static void scan_load(const std::string &path) { scan_parse(path, g_found); g_found_ready = true; }
+static bool found_ready(const Found &x, const std::vector<Found> &rows = g_found) {   /* it has what adding it needs */
 	if (x.kind == "firmware") return true;
 	if (!kept_licence(x.content_id).empty()) return true;
 	if (x.licence == "rif" || (x.kind == "game" && x.licence == "no")) return !x.licence_file.empty();
 	if (x.kind == "update" && x.licence == "no") {   /* it decrypts with its game's licence: the game is being added with one */
-		for (const Found &y : g_found) if (y.pick && y.kind == "game" && y.id == x.id && found_ready(y)) return true;
+		for (const Found &y : rows) if (y.pick && y.kind == "game" && y.id == x.id && found_ready(y, rows)) return true;
 		return false;
 	}
 	return true;
 }
-static std::vector<Step> found_steps(int *n, std::vector<std::string> *titles) {   /* the firmware first, then per game: the game and its update kept, imported, built once */
+/* the firmware first, then per game: the game and its update kept, imported, built once. rows: a search's (g_found) or the
+ * library folders' (only: that one title, a card's Add); a copy from a library folder on another drive is read in place
+ * when the player chose so (hub.ini library_in_place) */
+static std::vector<Step> found_steps(int *n, std::vector<std::string> *titles, const std::vector<Found> &rows = g_found, const std::string &only = "") {
 	std::vector<Step> steps;   /* (each its own group: one failing doesn't stop the rest) */
 	int group = 0;
 	*n = 0;
-	for (const Found &x : g_found)
-		if (x.pick && x.kind == "firmware") { steps.push_back(step("Installing the firmware " + x.version, vitarecomp({"firmware", x.path}), ++group)); ++*n; break; }
+	for (const Found &x : rows)
+		if (only.empty() && x.pick && x.kind == "firmware") { steps.push_back(step("Installing the firmware " + x.version, vitarecomp({"firmware", x.path}), ++group)); ++*n; break; }
 	std::vector<std::string> ids;
-	for (const Found &x : g_found) if (x.pick && (x.kind == "game" || x.kind == "update") && std::find(ids.begin(), ids.end(), x.id) == ids.end()) ids.push_back(x.id);
+	for (const Found &x : rows) if (x.pick && (x.kind == "game" || x.kind == "update") && (only.empty() || x.id == only) && std::find(ids.begin(), ids.end(), x.id) == ids.end()) ids.push_back(x.id);
 	if (titles) *titles = ids;
 	for (const std::string &id : ids) {
 		std::vector<const Found *> items;
 		for (const char *k : {"game", "update"})
-			for (const Found &x : g_found) if (x.pick && x.id == id && x.kind == k && found_ready(x)) { items.push_back(&x); break; }
+			for (const Found &x : rows) if (x.pick && x.id == id && x.kind == k && found_ready(x, rows)) { items.push_back(&x); break; }
 		if (items.empty()) continue;
 		bool pack = false;
-		for (const Found &x : g_found) pack |= x.id == id && x.status != "nopack";
+		for (const Found &x : rows) pack |= x.id == id && x.status != "nopack";
 		++group;
 		for (const Found *xp : items) {
 			const Found &x = *xp;
 			std::vector<std::string> argv = vitarecomp({"add", x.path});
 			if (!x.licence_file.empty()) argv.insert(argv.end(), {"--license", x.licence_file});
 			argv.push_back("--no-build");
+			if (!x.source.empty() && g_prefs["library_in_place"] == "1") argv.push_back("--in-place");
 			steps.push_back(step(x.kind == "update" ? "Adding its update " + x.version : "Adding " + x.name + " " + x.version, argv, group));
 			++*n;
 		}
@@ -871,6 +894,60 @@ static void found_list(void) {
 	}
 	ImGui::EndChild();
 }
+/* ---- the library folders: searched on start (hub.ini library_rescan, on unless "0") and on demand; what they hold shows
+ * on the cards ("Found in <folder>", Add). Nothing in a folder is changed (pipeline/folders.py) */
+static std::vector<Found> g_lib_found;   /* the last search of the library folders */
+static std::string lib_folders_file(void) { std::string d = pref_dir(); return d.empty() ? "" : d + "library_folders.tsv"; }
+static std::string lib_scan_file(void) { std::string d = pref_dir(); return d.empty() ? g_dump + "/.library_scan.tsv" : d + "library_scan.tsv"; }
+static void lib_load(void) {
+	g_lib_folders.clear();
+	if (FILE *f = fopen(lib_folders_file().c_str(), "r")) {
+		char line[4096];
+		while (fgets(line, sizeof line, f)) {
+			std::vector<std::string> c(1);
+			for (const char *q = line; *q && *q != '\n' && *q != '\r'; q++) { if (*q == '\t') c.emplace_back(); else c.back() += *q; }
+			if (c.size() >= 2 && (c[0] == "folder" || c[0] == "vita3k") && !c[1].empty()) g_lib_folders.push_back({c[0], c[1], c.size() > 2 && !c[2].empty() ? c[2] : c[1]});
+		}
+		fclose(f);
+	}
+	scan_parse(lib_scan_file(), g_lib_found);
+	g_lib_found.erase(std::remove_if(g_lib_found.begin(), g_lib_found.end(), [](const Found &x) {   /* (a folder forgotten since: its finds go) */
+		for (const LibFolder &f : g_lib_folders) if (f.path == x.source) return false;
+		return true; }), g_lib_found.end());
+}
+static std::vector<Step> lib_scan_steps(void) { return {step("Looking in your library folders", vitarecomp({"folders", "scan", "--out", lib_scan_file()}))}; }
+static void lib_add_folder(const std::string &path, bool vita3k) {
+	std::vector<std::string> a = vitarecomp({"folders", "add"}); if (vita3k) a.push_back("--vita3k"); a.push_back(path);
+	std::vector<Step> s = {step("Keeping the folder", a)}; for (Step &x : lib_scan_steps()) s.push_back(x);
+	task_start(vita3k ? "Adding a Vita3K folder" : "Adding a library folder", "libscan", "", s);
+}
+static void lib_remove_folder(const std::string &path) {   /* (only the list: the folder and what was added from it stay) */
+	std::string out;
+	for (const LibFolder &f : g_lib_folders) if (f.path != path) out += f.kind + "\t" + f.path + "\t" + f.root + "\n";
+	if (FILE *f = fopen(lib_folders_file().c_str(), "wb")) { fwrite(out.data(), 1, out.size(), f); fclose(f); }
+	lib_load();
+}
+static std::string leaf_name(const std::string &p) {   /* "D:/Games/Vita3K" -> "Vita3K" */
+	std::string s = p; while (s.size() > 1 && (s.back() == '/' || s.back() == '\\')) s.pop_back();
+	size_t at = s.find_last_of("/\\"); return at == std::string::npos ? s : s.substr(at + 1);
+}
+static const Found *lib_find(const Game &g) {   /* a playable copy of this card's game in a library folder */
+	for (const Found &x : g_lib_found)
+		if (x.kind == "game" && x.pick && playable_status(x.status)) {
+			auto o = g_other_of.find(x.id);
+			if (x.id == g.id || (o != g_other_of.end() && o->second == g.id)) return &x;
+		}
+	return nullptr;
+}
+static std::string vita3k_default_dir(void) {   /* Vita3K's data folder at its usual place (SDL's pref path Vita3K/Vita3K), "" none */
+	const char *home = getenv("HOME"), *xdg = getenv("XDG_DATA_HOME"), *appdata = getenv("APPDATA");
+	std::vector<std::string> bases;
+	if (home) { bases.push_back(std::string(home) + "/Library/Application Support/Vita3K/Vita3K"); bases.push_back((xdg ? std::string(xdg) : std::string(home) + "/.local/share") + "/Vita3K/Vita3K"); }
+	if (appdata) bases.push_back(std::string(appdata) + "/Vita3K/Vita3K");
+	for (const std::string &b : bases) for (const char *sub : {"/ux0", "/fs/ux0"}) if (exists(b + sub)) return b;
+	return "";
+}
+static bool g_search_keep = true;   /* the search form's "Keep this folder": searched again on each start */
 static bool search_form(SDL_Window *win) {   /* a folder searched for games, updates and the firmware file; true when adding started */
 	ui::muted_wrapped("A folder to look through, every subfolder too: a copy of your Vita's ux0: (its app, patch and addcont folders) or a downloads folder. Games, their updates and the firmware file are found and checked against the game packs, which play the games' US releases at the versions listed.");
 	ImGui::Spacing();
@@ -879,7 +956,14 @@ static bool search_form(SDL_Window *win) {   /* a folder searched for games, upd
 	ImGui::BeginDisabled(g_scan_path.empty() || g_task.running);
 	bool go = g_found_ready ? ImGui::Button("Search again") : ui::primary_button("Search");
 	ImGui::EndDisabled();
-	if (go) { g_found.clear(); g_found_ready = false; task_start("Searching a folder", "scan", "", {step("Searching", vitarecomp({"scan", g_scan_path, "--import-licences", "--out", scan_file()}))}); }
+	ImGui::SameLine(); ImGui::Checkbox("Keep this folder", &g_search_keep);
+	if (ImGui::IsItemHovered()) ImGui::SetTooltip("Kept as a library folder (Settings, Library): Nativ looks in it again each time it starts,\nand shows what it finds there on the game's card. Nothing in the folder is changed.");
+	if (go) {
+		g_found.clear(); g_found_ready = false;
+		std::vector<Step> s = {step("Searching", vitarecomp({"scan", g_scan_path, "--import-licences", "--out", scan_file()}))};
+		if (g_search_keep) s.push_back(step("Keeping the folder", vitarecomp({"folders", "add", g_scan_path})));
+		task_start("Searching a folder", "scan", "", s);
+	}
 	if (searching) { ImGui::SameLine(); ui::spinner(ui::accent); ImGui::TextDisabled("Searching…"); }
 	if (!g_found_ready) return false;
 	ImGui::Spacing();
@@ -1131,6 +1215,69 @@ static std::string online_tag(Ini &shared) {
 	std::string tag; for (int n = 0; n < 6; n++, v >>= 5) tag += al[v & 31];
 	return tag;
 }
+/* Settings, Library: the library folders (kept, searched again, removed), and how a copy from one is added */
+static std::string g_lib_pick, g_lib_pick_v3k;   /* a folder just picked to keep */
+static void pref_toggle_row(const char *label, const char *expl, const char *key, bool def) {   /* (hub.ini: the launcher's own, no game reads it) */
+	ui::row(label, expl);
+	auto it = g_prefs.find(key); bool on = it == g_prefs.end() || it->second.empty() ? def : it->second != "0";
+	if (ui::toggle(key, &on)) prefs_set(key, on ? "1" : "0");
+}
+static void library_tab(void) {
+	const float em = ImGui::GetFontSize();
+	if (!g_lib_pick.empty() && !g_task.running) { lib_add_folder(g_lib_pick, false); g_lib_pick.clear(); }
+	if (!g_lib_pick_v3k.empty() && !g_task.running) { lib_add_folder(g_lib_pick_v3k, true); g_lib_pick_v3k.clear(); }
+	ImGui::PushTextWrapPos(0);
+	ImGui::TextUnformatted("Library folders");
+	ui::muted_wrapped("Folders Nativ looks through for your games, their updates, add-ons and licences: a copy of your Vita's ux0:, a folder of dumps, or Vita3K's. A game found there shows on its card, ready to add. Nothing in these folders is ever changed.");
+	ImGui::Dummy(ImVec2(0, em * 0.2f));
+	ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::surface);
+	ImGui::BeginChild("libfolders", ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding);
+	if (g_lib_folders.empty()) ImGui::TextDisabled("No folders yet.");
+	bool v3k_kept = false;
+	for (size_t i = 0; i < g_lib_folders.size(); i++) {
+		const LibFolder f = g_lib_folders[i];
+		v3k_kept |= f.kind == "vita3k";
+		ImGui::PushID((int)i);
+		const bool here = exists(f.root);
+		int n = 0; for (const Found &x : g_lib_found) n += x.source == f.path && (x.kind == "game" || x.kind == "update" || x.kind == "addon");
+		ui::dot(here ? ui::ready : ui::warn);
+		ImGui::TextUnformatted(f.path.c_str());
+		ImGui::SameLine(); ImGui::TextDisabled("%s%s", f.kind == "vita3k" ? "Vita3K  ·  " : "", !here ? "not connected" : (std::to_string(n) + (n == 1 ? " copy" : " copies")).c_str());
+		const float rw = ImGui::CalcTextSize("Remove").x + ImGui::GetStyle().FramePadding.x * 2;
+		ImGui::SameLine(ImGui::GetContentRegionMax().x - rw);
+		ImGui::BeginDisabled(g_task.running);
+		if (ImGui::SmallButton("Remove")) lib_remove_folder(f.path);
+		ImGui::EndDisabled();
+		if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Only from this list: the folder, and games already added from it, stay.");
+		ImGui::PopID();
+	}
+	ImGui::EndChild(); ImGui::PopStyleColor();
+	const bool looking = g_task.running && g_task.kind == "libscan";
+	ImGui::BeginDisabled(g_task.running);
+	if (ImGui::Button("Add a folder…")) pick_folder(nullptr, &g_lib_pick);
+	ImGui::SameLine(); if (ImGui::Button("Add a Vita3K folder…")) pick_folder(nullptr, &g_lib_pick_v3k);
+	if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Vita3K's own folder (where Vita3K.exe and config.yml are, a portable install too),\nits data folder, or its ux0: its games, updates, add-ons and licences are found.");
+	ImGui::SameLine(); ImGui::BeginDisabled(g_lib_folders.empty());
+	if (ImGui::Button("Look now")) task_start("Looking in your library folders", "libscan", "", lib_scan_steps());
+	ImGui::EndDisabled();
+	ImGui::EndDisabled();
+	if (looking) { ImGui::SameLine(); ui::spinner(ui::accent); ImGui::TextDisabled("Looking…"); }
+	const std::string v3k = v3k_kept ? "" : vita3k_default_dir();
+	if (!v3k.empty()) {
+		ImGui::Dummy(ImVec2(0, em * 0.2f));
+		ui::dot(ui::accent); ImGui::TextWrapped("Vita3K is installed here: %s", v3k.c_str());
+		ImGui::BeginDisabled(g_task.running);
+		if (ui::primary_button("Use Vita3K's games and licences")) lib_add_folder(v3k, true);
+		ImGui::EndDisabled();
+	}
+	ImGui::PopTextWrapPos();
+	ImGui::Dummy(ImVec2(0, em * 0.4f));
+	if (ui::rows_begin("library")) {
+		pref_toggle_row("Look for new copies on start", "Each time Nativ starts, the library folders are searched again (in the background).", "library_rescan", true);
+		pref_toggle_row("Read in place from other drives", "A game found on another drive than your library is copied in full when added. On: its data stays where it is and is read from there (Vita3K's games, already decrypted) -- no second copy, but that drive has to be connected to play. On the same drive nothing is ever copied twice.", "library_in_place", false);
+		ui::rows_end();
+	}
+}
 static void settings_modal(void) {
 	const ImGuiViewport *vp = ImGui::GetMainViewport();
 	const float em = ImGui::GetFontSize();
@@ -1143,13 +1290,14 @@ static void settings_modal(void) {
 	ui::heading("Settings", em * 1.4f);
 	ui::muted_wrapped("For every game. A game reads them when it starts; its own menu (F10) changes them too, for every game. A game's own options, and any value it keeps for itself, are under Game settings on its card.");
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
-	static const char *const tabs[] = {"Display##st", "Controls##st", "Sound & online##st"};
-	ui::segmented(tabs, 3, &g_settings_tab); tab_hint();
-	g_settings_tab = (g_settings_tab + tab_step() + 3) % 3;
+	static const char *const tabs[] = {"Display##st", "Controls##st", "Sound & online##st", "Library##st"};
+	ui::segmented(tabs, 4, &g_settings_tab); tab_hint();
+	g_settings_tab = (g_settings_tab + tab_step() + 4) % 4;
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
 	SetTarget t{&g_shared, shared_path(), SHARED_HEADER};
 	ImGui::BeginChild("settings_rows", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() - em * 0.4f), 0);
-	if (ui::rows_begin("shared")) {
+	if (g_settings_tab == 3) library_tab();
+	else if (ui::rows_begin("shared")) {
 		if (g_settings_tab == 0) {
 			ui::row("Resolution", "The game drawn at a multiple of the Vita's 960 × 544. Higher is sharper; 4× and up want a fast GPU.");
 			{	ImGui::PushID("render_scale");
@@ -1546,9 +1694,18 @@ static void game_card(const Game &g, float w, float name_h) {
 	ImGui::PushFont(nullptr, em * 1.15f); ImGui::TextWrapped("%s", g.name.c_str()); ImGui::PopFont();
 	ImGui::SetCursorPosY(y0 + name_h + ImGui::GetStyle().ItemSpacing.y);
 	ImGui::SetCursorPosX(pad);
+	const Found *lf = g.imported ? nullptr : lib_find(g);
 	if (mine) { ui::spinner(ui::accent); ImGui::TextDisabled("%s", task_status().c_str()); }
+	else if (g.imported && !g.missing.empty()) {
+		ui::dot(ui::warn); ImGui::TextUnformatted("Its game data's drive isn't connected");
+		if (ImGui::IsItemHovered()) ImGui::SetTooltip("This copy reads its data where it was found:\n%s\nConnect that drive again, or add the copy again with Settings, Library, \"Read in place\" off.", g.missing.c_str());
+	}
 	else if (g.built) { ui::dot(ui::ready); ImGui::TextUnformatted("Ready to play"); }
 	else if (g.imported) { ui::dot(ui::warn); ImGui::TextUnformatted("Needs a one-time build"); }
+	else if (lf) {
+		ui::dot(ui::accent); ImGui::Text("Found in %s", leaf_name(lf->source).c_str());
+		if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s %s\n%s", lf->name.c_str(), lf->version.c_str(), lf->path.c_str());
+	}
 	else { ui::dot(ui::border); ImGui::TextDisabled("Not added yet"); }
 	ImGui::SetCursorPosX(pad);
 	{	/* the title id and the version: this copy's, else what the pack plays; a chip when the pack recommends another */
@@ -1572,6 +1729,19 @@ static void game_card(const Game &g, float w, float name_h) {
 	ImGui::BeginDisabled(busy);
 	if (g.built) { if (ui::primary_button("Play", ImVec2(bw - more - ImGui::GetStyle().ItemSpacing.x, 0))) start_play(g); ImGui::SameLine(); }
 	else if (g.imported) { if (ui::primary_button("Build", ImVec2(bw - more - ImGui::GetStyle().ItemSpacing.x, 0))) start_build(g); ImGui::SameLine(); }
+	else if (lf) {   /* from its library folder, as a search's Add does; a licence still missing: the search's list, to give it */
+		if (ui::primary_button("Add", ImVec2(bw - more - ImGui::GetStyle().ItemSpacing.x, 0))) {
+			if (found_ready(*lf, g_lib_found)) {
+				int n = 0; std::vector<std::string> titles; std::vector<Step> s = found_steps(&n, &titles, g_lib_found, lf->id);
+				task_start("Adding " + g.name, "add", g.id, s);
+				for (const std::string &t : titles) if (t != g.id) g_task.games.push_back(t);
+			} else {
+				g_found.clear(); for (const Found &x : g_lib_found) if (x.id == lf->id) g_found.push_back(x);
+				g_found_ready = true; g_add_kind = 0; g_scan_path = lf->source; g_add_open = true;
+			}
+		}
+		ImGui::SameLine();
+	}
 	else { if (ImGui::Button("Add your copy…", ImVec2(bw - more - ImGui::GetStyle().ItemSpacing.x, 0))) g_add_open = true; ImGui::SameLine(); }
 	ImGui::EndDisabled();
 	{	/* the "more" button: three dots, drawn (the font may have no ellipsis glyph) */
@@ -1944,6 +2114,7 @@ int main(int, char **) {
 		if (g_setup_open) g_setup_step = ui_sel.size() > 6 ? atoi(ui_sel.c_str() + 6) : 0;
 		g_add_open = ui_sel == "add" || ui_sel == "add:vita"; g_open_vita_popup = ui_sel == "add:vita";
 		if (const char *f = getenv("ATIV_SHOT_SCAN")) { scan_load(f); g_add_kind = 0; g_scan_path = "/Volumes/Vita/ux0"; }
+		if (const char *f = getenv("ATIV_SHOT_LIBSCAN")) { scan_parse(f, g_lib_found); }
 		g_drawer = ui_sel == "log";
 		g_sac_open = ui_sel.rfind("sac", 0) == 0; g_sac_game = "PCSE00640"; g_sac_rebuilt = ui_sel == "sac:again";
 		g_settings_open = ui_sel.rfind("settings", 0) == 0; if (g_settings_open && ui_sel.size() > 9) g_settings_tab = atoi(ui_sel.c_str() + 9);
@@ -1974,6 +2145,13 @@ int main(int, char **) {
 			static bool touch; static ImVec2 pad = ImGui::GetStyle().FramePadding;
 			bool t = io.MouseSource == ImGuiMouseSource_TouchScreen;   /* (the SDL backend tags touch-driven pointer events) */
 			if (t != touch) { touch = t; ImGui::GetStyle().FramePadding = t ? ImVec2(pad.x * 1.4f, pad.y * 1.8f) : pad; }
+		}
+		{	static bool lib_looked;   /* the library folders searched once at start, when nothing else runs (setup first) */
+			if (!lib_looked && !g_task.running && !g_setup_open) {
+				lib_looked = true;
+				auto it = g_prefs.find("library_rescan");
+				if (!g_lib_folders.empty() && (it == g_prefs.end() || it->second != "0")) task_start("Looking in your library folders", "libscan", "", lib_scan_steps());
+			}
 		}
 		static Uint64 last_scan;
 		if (g_task.running && SDL_GetTicks() - last_scan > 1500) { library_scan(); last_scan = SDL_GetTicks(); }   /* (a long add: its card follows) */
