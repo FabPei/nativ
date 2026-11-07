@@ -12,7 +12,11 @@
                                             licences, kept once (dump/licenses, pipeline/licenses.py): add looks
                                             there by a copy's content id; from files, the Vita itself over
                                             VitaShell's FTP, or a Vita3K install
-  vitarecomp add       <copy> [--license work.bin] [--no-build]   a game or its update (ux0:app/<title>
+  vitarecomp folders   [list | add [--vita3k] <folder> | remove <folder> | scan [--out <file>]]   the player's
+                                            library folders, kept (pipeline/folders.py): a copied ux0:, a dump folder,
+                                            a Vita3K install (its ux0 found, config.yml's pref-path followed), each
+                                            searched again by scan -- scan's rows plus the folder each was found in
+  vitarecomp add       <copy> [--license work.bin] [--no-build] [--in-place]   a game or its update (ux0:app/<title>
                                             or ux0:patch/<title> copied off the Vita, or a PKG with its licence file
                                             (.rif or work.bin); an already-decrypted folder works too), decrypted here
                                             (decrypt/vitadecrypt) and kept by kind -- dump/decrypted/<title>/app0 (the
@@ -20,6 +24,10 @@
                                             patch0 (the update) -- then import, analyze, recompile and build when a
                                             packs/<title>/pack.toml exists (--no-build: decrypt and keep only, more is
                                             coming -- the game's update: the last add imports and builds them together)
+                                            (an already-decrypted copy -- Vita3K's -- on this drive: hard links, no
+                                            second copy; on another drive a copy, or with --in-place its folders without
+                                            programs read where they are -- that drive then has to stay connected;
+                                            dump/decrypted/<title>/app0.links names them. Nothing is written into the copy)
   vitarecomp import    <title> [<dump dir>] executables (eboot.bin, sce_module/*.suprx; FAGDec
                                             output, or add's decrypted tree) -> verified ELFs; game
                                             data -> fs/app0. No dump dir: the title's own copy, its
@@ -262,7 +270,7 @@ def cmd_scan(T, rest):
 
 
 def cmd_add(T, rest):
-    nobuild = "--no-build" in rest; args = [a for a in rest if a != "--no-build"]
+    nobuild = "--no-build" in rest; in_place = "--in-place" in rest; args = [a for a in rest if a not in ("--no-build", "--in-place")]
     # what the copy is, from its plain param.sfo or PKG header (packs.py info: kind title version content-id)
     r = subprocess.run([PY, os.path.join(R, "packs.py"), "info", os.path.realpath(T)], env=env_with(TOOLS_ENV), capture_output=True, text=True)
     ident = r.stdout.split() if r.returncode == 0 and len(r.stdout.split()) >= 4 else ["game", "-", "-", "-"]
@@ -282,7 +290,7 @@ def cmd_add(T, rest):
         else: say(f"{tid}: no licence kept for it ({cid}): a copy that needs one stops below -- give its licence file (.rif or work.bin, --license), or keep yours first (vitarecomp licenses)")
     tmp = os.path.join(DUMP, "decrypted", f".add.{os.getpid()}"); rif = tmp + ".rif"
     rmtree(tmp); rmtree(rif); os.makedirs(os.path.join(DUMP, "decrypted"), exist_ok=True)
-    if run([PY, "-m", "vitadecrypt.game", os.path.realpath(T), tmp] + args + ["--license-out", rif], env=env_with(TOOLS_ENV), check=False).returncode:
+    if run([PY, "-m", "vitadecrypt.game", os.path.realpath(T), tmp] + args + ["--license-out", rif] + (["--link-dirs"] if in_place else []), env=env_with(TOOLS_ENV), check=False).returncode:
         rmtree(tmp); rmtree(rif); die()
     if tid == "-":
         try: tid = json.load(open(os.path.join(tmp, "game.json")))["title_id"]
@@ -292,6 +300,11 @@ def cmd_add(T, rest):
         rmtree(tmp); rmtree(rif); die(f"{T}: no title id or no decryptable eboot.bin (see above)")
     os.makedirs(W, exist_ok=True)
     if os.path.isfile(rif): _last_line([PY, os.path.join(R, "licenses.py"), "import", rif], env_with({"ATIV_DUMP": DUMP}))   # (the licence that decrypted it, kept)
+    links = sorted(os.path.realpath(os.path.join(tmp, n)) for n in os.listdir(tmp) if os.path.islink(os.path.join(tmp, n)) or _is_junction(os.path.join(tmp, n)))
+    links_file = os.path.join(W, ("app0" if kind == "game" else "patch0") + ".links")   # (the launcher: a card whose drive is gone says so)
+    if links:
+        with open(links_file, "w", encoding="utf-8", newline="\n") as f: f.write("".join(l + "\n" for l in links))
+    elif os.path.exists(links_file): os.remove(links_file)
     if kind == "game":
         rmtree(os.path.join(W, "app0")); os.rename(tmp, os.path.join(W, "app0")); say(f"{tid}: the game decrypted -> {os.path.join(W, 'app0')}")
         if os.path.isfile(rif): os.replace(rif, os.path.join(W, "license.rif"))
@@ -1054,9 +1067,10 @@ def main(argv):
     except AttributeError: pass
     cmd = argv[0] if argv else ""; T = argv[1] if len(argv) > 1 else ""
     if cmd == "update-check": cmd_update_check(); return 0
-    if not cmd or (not T and cmd != "licenses"): usage(); return 1
+    if not cmd or (not T and cmd not in ("licenses", "folders")): usage(); return 1
     if cmd == "firmware": cmd_firmware(T); return 0
     if cmd == "scan": cmd_scan(T, argv[2:]); return 0
+    if cmd == "folders": return run([PY, os.path.join(R, "folders.py")] + argv[1:], env=env_with(TOOLS_ENV, {"ATIV_DUMP": DUMP}), check=False).returncode
     if cmd == "licenses": return run([PY, os.path.join(R, "licenses.py")] + argv[1:], env=env_with({"ATIV_DUMP": DUMP}), check=False).returncode
     if cmd == "add": cmd_add(T, argv[2:]); return 0
     if cmd == "dist": cmd_dist(T); return 0
