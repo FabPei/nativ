@@ -65,12 +65,20 @@ inline bool primary_button(const char *label, ImVec2 size = ImVec2(0, 0)) {   /*
 	ImGui::PopStyleColor(4);
 	return r;
 }
-/* a choice of n as one joined control; true when it changes. ids: labels may carry "##" suffixes */
+/* a choice of n as one joined control; true when it changes. ids: labels may carry "##" suffixes.
+ * (2026-11-07: wraps to the next line when the row would overflow the column -- six widescreen
+ * segments clipped at 1280x800's narrower settings column before this.) */
 inline bool segmented(const char *const *labels, int n, int *v) {
 	bool ch = false;
 	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x * 0.25f, 0));
+	const float sp = ImGui::GetStyle().ItemSpacing.x, avail = ImGui::GetContentRegionAvail().x, x0 = ImGui::GetCursorPosX();
+	float xnext = x0;   /* where the next button would start on this line (after Button() the cursor is at the next line's start, so track it) */
 	for (int i = 0; i < n; i++) {
-		if (i) ImGui::SameLine();
+		ImVec2 ts = ImGui::CalcTextSize(labels[i]);
+		float w = ts.x + 2.0f * ImGui::GetStyle().FramePadding.x;
+		bool same = i && (xnext + w <= x0 + avail + 0.5f);
+		if (same) ImGui::SameLine();
+		float placed = same ? xnext : x0;
 		bool on = *v == i;
 		ImGui::PushStyleColor(ImGuiCol_Button, on ? with_alpha(accent, 0.18f) : card);
 		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, on ? with_alpha(accent, 0.24f) : card_hi);
@@ -78,6 +86,7 @@ inline bool segmented(const char *const *labels, int n, int *v) {
 		ImGui::PushStyleColor(ImGuiCol_Text, on ? accent : muted);
 		if (ImGui::Button(labels[i]) && !on) { *v = i; ch = true; }
 		ImGui::PopStyleColor(4);
+		xnext = placed + w + sp;
 	}
 	ImGui::PopStyleVar();
 	return ch;

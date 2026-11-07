@@ -363,14 +363,15 @@ static void page_display(void) {
 		if (ui::segmented(names, 3, &am)) window_set_aspect(am);
 	}
 	ui::row(ui_tr("display.widescreen"), ui_tr(window_aspect_supported() ? "display.widescreen_help" : "display.widescreen_none"), note_s("aspect_ratio"));
-	{	static const char *const ids[4] = {"native", "21:9", "32:9", "window"};
+	{	static const char *const ids[6] = {"native", "16:10", "3:2", "21:9", "32:9", "window"};
 		char cur[16]; settings_str("aspect_ratio", "native", cur, sizeof cur);
-		int v = 0; for (int i = 0; i < 4; i++) if (!strcmp(cur, ids[i])) v = i;
-		char t0[48], t1[48], t2[48], t3[48];
-		const char *names[4] = {tr_suf(ui_tr("common.off"), "##ar", t0, sizeof t0), tr_suf("21:9", "##ar", t1, sizeof t1),
-		                        tr_suf("32:9", "##ar", t2, sizeof t2), tr_suf(ui_tr("display.ar_window"), "##ar", t3, sizeof t3)};
+		int v = 0; for (int i = 0; i < 6; i++) if (!strcmp(cur, ids[i])) v = i;
+		char t0[48], t1[48], t2[48], t3[48], t4[48], t5[48];
+		const char *names[6] = {tr_suf(ui_tr("common.off"), "##ar", t0, sizeof t0), tr_suf("16:10", "##ar", t1, sizeof t1),
+		                        tr_suf("3:2", "##ar", t2, sizeof t2), tr_suf("21:9", "##ar", t3, sizeof t3),
+		                        tr_suf("32:9", "##ar", t4, sizeof t4), tr_suf(ui_tr("display.ar_window"), "##ar", t5, sizeof t5)};
 		ImGui::BeginDisabled(!window_aspect_supported());
-		if (ui::segmented(names, 4, &v)) { settings_set_str("aspect_ratio", ids[v]); save_settings(); }
+		if (ui::segmented(names, 6, &v)) { settings_set_str("aspect_ratio", ids[v]); save_settings(); }
 		ImGui::EndDisabled();
 	}
 	if (gfx_gpu_hud_supported()) {
