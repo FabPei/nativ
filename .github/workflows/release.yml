@@ -1,14 +1,14 @@
 # The fork's downloads, built from this repository's source alone by GitHub's runners: dev/release.sh, as a release is
 # made by hand (docs/developers.md "Making a release"), with no game anywhere: NATIV_RELEASE_SKIP_BUILDS=1 packages
 # the tools without building a library's games (a runner has none; players build their own from their own copy).
-#   a pushed tag vX.Y.Z-fpN   the three downloads + SHA256SUMS, as a DRAFT release (published by hand after a look)
+#   a pushed tag fp-vX.Y.Z    the three downloads + SHA256SUMS, as a DRAFT release (published by hand after a look)
 #   a push to fp/main         the same downloads as workflow artifacts only (no release): every change is built
 #   Run workflow (manual)     the same, from the chosen branch (needs this file on the default branch)
 # Unsigned: no signing identity is configured, so Windows' SmartScreen and macOS' Gatekeeper ask the player once.
 name: release
 on:
   push:
-    tags: ["v*-fp*"]
+    tags: ["fp-v*"]
     branches: [fp/main]
   workflow_dispatch:
 permissions:
@@ -77,7 +77,7 @@ jobs:
         id: tag
         run: |
           if [[ $GITHUB_REF == refs/tags/* ]]; then echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
-          else t=v0.0.0-fp0; git tag -f "$t"; echo "tag=$t" >> "$GITHUB_OUTPUT"; fi   # (a manual run: a throwaway local tag)
+          else t=fp-v0.0.0; git tag -f "$t"; echo "tag=$t" >> "$GITHUB_OUTPUT"; fi   # (a manual run: a throwaway local tag)
       - name: package
         env: { SHELLOPTS: xtrace }
         run: bash dev/release.sh "${{ steps.tag.outputs.tag }}" linux
@@ -138,7 +138,7 @@ jobs:
         id: tag
         run: |
           if [[ $GITHUB_REF == refs/tags/* ]]; then echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
-          else t=v0.0.0-fp0; git tag -f "$t"; echo "tag=$t" >> "$GITHUB_OUTPUT"; fi
+          else t=fp-v0.0.0; git tag -f "$t"; echo "tag=$t" >> "$GITHUB_OUTPUT"; fi
       - name: package
         env: { SHELLOPTS: xtrace }
         run: bash dev/release.sh "${{ steps.tag.outputs.tag }}" windows
@@ -173,7 +173,7 @@ jobs:
         id: tag
         run: |
           if [[ $GITHUB_REF == refs/tags/* ]]; then echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
-          else t=v0.0.0-fp0; git tag -f "$t"; echo "tag=$t" >> "$GITHUB_OUTPUT"; fi
+          else t=fp-v0.0.0; git tag -f "$t"; echo "tag=$t" >> "$GITHUB_OUTPUT"; fi
       - name: package
         env: { SHELLOPTS: xtrace }   # (every script line in the log: the install scripts end quietly on a failure)
         run: bash dev/release.sh "${{ steps.tag.outputs.tag }}" mac
@@ -211,4 +211,4 @@ jobs:
           Unsigned: Windows and macOS ask once before the first start. Licences: \`LICENSE\` (GPL-2.0-or-later) and
           \`THIRD_PARTY.md\` in each download.
           NOTES
-          gh release create "$TAG" out/* --repo "${{ github.repository }}" --draft --prerelease --title "Project Nativ $TAG (unofficial fork)" --notes-file notes.md
+          gh release create "$TAG" out/* --repo "${{ github.repository }}" --draft --prerelease --title "Project Nativ FP ${TAG#fp-v} (unofficial fork)" --notes-file notes.md

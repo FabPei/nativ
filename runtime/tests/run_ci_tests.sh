@@ -2,7 +2,8 @@
 # The runtime tests that need no game, no window, no SDL and no GPU: each is built with the line README.md gives for it
 # and run; any compile error or non-zero exit fails the run. Used by .github/workflows/release.yml on Linux; runs the
 # same on any Linux or WSL shell:  bash runtime/tests/run_ci_tests.sh
-# Left out: camera_test (SDL3), dlg_term_test and sysmodule_test (SDL3 headers), mtl_archive_test (macOS only).
+# Left out: tests that need SDL3 (camera, dlg_term, sysmodule, vcount, pad_bind, menu_pad, savedlg_pad), macOS-only
+# mtl_archive_test, and tests without a documented build line.
 set -u
 cd "$(dirname "$0")"
 INC="-I ../core -I ../gfx -I ../audio -I ../media -I ../input -I ../net -I ../ui -I ../platform -I ../debug -I ../../recompiler -I ../.."
@@ -34,6 +35,16 @@ run view_swz_test     -O1 -g -Wall -I ../gfx view_swz_test.c
 run audiodec_test     -O1 -g -Wall -D_GNU_SOURCE $INC audiodec_test.c ../../third_party/libatrac9/*.c -lpthread -lm
 run codec_engine_test $CF $INC codec_engine_test.c -lpthread
 run audio_pace_test   -O1 -g -Wall audio_pace_test.c
+run hle_small_test    -O1 -g -Wall -I ../core hle_small_test.c
+run dump_fit_test     -O1 -g -Wall -I ../ui dump_fit_test.c
+run overlay_scale_test -O1 -g -Wall -I ../ui overlay_scale_test.c -lm
+run trophy_test       -O1 -g -Wall -I ../core trophy_test.c
+run ui_text_test      -O1 -g -Wall -I ../ui ui_text_test.c ../ui/ui_text.c
+run settings_reset_test -O1 -g -Wall -I ../core settings_reset_test.c ../core/settings.c -lpthread
+run settings_save_test -O1 -g -Wall -I ../core settings_save_test.c ../core/settings.c -lpthread
+run sysinfo_test      -O1 -g -Wall -I ../ui sysinfo_test.c
+run cdlg_test         -O1 -g -Wall -I ../core cdlg_test.c
+run imedlg_test       -O1 -g -Wall -I ../core imedlg_test.c ../core/imedlg.c -lpthread
 
 if [ "$fail" -ne 0 ]; then echo "$fail test(s) failed"; exit 1; fi
 echo "all runtime tests passed"

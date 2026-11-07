@@ -116,7 +116,7 @@ its SHA-256.
 
 `NATIV_RELEASES` names the GitHub repository whose releases are the installs' updates: `vitarecomp dist` writes it to
 `updates.txt`, and the launcher runs `vitarecomp update-check` at start (GitHub asked at most once a day), which shows a
-newer release's tag above the library. Versions compare as `vX.Y.Z`; a build that isn't a release is never told.
+newer release's tag above the library. Versions compare as `vX.Y.Z` (this fork: `fp-vX.Y.Z`, newer than its older `vX.Y.Z-fpN`); a build that isn't a release is never told.
 
 Signing needs your own accounts, set in the ignored `dev/local.env`: `NATIV_SIGN_ID` (a Developer ID Application
 identity) signs every program and library in the Mac app, the app and the `.dmg`, with the hardened runtime;

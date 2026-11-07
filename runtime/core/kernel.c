@@ -1337,6 +1337,13 @@ static uint32_t sevent_wait(Obj *o, uint32_t bits, uint32_t out, uint32_t udata,
 }
 static void h_wait_sevent(Cpu *c) { Obj *o = by_uid(A0, SEVENT); RET(o ? sevent_wait(o, A1, A2, A3, STK(0), 0) : E_UNKNOWN_EVENT_ID); }   /* (uid, waitPattern, *resultPattern, *userData, *timeout) */
 static void h_poll_sevent(Cpu *c) { Obj *o = by_uid(A0, SEVENT); RET(o ? sevent_wait(o, A1, A2, A3, 0, 1) : E_UNKNOWN_EVENT_ID); }
+/* (HLE-LIB-03) sceKernelGetEventPattern(uid, *pattern): the simple event's pattern now, nothing cleared */
+static void h_get_sevent_pattern(Cpu *c) {
+	Obj *o = by_uid(A0, SEVENT); if (!o) { RET(E_UNKNOWN_EVENT_ID); return; }
+	pthread_mutex_lock(&o->m); const uint32_t b = o->bits; pthread_mutex_unlock(&o->m);
+	if (A1) WR32(A1, b);
+	RET(0);
+}
 static void h_set_sevent(Cpu *c) {   /* (uid, setPattern, userData (r2:r3)) */
 	objev_count(A0);
 	Obj *o = by_uid(A0, SEVENT); if (!o) { RET(E_UNKNOWN_EVENT_ID); return; }
@@ -2187,7 +2194,7 @@ const HleEntry hle_kernel[] = {
 	{"sceKernelPollEventFlag", h_poll_evf}, {"sceKernelSetEventFlag", h_set_evf}, {"sceKernelClearEventFlag", h_clear_evf},
 	{"sceKernelDeleteEventFlag", h_delete_evf}, {"sceKernelGetEventFlagInfo", h_evf_info},
 	{"sceKernelCreateSimpleEvent", h_create_sevent}, {"sceKernelDeleteSimpleEvent", h_delete_sevent}, {"sceKernelWaitEvent", h_wait_sevent}, {"sceKernelWaitEventCB", h_wait_sevent_cb},
-	{"sceKernelPollEvent", h_poll_sevent}, {"sceKernelSetEvent", h_set_sevent}, {"sceKernelClearEvent", h_clear_sevent},
+	{"sceKernelPollEvent", h_poll_sevent}, {"sceKernelSetEvent", h_set_sevent}, {"sceKernelGetEventPattern", h_get_sevent_pattern}, {"sceKernelClearEvent", h_clear_sevent},
 	{"sceKernelCreateMutex", h_create_mutex}, {"sceKernelLockMutex", h_lock_mutex}, {"sceKernelLockMutexCB", h_lock_mutex_cb},
 	{"sceKernelTryLockMutex", h_trylock_mutex}, {"sceKernelUnlockMutex", h_unlock_mutex}, {"sceKernelDeleteMutex", h_delete_mutex}, {"sceKernelGetMutexInfo", h_mutex_info},
 	{"sceKernelCreateCond", h_create_cond}, {"sceKernelWaitCond", h_wait_cond}, {"sceKernelWaitCondCB", h_wait_cond_cb}, {"sceKernelSignalCond", h_signal_cond},

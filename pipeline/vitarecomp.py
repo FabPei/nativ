@@ -26,6 +26,15 @@
                                             update layered over it (app0_patched, hard links) when
                                             the pack plays that version; records which version it is
   vitarecomp versions  <title>              the versions the game's pack plays, and which this copy is
+  vitarecomp pack-init <title> [--force]    a game with no pack yet: a minimal packs/<title>/pack.toml from the copy
+                                            (name, version, its main program's SHA-256, ELF, MODULES; no hooks), marked
+                                            AUTO-GENERATED / UNVERIFIED (pipeline/bootstrap.py)
+  vitarecomp bootstrap <title> [--frames N] [--max N]   as far as the game goes without pack work: pack-init when it
+                                            has no pack, import, then build -> headless run (N frames, default the pack's
+                                            TEST_FRAMES) -> the functions the run found the analysis missed -> analyze,
+                                            recompile, build again, until nothing new; says where it stopped (frame
+                                            reached, missed function, unimplemented instruction, crash, no frame) and
+                                            writes it, with the seeds and stub imports, to analysis/bootstrap.json
   vitarecomp analyze   <title>              functions, code ranges and the memory image of the main
                                             module (analyze.py, seconds; ANALYZER=ghidra: the old
                                             Ghidra export, minutes to hours)
@@ -89,7 +98,9 @@ import zlib
 
 R = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.dirname(R)   # (pipeline/: this; the repository above it)
 RECOMPILER, RUNTIME, PACKS, DECRYPT, DEV = (os.path.join(ROOT, d) for d in ("recompiler", "runtime", "packs", "decrypt", "dev"))
+PACKS = os.environ.get("ATIV_PACKS") or PACKS   # (ATIV_PACKS=<dir>: the packs read from there -- a game run as if it had none, bootstrap's test)
 sys.path.insert(0, R)
+import bootstrap  # noqa: E402
 import packconf  # noqa: E402
 from datadir import library_dir  # noqa: E402
 from winfs import remove_file, remove_tree  # noqa: E402
@@ -288,7 +299,7 @@ def cmd_add(T, rest):
     # (--no-build: kept, not imported -- the game alone may be a version the pack refuses that its update makes one it plays)
     if nobuild: die(f"{tid}: kept; the next add (its update) or vitarecomp import {tid} imports it", 0)
     run(SELF + ["import", tid])
-    if not os.path.isfile(os.path.join(PACKS, tid, "pack.toml")): die(f"{tid}: imported; there's no game pack for it yet (packs/{tid}/pack.toml)", 0)
+    if not packconf.pack_for(PACKS, tid): die(f"{tid}: imported; there's no game pack for it yet (packs/{tid}/pack.toml) -- `vitarecomp bootstrap {tid}` writes a first one and builds and runs it as far as it goes", 0)
     for c in ("analyze", "recompile", "build"): run(SELF + [c, tid])
 
 
@@ -304,7 +315,12 @@ class Game:
     def __init__(self, T, cmd):
         self.T = T
         self.W = os.path.join(DUMP, "decrypted", T)
-        self.PACK = T.split("_")[0] if re.match(r"[A-Z]{4}[0-9]{5}_", T) else T
+        own = T.split("_")[0] if re.match(r"[A-Z]{4}[0-9]{5}_", T) else T
+        # PACK: its own, else the pack of another release of the game that lists this title id among its OTHER_TITLES
+        # (an EU copy of a game with a US pack: played with it when its main program is one of the pack's versions --
+        # import refuses it otherwise, by hash); OTHER: such a copy, which still runs as its own title id
+        self.PACK = packconf.pack_for(PACKS, own) or own
+        self.OTHER = self.PACK != own
         self.CONF = os.path.join(PACKS, self.PACK, "pack.toml")
         # VERSION: which of the pack's builds this copy is (import records it from the main program's hash): the pack's
         # per-version settings (HOOKS, GAME_ADDRS, FUNCTION_SEEDS...) branch on it
@@ -327,7 +343,7 @@ class Game:
         if ov and version not in ov: c["RUN_ENV"] = ((c.get("RUN_ENV") or "") + " RECOMP_ONLINE_NEEDS=" + ",".join(ov)).strip()
         self.c = c; self.VERSION = version
         # TITLE_ID: the title id the game is told it runs as (sceAppMgr's, RECOMP_TITLE) -- the pack's unless the pack says otherwise
-        self.TITLE_ID = c.get("TITLE_ID") or self.PACK
+        self.TITLE_ID = own if self.OTHER else (c.get("TITLE_ID") or self.PACK)
         self.OUT = os.path.join(self.W, "recomp")
         self.SEEDS = os.path.join(DUMP, "decrypted", "seeds")   # firmware modules' missed functions (offsets), shared by every game
         # RECOMP_BIN=<name>: build/test a second host binary (<base>_<name>, test_<name>/) alongside the
@@ -495,7 +511,8 @@ def recompile_inputs(g):
         sub[:] = [x for x in sub if x != "__pycache__" and not x.startswith(".")]
         # (hidden files aren't the recompiler's: a tar from a Mac leaves ._ metadata beside each file, 2026-10-26)
         files += [os.path.relpath(os.path.join(d, n), ROOT).replace(os.sep, "/") for n in names if not n.endswith(".pyc") and not n.startswith(".")]
-    data = b"".join(open(os.path.join(ROOT, f), "rb").read() for f in sorted(files, key=lambda f: f.encode()))
+    src = lambda f: g.CONF if f == f"packs/{g.PACK}/pack.toml" else os.path.join(ROOT, f)   # (the pack read where it is: ATIV_PACKS)
+    data = b"".join(open(src(f), "rb").read() for f in sorted(files, key=lambda f: f.encode()))
     return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
 
 
@@ -600,7 +617,8 @@ def cmd_run(g, frames):
     shipped = os.path.join(PACKS, g.PACK, "shaders.txt")
     icon = os.path.join(ROOT, "assets", "brand", "png", "icon-" + ("macos-512" if sys.platform == "darwin" else "256") + ".png")   # (the window's: window.c)
     fixed = ([("RECOMP_SHADER_RECIPES_SHIPPED", shipped)] if os.path.isfile(shipped) else []) + ([("RECOMP_ICON", icon)] if os.path.isfile(icon) and sys.platform != "win32" else []) + [
-        ("RECOMP_TITLE", g.TITLE_ID), ("RECOMP_GAME_NAME", g.NAME), ("RECOMP_LOG", ENV.get("RECOMP_LOG") or "0"),
+        ("RECOMP_TITLE", g.TITLE_ID), ("RECOMP_GAME_NAME", g.NAME), ("RECOMP_TOOLS_VERSION", tools_version()), ("RECOMP_GAME_VERSION", g.VERSION or ""),
+        ("RECOMP_LOG", ENV.get("RECOMP_LOG") or "0"),
         ("RECOMP_HITCH_LOG", ENV.get("RECOMP_HITCH_LOG") or "50"), ("RECOMP_STALL_PROF", ENV.get("RECOMP_STALL_PROF") or "150")]
     # ATIV_PRE_LAUNCH / ATIV_POST_EXIT (the environment): commands run before the game starts and after it exits. On a machine
     # whose GPU is shared (a local AI model kept in VRAM, say) the GPU must be free BEFORE the game starts: a game that starts
@@ -651,7 +669,7 @@ def cmd_test(g):
     # Uncharted's main thread, string compares under a lock, which no play run pays)
     frames = g.TEST_FRAMES; every = ENV.get("SHOT_EVERY") or ""
     e = game_env(g, g.TEST_ENV.split() + (ENV.get("EXTRA_ENV") or "").split(), [
-        ("RECOMP_GFX_COVERAGE", "" if ENV.get("TEST_COVERAGE") == "0" else "gfxcov.json"), ("RECOMP_TITLE", g.TITLE_ID), ("RECOMP_GAME_NAME", g.NAME), ("RECOMP_INPUT", g.TEST_INPUT),
+        ("RECOMP_GFX_COVERAGE", "" if ENV.get("TEST_COVERAGE") == "0" else "gfxcov.json"), ("RECOMP_TITLE", g.TITLE_ID), ("RECOMP_GAME_NAME", g.NAME), ("RECOMP_TOOLS_VERSION", tools_version()), ("RECOMP_GAME_VERSION", g.VERSION or ""), ("RECOMP_INPUT", g.TEST_INPUT),
         ("RECOMP_TOUCH", g.TEST_TOUCH), ("RECOMP_HEADLESS", "1"), ("RECOMP_FS", "fs"), ("RECOMP_LOG", "0"), ("RECOMP_SHOT", every or frames),
         ("RECOMP_SHOT_LAST", frames)])   # (a series too ends at the test frame: it ran on to the timeout, 15 minutes for shots it had long since taken)
     with open(os.path.join(td, "test.log"), "wb") as log:
@@ -810,9 +828,10 @@ def cmd_dist(out):
 
 UPDATES = "updates.txt"   # (an install's release channel, "github <owner>/<repo>": cmd_dist writes it, cmd_update_check reads it)
 def release_newer(tag, mine):
-    """a release tag newer than this install's version, both vX.Y.Z or a fork's vX.Y.Z-fpN (a build that isn't a release
-    is never told); vX.Y.Z-fpN sorts after vX.Y.Z and before the next upstream version"""
-    def parts(v): m = re.fullmatch(r"v?(\d+)\.(\d+)(?:\.(\d+))?(?:-fp(\d+))?", v.strip()); return tuple(int(x or 0) for x in m.groups()) if m else None
+    """a release tag newer than this install's version: vX.Y.Z, a fork's own line fp-vX.Y.Z, or the fork's older
+    vX.Y.Z-fpN (a build that isn't a release is never told); vX.Y.Z-fpN sorts after vX.Y.Z and before the next
+    version, so fp-v0.2.0 is newer than v0.1.5-fp2"""
+    def parts(v): m = re.fullmatch(r"(?:fp-)?v?(\d+)\.(\d+)(?:\.(\d+))?(?:-fp(\d+))?", v.strip()); return tuple(int(x or 0) for x in m.groups()) if m else None
     a, b = parts(tag), parts(mine)
     return bool(a and b and a > b)
 def cmd_update_check():
@@ -838,7 +857,7 @@ def cmd_update_check():
         try:
             with urllib.request.urlopen(req, timeout=6, context=ctx) as r: rels = json.load(r)
         except Exception as e: say(f"update-check: {repo}: {e}"); return
-        best = {"tag_name": "", "html_url": ""}   # (the highest vX.Y.Z tag; a draft, or a tag named otherwise, is never offered)
+        best = {"tag_name": "", "html_url": ""}   # (the highest vX.Y.Z / fp-vX.Y.Z tag; a draft, or a tag named otherwise, is never offered)
         for d in rels if isinstance(rels, list) else []:
             if not d.get("draft") and release_newer(d.get("tag_name", ""), best["tag_name"] or "v0.0.0"): best = d
         latest = {"repo": repo, "at": now, "tag": best.get("tag_name", ""), "page": best.get("html_url", "")}
@@ -909,6 +928,88 @@ def cmd_report(T):
     say(f"report: {out} ({os.path.getsize(out) / 2**20:.1f} MB)")
 
 
+# ---- a game with no pack: pack-init and bootstrap (pipeline/bootstrap.py)
+
+def cmd_pack_init(T, force):
+    W = os.path.join(DUMP, "decrypted", T); app0 = os.path.join(W, "app0"); own = T.split("_")[0]
+    if not TITLE_RE.match(own): die(f"vitarecomp pack-init: a title id, such as PCSE00764 (not {T})")
+    have = packconf.pack_for(PACKS, own)
+    if have and not force: die(f"{T}: plays with packs/{have}/pack.toml already (--force writes a new packs/{own}/pack.toml anyway)")
+    edir = app0 if os.path.isfile(os.path.join(app0, "eboot.bin.elf")) else os.path.join(W, "elf")   # (add's tree, else import's ELFs)
+    if not os.path.isfile(os.path.join(edir, "eboot.bin.elf")): die(f"{T}: no decrypted eboot.bin in {W} (vitarecomp add it first)")
+    sys.path.insert(0, RECOMPILER); sys.path.insert(0, DECRYPT)
+    import imports as imp
+    from vitadecrypt import sfo
+    names = imp.known_names(); fns, libs = set(), set()
+    for lib, _, fn, _ in imp.imports(os.path.join(edir, "eboot.bin.elf"))[1]:
+        libs.add(lib); fns |= {names.get((lib, n), "") for n in fn}
+    elf, note = bootstrap.main_elf(edir, fns)
+    if elf != "eboot.bin.elf":   # (the program it launches: its imports decide the modules)
+        libs = {lib for lib, *_ in imp.imports(os.path.join(edir, elf))[1]}
+    g = Game(T, "import")
+    mods, left = bootstrap.modules(app0, libs, lambda m: os.path.isfile(g.modelf(m)))
+    name, version = bootstrap.identity(app0, sfo.read_sfo_file)
+    notes = ([note] if note else []) + ([f"shipped in sce_module/ but not loaded: {' '.join(left)} (add to MODULES if the run stubs their imports)"] if left else [])
+    notes += [f"imports {lib}: {m} is not on this machine (vitarecomp firmware)" for lib, m in bootstrap.IMPORT_MODULES.items() if lib in libs and m not in mods]
+    text = bootstrap.pack_text(own, name, version, sha256(os.path.join(edir, elf)), elf, mods, notes)
+    d = os.path.join(PACKS, own); os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "pack.toml"), "w", encoding="utf-8", newline="\n") as f: f.write(text)
+    packconf.read(os.path.join(d, "pack.toml"))   # (its shape checked as every pack's)
+    say(f"{T}: wrote {os.path.join(d, 'pack.toml')} (auto-generated, unverified): {name or own} {version}, {elf}, MODULES {' '.join(mods)}")
+    for n in notes: say(f"  note: {n}")
+
+
+class GameSteps(bootstrap.Steps):
+    """the loop's steps on a real game: vitarecomp's own stages, each a process of its own"""
+    def __init__(self, g, frames):
+        self.g, self.frames, self.n = g, frames, 0
+        self.td = os.path.join(g.OUT, g.TD)
+
+    def prepare(self):
+        self.n += 1
+        st = ["analyze", "recompile", "build"]
+        if self.n == 1 and not os.path.isfile(os.path.join(self.g.W, "elf", self.g.ELF)): st = ["import"] + st
+        for c in st:
+            say(f"bootstrap: {c} {self.g.T}")
+            if run(SELF + [c, self.g.T], check=False).returncode: return False
+        return True
+
+    def run(self):
+        say(f"bootstrap: headless run, {self.frames} frames")
+        run(SELF + ["test", self.g.T], env=env_with({"TEST_FRAMES": str(self.frames)}), check=False)
+        log = os.path.join(self.td, "test.log")
+        text = open(log, encoding="utf-8", errors="replace").read() if os.path.isfile(log) else ""
+        return text, os.path.isfile(os.path.join(self.td, "shot_%05d.ppm" % int(self.frames)))
+
+    def seeds(self):
+        out = []
+        f = os.path.join(self.g.W, "analysis", "seeds.txt")
+        if os.path.isfile(f): out += [l.strip() for l in open(f) if l.strip()]
+        for f in sorted(glob.glob(os.path.join(glob.escape(self.g.SEEDS), "*.txt"))):
+            out += [os.path.basename(f)[:-4] + "+" + l.strip() for l in open(f) if l.strip()]
+        return out
+
+
+def cmd_bootstrap(g, rest):
+    def opt(k, d):
+        return rest[rest.index(k) + 1] if k in rest and rest.index(k) + 1 < len(rest) else d
+    frames = int(opt("--frames", g.TEST_FRAMES or "600")); mx = int(opt("--max", "8"))
+    s = bootstrap.loop(GameSteps(g, frames), mx, say)
+    s.update(title=g.T, pack=g.PACK, auto_pack="AUTO_GENERATED" in g.c, frames=frames)
+    if s["stop"] == "unimplemented_instruction" and s["addr"]:   # (which instruction: the generated code's label line says)
+        lab = "L_%x: /* " % int(s["addr"], 16)
+        for f in sorted(glob.glob(os.path.join(glob.escape(g.OUT), "*.c"))):
+            with open(f, encoding="utf-8", errors="replace") as fh:
+                hit = next((l for l in fh if l.startswith(lab)), None)
+            if hit: s["detail"] = hit[len(lab):].split("*/")[0].strip(); break
+    os.makedirs(os.path.join(g.W, "analysis"), exist_ok=True)
+    with open(os.path.join(g.W, "analysis", "bootstrap.json"), "w", encoding="utf-8", newline="\n") as f: json.dump(s, f, indent=1)
+    say(f"bootstrap: stopped: {s['stop']}" + (f" at {s['addr']}" if s["addr"] else "") + (f" ({s['detail']})" if s["detail"] else "") +
+        f" after {s['iterations']} run(s); {len(s['seeds_found'])} seed(s) found, {len(s['stub_imports'])} import(s) ran as stubs")
+    say("BOOTSTRAP " + json.dumps({k: s[k] for k in ("title", "stop", "addr", "detail", "iterations", "seeds_found", "frames")}))
+    return 0 if s["stop"] == "frame_reached" else 3
+
+
 def main(argv):
     try:   # (this program's own output UTF-8 too, and never an error over a character it can't write)
         sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace", line_buffering=True)
@@ -923,6 +1024,10 @@ def main(argv):
     if cmd == "add": cmd_add(T, argv[2:]); return 0
     if cmd == "dist": cmd_dist(T); return 0
     if cmd == "report": cmd_report(T); return 0
+    if cmd == "pack-init": cmd_pack_init(T, "--force" in argv[2:]); return 0
+    if cmd == "bootstrap":
+        if not packconf.pack_for(PACKS, T.split("_")[0]): cmd_pack_init(T, False)
+        return cmd_bootstrap(Game(T, cmd), argv[2:])
     if cmd not in ("import", "analyze", "recompile", "build", "ready", "run", "test", "capture", "replay", "accept", "check", "coverage", "verify", "recipes", "versions"):
         usage(); return 1
     g = Game(T, cmd)

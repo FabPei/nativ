@@ -7,7 +7,8 @@
 > support for Soul Sacrifice Delta (EU) that are also offered upstream as pull requests, and the Persona Dancing
 > packs and renderer fixes of [PersonaDancingRecomp](https://github.com/Ecstatic-Magician/PersonaDancingRecomp) by
 > Ecstatic-Magician, merged with its history (setup and notes: `packs/PCSE00764/README.md`). Its releases are tagged
-> `vX.Y.Z-fpN` (based on upstream `vX.Y.Z`), are built from this repository's source by GitHub Actions
+> `fp-vX.Y.Z`, this fork's own version line (from `fp-v0.2.0`; earlier ones were `v0.1.5-fpN`, upstream `v0.1.5` plus
+> patches; each release names the upstream version it is based on), are built from this repository's source by GitHub Actions
 > (`.github/workflows/release.yml`), are unsigned, and contain no game: as with upstream, you bring your own copy.
 > Problems with these builds belong in this fork's issues, not upstream's.
 

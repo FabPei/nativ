@@ -26,7 +26,8 @@
  *                           menu can be looked at without a screen (see overlay_dump_maybe below)
  *       RECOMP_OVERLAY_DUMP_UI=menu|menu:<tab>|bar|Game|View|Controls|Help|toast|intro[:pad|:touch][@<s>]|quit|layout[,...]  what that dump
  *                           shows (overlay.h: overlay_render_forced); several, comma-separated, write
- *                           one file each, f_<name>.ppm
+ *                           one file each, f_<name>.ppm (':' in a name written as '-')
+ *       RECOMP_OVERLAY_DUMP_SIZE=WxH  that dump as in a window of W x H: the frame fitted (dump_fit.h), the menu at W x H
  */
 #include <SDL3/SDL.h>
 #include "gpulock.h"   /* every SDL submit/fence call below is the locked one: Homebrew SDL 3.4.16's Metal fence race, see that header */
@@ -40,8 +41,10 @@
 #include "hle.h"
 #include "metrics.h"
 #include "settings.h"
+#include "pad_bind.h"
 #include "overlay.h"
 #include "audio_pace.h"
+#include "dump_fit.h"
 
 enum { SELECT = 0x1, START = 0x8, UP = 0x10, RIGHT = 0x20, DOWN = 0x40, LEFT = 0x80, LTRIG = 0x100, RTRIG = 0x200,
        TRIANGLE = 0x1000, CIRCLE = 0x2000, CROSS = 0x4000, SQUARE = 0x8000,
@@ -176,6 +179,48 @@ void window_kb_bind(int i, SDL_Keycode k) {   /* the menu's Rebind: that action 
 }
 void window_kb_reset(void) { for (int i = 0; i < KB_N; i++) settings_set_str(kb_binds[i].key, kb_binds[i].def); settings_save(); kb_reload(); }
 int window_kbm_active(void) { return kbm_on; }
+/* U11: the pad -> Vita bindings (settings key, label, the Vita bit); the pad button itself lives in pad_map, from
+ * the pad_bind_* settings ("" = the built-in default, "none" = unbound). pad_bind.c owns the mapping; this is the
+ * settings table and the menu's flow (window_pad_*: a Change/Reset like the keys, "a button another action had is
+ * taken from it"). Guide and the Back+Start combo stay the menu's -- a nameless button is refused in the bind. */
+typedef struct { const char *key, *label; uint32_t bit; } PadBind;
+static const PadBind pad_binds[] = {
+	{"pad_bind_cross", "Cross", CROSS}, {"pad_bind_circle", "Circle", CIRCLE},
+	{"pad_bind_square", "Square", SQUARE}, {"pad_bind_triangle", "Triangle", TRIANGLE},
+	{"pad_bind_start", "Start", START}, {"pad_bind_select", "Select", SELECT},
+	{"pad_bind_up", "D-pad up", UP}, {"pad_bind_down", "D-pad down", DOWN},
+	{"pad_bind_left", "D-pad left", LEFT}, {"pad_bind_right", "D-pad right", RIGHT},
+	{"pad_bind_l3", "L3", L3}, {"pad_bind_r3", "R3", R3},
+};
+enum { PAD_N = (int)(sizeof pad_binds / sizeof pad_binds[0]) };
+static int pad_map[PADB_N];
+static void pad_reload(void) {   /* the bindings from settings (at start, and with the keys' reload) */
+	for (int i = 0; i < PADB_N; i++) {
+		char b[24]; const char *name = settings_str(pad_binds[i].key, "", b, sizeof b);
+		if (!name[0]) pad_map[i] = pad_bind_default(i);
+		else if (!strcmp(name, "none")) pad_map[i] = -1;
+		else { int btn = pad_bind_name_button(name); pad_map[i] = btn >= 0 ? btn : pad_bind_default(i); }
+	}
+}
+int window_pad_count(void) { return PAD_N; }
+const char *window_pad_label(int i) { return i >= 0 && i < PAD_N ? pad_binds[i].label : ""; }
+const char *window_pad_button_name(int i) {
+	if (i < 0 || i >= PAD_N) return "";
+	if (pad_map[i] < 0) return "none";
+	const char *n = pad_bind_button_name(pad_map[i]);
+	return n ? n : "none";
+}
+int window_pad_bind(int i, int button) {   /* the menu's Change: that action now on this button (a button another
+                                            * action had is taken from it). 1 = bound; 0 = refused (Guide, the
+                                            * shoulders and anything else nameless: the menu's or the touch rules') */
+	if (i < 0 || i >= PAD_N || !pad_bind_button_name(button)) return 0;
+	for (int j = 0; j < PAD_N; j++) if (j != i && pad_map[j] == button) { pad_map[j] = -1; settings_set_str(pad_binds[j].key, "none"); }
+	pad_map[i] = button;
+	settings_set_str(pad_binds[i].key, pad_bind_button_name(button));
+	settings_save();
+	return 1;
+}
+void window_pad_reset(void) { for (int i = 0; i < PAD_N; i++) settings_set_str(pad_binds[i].key, ""); settings_save(); pad_reload(); }
 /* a game's raw-look hook, once per game frame: the mouse's motion since its last call, in counts (y down),
  * and whether the mouse is looking at all (0: nothing to apply, the deltas are 0) */
 /* RECOMP_INPUT_MOUSE="from-to:dx,dy;...": mouse counts per call over presented-frame ranges -- a headless
@@ -240,9 +285,17 @@ void window_set_fullscreen(int on) {
 	if (win) SDL_SetWindowFullscreen(win, on != 0);
 	settings_set_int("fullscreen", on != 0); settings_save();
 }
-/* ---- wider aspect ratios (settings "aspect_ratio": native | 21:9 | 32:9 | window): the factor k the game's
+/* the windowed window at n times the Vita's 960x544 (U9's "Window size": the menu's Display page; windowed only --
+ * the same direct call on the window's thread as window_set_fullscreen) */
+void window_set_size(int mult) {
+	if (mult < 1 || mult > 4 || !win) return;
+	SDL_SetWindowSize(win, 960 * mult, 544 * mult);
+}
+/* ---- wider aspect ratios (settings "aspect_ratio": native | 16:10 | 3:2 | 21:9 | 32:9 | window): the factor k the game's
  * horizontal view is widened by -- its camera hook (hooks.c, aspect_widen) builds the projection that
  * much wider into the same 960x544 frame, and the window shows that frame k times wider than native.
+ * An explicit ratio may also be NARROWER than native (16:10, 3:2, 4:3: a taller window, the sides crop;
+ * the window mode stays the old behaviour -- narrower than native: native, letterboxed).
  * Only for a game whose conf declares such a hook (RECOMP_ASPECT_HOOK=1 in its RUN_ENV): without one the
  * picture would only be stretched. 1 = native (960:544, 1.765:1). */
 static volatile uint32_t win_pw, win_ph;   /* the swapchain's size in pixels, as the present loop last saw it */
@@ -252,10 +305,14 @@ float window_aspect_widen(void) {
 	static const char *env = (const char *)-1; if (env == (const char *)-1) env = getenv("RECOMP_ASPECT");   /* (read once: this runs per draw) */
 	char b[16]; if (env) snprintf(b, sizeof b, "%s", env); else settings_str("aspect_ratio", "native", b, sizeof b);   /* RECOMP_ASPECT wins (headless tests) */
 	const float native = 960.0f / 544.0f;
-	float a = !strcmp(b, "21:9") ? 21.0f / 9.0f : !strcmp(b, "32:9") ? 32.0f / 9.0f : 0;
+	float a = !strcmp(b, "21:9") ? 21.0f / 9.0f : !strcmp(b, "32:9") ? 32.0f / 9.0f
+	        : !strcmp(b, "16:10") ? 16.0f / 10.0f : !strcmp(b, "3:2") ? 3.0f / 2.0f
+	        : !strcmp(b, "4:3") ? 4.0f / 3.0f : 0;
+	int explicit_ratio = a > 0;   /* only an explicit ratio may be narrower than native */
 	if (!strcmp(b, "window") && win_pw && win_ph) a = (float)win_pw / (float)win_ph;
 	float k = a > 0 ? a / native : 1.0f;
-	return k < 1.02f ? 1.0f : k > 2.5f ? 2.5f : k;   /* narrower than native: native (letterboxed as before) */
+	if (!explicit_ratio && k < 1.02f) k = 1.0f;
+	return k < 0.75f ? 0.75f : k > 2.5f ? 2.5f : k;
 }
 /* the visible source sub-rect (sx,sy,sw,sh: fit/stretch show it all; fill crops it, centred, to the
  * window's own aspect) and where it lands in the window (dx,dy,dw,dh) -- source and window sizes in
@@ -459,10 +516,13 @@ void *window_handle(void) { return win; }
 static SDL_AudioStream *streams[8];
 static uint32_t afreq[8], achan[8];
 static int adev_frames[8];   /* each port's device buffer, in the port's sample frames (0: unknown -- the pacing keeps its old margin) */
-static int nstreams;
+static int nstreams;   /* slots ever used; a slot below it with no stream was released (audio_close) */
+static int av_applied[8];   /* (defined with its initialiser below, at the A/V sync) */
 int audio_open(uint32_t freq, uint32_t channels, uint32_t samples) {
 	(void)samples;
-	if (!active || nstreams >= 8) return 0;
+	/* (HLE-PORT-01) the first free stream slot: a released port's slot is taken again */
+	int slot = 0; while (slot < nstreams && streams[slot]) slot++;
+	if (!active || slot >= 8) return 0;
 	if (!SDL_WasInit(SDL_INIT_AUDIO) && !SDL_InitSubSystem(SDL_INIT_AUDIO)) return 0;
 	SDL_AudioSpec want = {SDL_AUDIO_S16, (int)channels, (int)freq};
 	/* the device's own buffer, in sample frames (before the first stream opens it): small, so what the
@@ -475,12 +535,18 @@ int audio_open(uint32_t freq, uint32_t channels, uint32_t samples) {
 		SDL_AudioSpec ds; int frames = 0;
 		if (SDL_GetAudioDeviceFormat(SDL_GetAudioStreamDevice(s), &ds, &frames)) {
 			/* in the stream's own format: the device's frames at the device's rate, as many at the port's rate */
-			adev_frames[nstreams] = ds.freq > 0 ? (int)((int64_t)frames * (int64_t)freq / ds.freq) : frames;
-			if (getenv("RECOMP_AUDIO_PAD_LOG")) fprintf(stderr, "    audio device for port %d: %d Hz, %d ch, %d sample frames per buffer\n", nstreams + 1, ds.freq, ds.channels, frames);
+			adev_frames[slot] = ds.freq > 0 ? (int)((int64_t)frames * (int64_t)freq / ds.freq) : frames;
+			if (getenv("RECOMP_AUDIO_PAD_LOG")) fprintf(stderr, "    audio device for port %d: %d Hz, %d ch, %d sample frames per buffer\n", slot + 1, ds.freq, ds.channels, frames);
 		}
 	}
-	streams[nstreams] = s; afreq[nstreams] = freq; achan[nstreams] = channels;
-	return ++nstreams;   /* 1-based handle; 0 means "failed to open" to callers */
+	streams[slot] = s; afreq[slot] = freq; achan[slot] = channels; av_applied[slot] = -1;
+	if (slot == nstreams) nstreams++;
+	return slot + 1;   /* 1-based handle; 0 means "failed to open" to callers */
+}
+/* (HLE-PORT-01) sceAudioOutReleasePort: the port's stream closes and its slot is free for the next open */
+void audio_close(int dev) {
+	if (dev < 1 || dev > nstreams || !streams[dev - 1]) return;
+	SDL_DestroyAudioStream(streams[dev - 1]); streams[dev - 1] = NULL;
 }
 /* ---- automatic A/V sync: the audio held back so that sound and picture of one moment of game time come
  * out together, from measured terms (no per-game or per-frame-rate tuning):
@@ -507,7 +573,7 @@ static int av_auto_delay(int port) {
 	return av_applied[port];
 }
 void audio_output(int dev, const void *buf, uint32_t bytes) {
-	if (dev < 1 || dev > nstreams) return;
+	if (dev < 1 || dev > nstreams || !streams[dev - 1]) return;
 	SDL_AudioStream *s = streams[dev - 1];
 	/* the overlay is open, or the menu bar's Game > Pause is on: the game is paused (display.c's vblank
 	 * wait parks it; see that file's comment), but a buffer already queued before the pause would
@@ -575,7 +641,7 @@ void audio_output(int dev, const void *buf, uint32_t bytes) {
 	}
 	SDL_PutAudioStreamData(s, buf, (int)bytes);
 	{	uint32_t ms = 0;
-		for (int i = 0; i < nstreams; i++) { int q = SDL_GetAudioStreamQueued(streams[i]); uint32_t bps = achan[i] * 2 * (afreq[i] / 1000); if (bps) ms += (uint32_t)q / bps; }
+		for (int i = 0; i < nstreams; i++) { if (!streams[i]) continue; int q = SDL_GetAudioStreamQueued(streams[i]);   /* (a released port's slot: no stream) */ uint32_t bps = achan[i] * 2 * (afreq[i] / 1000); if (bps) ms += (uint32_t)q / bps; }
 		metrics_set_audio(ms, (uint32_t)nstreams, underruns);
 	}
 	/* pacing: the call returns once at most `depth` buffers wait behind the one playing -- the Vita's
@@ -732,6 +798,17 @@ static void overlay_dump_maybe(uint32_t base, uint32_t w, uint32_t h, uint32_t p
 	uint8_t *tmp = malloc(4u * w * h);
 	if (!tmp) return;
 	for (uint32_t y = 0; y < h; y++) memcpy(tmp + 4u * w * y, G(base + 4 * pitch * y), 4u * w);
+	/* RECOMP_OVERLAY_DUMP_SIZE=WxH: the menu as it looks in a window of that size -- the frame fitted into W x H
+	 * first (dump_fit.h: aspect kept, centred, black bars), then everything below runs at W x H */
+	{	uint32_t W, H; const char *sz = getenv("RECOMP_OVERLAY_DUMP_SIZE");
+		if (sz && !dump_size_parse(sz, &W, &H)) fprintf(stderr, "RECOMP_OVERLAY_DUMP_SIZE: \"%s\" is not WxH (%d..%d each), using %ux%u\n", sz, DUMP_SIZE_MIN, DUMP_SIZE_MAX, w, h);
+		else if (sz && (W != w || H != h)) {
+			uint8_t *fit = malloc(4u * W * H);
+			if (!fit) { fprintf(stderr, "RECOMP_OVERLAY_DUMP_SIZE: out of memory for %ux%u\n", W, H); free(tmp); return; }
+			dump_fit(tmp, w, h, fit, W, H);
+			free(tmp); tmp = fit; w = W; h = H;
+		}
+	}
 	SDL_GPUTextureCreateInfo ci = { .type = SDL_GPU_TEXTURETYPE_2D, .format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
 		.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
 		.width = w, .height = h, .layer_count_or_depth = 1, .num_levels = 1, .sample_count = SDL_GPU_SAMPLECOUNT_1 };
@@ -776,7 +853,9 @@ static void overlay_dump_maybe(uint32_t base, uint32_t w, uint32_t h, uint32_t p
 		SDL_GPUFence *fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
 		if (fence) { SDL_WaitForGPUFences(gpu, true, &fence, 1); SDL_ReleaseGPUFence(gpu, fence); }
 		char out[600]; const char *dot = strrchr(path, '.');
-		if (several) snprintf(out, sizeof out, "%.*s_%s%s", (int)(dot ? dot - path : (long)strlen(path)), path, ui, dot ? dot : "");
+		/* the entry in the file name with ':' as '-' ("menu:Display" -> f_menu-Display.ppm): Windows refuses ':' in a name */
+		char tag[64]; snprintf(tag, sizeof tag, "%s", ui); for (char *q = tag; *q; q++) if (*q == ':') *q = '-';
+		if (several) snprintf(out, sizeof out, "%.*s_%s%s", (int)(dot ? dot - path : (long)strlen(path)), path, tag, dot ? dot : "");
 		else snprintf(out, sizeof out, "%s", path);
 		const uint8_t *px = SDL_MapGPUTransferBuffer(gpu, down, false);
 		FILE *f = px ? fopen(out, "wb") : 0;
@@ -821,16 +900,9 @@ void window_input_pad2(uint32_t *b, uint8_t s[4]) {
 	*b = (*b & ~(LTRIG | RTRIG)) | (v & LTRIG ? L1 : 0) | (v & RTRIG ? R1 : 0) | (v & PAD_L2 ? LTRIG : 0) | (v & PAD_R2 ? RTRIG : 0) | (v & (L3 | R3));
 }
 
-static uint32_t pad_bit(int b) {
-	switch (b) {
-	case SDL_GAMEPAD_BUTTON_SOUTH: return CROSS; case SDL_GAMEPAD_BUTTON_EAST: return CIRCLE;
-	case SDL_GAMEPAD_BUTTON_WEST: return SQUARE; case SDL_GAMEPAD_BUTTON_NORTH: return TRIANGLE;
-	case SDL_GAMEPAD_BUTTON_START: return START; case SDL_GAMEPAD_BUTTON_BACK: return SELECT;
-	case SDL_GAMEPAD_BUTTON_DPAD_UP: return UP; case SDL_GAMEPAD_BUTTON_DPAD_DOWN: return DOWN;
-	case SDL_GAMEPAD_BUTTON_DPAD_LEFT: return LEFT; case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: return RIGHT;
-	case SDL_GAMEPAD_BUTTON_LEFT_STICK: return L3; case SDL_GAMEPAD_BUTTON_RIGHT_STICK: return R3;
-	default: return 0;
-	}
+static uint32_t pad_bit(int b) {   /* (U11) the map: which Vita button this pad press is bound to */
+	int i = pad_bind_find(pad_map, b);
+	return i >= 0 ? pad_binds[i].bit : 0;
 }
 /* The two shoulder pairs, whichever physical pair each is ("shoulder_buttons": the triggers by default are pad_main).
  * pad_main: the game's L and R; with the touch cursor up (the other pair held) a press is the cursor's touch, like
@@ -849,7 +921,7 @@ static void pad_second(SDL_Gamepad *pad, int k, int dn) {
 	if (k) rb_held = dn; else lb_held = dn;
 	int m = rb_held ? 2 : lb_held ? 1 : 0;
 	if (m != cur_mode) { cur_cross = cur_trig[0] = cur_trig[1] = 0; cur2_on = 0; cur_used_l = cur_used_r = 0; }   /* a cursor touch (and the split) ends with its mode */
-	if (m && !cur_mode && pad && SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH)) { cur_cross = 1; buttons &= ~CROSS; }   /* Cross already held: it's the touch now, not Cross */
+	if (m && !cur_mode && pad && pad_map[PADB_CROSS] >= 0 && SDL_GetGamepadButton(pad, pad_map[PADB_CROSS])) { cur_cross = 1; buttons &= ~CROSS; }   /* Cross already held (on whatever button it is bound -- U11): it's the touch now, not Cross */
 	if (m && !cur_mode) for (int j = 0; j < 2; j++) if (j ? rtrig_on : ltrig_on) { cur_trig[j] = trig_touch[j] = 1; buttons &= ~(j ? RTRIG : LTRIG); }   /* L or R already held: the touch too */
 	cur_mode = m;
 	cur_down = m && (cur_cross || cur_trig[0] || cur_trig[1]);
@@ -930,7 +1002,9 @@ void window_run(void *(*fn)(void *), void *arg) {
 		 * refresh too. Killzone's CPU reads of its exposure target waited ~6 ms each: 40 fps windowed against 66 headless
 		 * (RTX laptop, 2026-10-26), 47 with mailbox. Mailbox doesn't block, so this loop paces itself (self_paced, below).
 		 * Metal blocks the CPU in nextDrawable instead, not the queue: vsync there. RECOMP_PRESENT_MODE=fifo|mailbox|immediate */
+		char pm_set[16];
 		const char *pe = getenv("RECOMP_PRESENT_MODE"), *dv = SDL_GetGPUDeviceDriver(gpu);
+		if (!pe) { settings_str("present_mode", "", pm_set, sizeof pm_set); if (pm_set[0]) pe = pm_set; }   /* (U9: the menu's Presentation choice, read at start; RECOMP_PRESENT_MODE still wins) */
 		/* (with mailbox, Killzone at 3x and 21:9 lost the device in about half its runs: the FRAGCOLOR copy, a blit since,
 		 * gfx_gpu.c fetch_blit) */
 		SDL_GPUPresentMode pm = pe ? (!strcmp(pe, "immediate") ? SDL_GPU_PRESENTMODE_IMMEDIATE : !strcmp(pe, "mailbox") ? SDL_GPU_PRESENTMODE_MAILBOX : SDL_GPU_PRESENTMODE_VSYNC)
@@ -958,7 +1032,7 @@ void window_run(void *(*fn)(void *), void *arg) {
 	if (settings_int("fullscreen", 0)) SDL_SetWindowFullscreen(win, true);
 	if (gpu) overlay_init(gpu, win, SDL_GetGPUSwapchainTextureFormat(gpu, win));
 	SDL_Gamepad *pad = 0;
-	int pad_back = 0, pad_start = 0, pad_combo_latch = 0;
+	int pad_back = 0, pad_start = 0, pad_combo_latch = 0, pad_start_solo = 0;   /* (U12c) solo: Start pressed and released with no Select */
 	uint64_t last_overlay_t = 0;
 	active = 1;
 	Game g = {fn, arg};
@@ -985,13 +1059,19 @@ void window_run(void *(*fn)(void *), void *arg) {
 			 * closed. Opening (or re-opening by the same gamepad combo) clears whatever buttons/touch
 			 * were down so the game never sees them as still held on resume. */
 			if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F10) { overlay_toggle(); if (overlay_is_open()) { buttons = 0; touch_down = 0; gamepad_touch_release(); } }
-			if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_ESCAPE) { if (overlay_is_open()) overlay_close(); else overlay_bar_dismiss(); }   /* (closed: Escape hides the menu bar and its menus) */
+			if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_ESCAPE) { if (overlay_is_open()) { if (!overlay_modal_open()) overlay_close(); } else overlay_bar_dismiss(); }   /* (closed: Escape hides the menu bar and its menus; a modal up: it cancels instead -- U6) */
 			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE) { overlay_toggle(); if (overlay_is_open()) { buttons = 0; touch_down = 0; gamepad_touch_release(); } }
 			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_BACK) pad_back = 1;
 			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_UP && e.gbutton.button == SDL_GAMEPAD_BUTTON_BACK) { pad_back = 0; pad_combo_latch = 0; }
-			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_START) pad_start = 1;
-			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_UP && e.gbutton.button == SDL_GAMEPAD_BUTTON_START) { pad_start = 0; pad_combo_latch = 0; }
-			if (pad_back && pad_start && !pad_combo_latch) { pad_combo_latch = 1; overlay_toggle(); if (overlay_is_open()) { buttons = 0; touch_down = 0; gamepad_touch_release(); } }
+			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_START) { pad_start = 1; pad_start_solo = !pad_back; }
+			/* (U12c) Start alone, with the menu up, resumes (Start+Select opened it; a chord's Start never counts) */
+			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_UP && e.gbutton.button == SDL_GAMEPAD_BUTTON_START) {
+				if (pad_start_solo && overlay_is_open() && !overlay_modal_open()) overlay_close();
+				pad_start = 0; pad_combo_latch = 0; pad_start_solo = 0;
+			}
+			/* Start + Select (Back on an Xbox pad, Create/Share on a DualSense), either order: the menu opens or closes
+			 * (for pads whose PS / Guide button the system keeps, e.g. the Game Bar or Steam) */
+			if (pad_back && pad_start && !pad_combo_latch) { pad_combo_latch = 1; pad_start_solo = 0; overlay_toggle(); if (overlay_is_open()) { buttons = 0; touch_down = 0; gamepad_touch_release(); } }
 			/* exclusive while open: the menu gets every key/mouse/gamepad event instead of the game
 			 * (which is paused anyway -- display.c) */
 			if (overlay_is_open()) { overlay_process_event(&e); continue; }
@@ -1062,7 +1142,7 @@ void window_run(void *(*fn)(void *), void *arg) {
 				if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER || b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) {
 					const int k = b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER;
 					if (shoulders_swapped) pad_main(pad, k, dn); else pad_second(pad, k, dn);
-				} else if (b == SDL_GAMEPAD_BUTTON_SOUTH && (cur_mode || cur_down || cur_cross)) {
+				} else if (b == pad_map[PADB_CROSS] && pad_map[PADB_CROSS] >= 0 && (cur_mode || cur_down || cur_cross)) {
 					cur_cross = dn && cur_mode;            /* Cross is the touch while a bumper is held */
 					cur_down = cur_mode && (cur_cross || cur_trig[0] || cur_trig[1]);
 					if (!dn) buttons &= ~CROSS;            /* (a Cross pressed before the bumper, let go after) */
@@ -1146,7 +1226,7 @@ void window_run(void *(*fn)(void *), void *arg) {
 		{	/* keyboard + mouse, once a loop: which scheme, the capture, WASD as the left stick, the look's stand-in */
 			static uint64_t last; uint64_t t = now_us(); double dt = last ? (t - last) / 1e6 : 0; last = t;
 			if (dt > 0.1) dt = 0.1;
-			static int loaded; if (!loaded) { loaded = 1; kb_reload(); }
+			static int loaded; if (!loaded) { loaded = 1; kb_reload(); pad_reload(); }
 			char mb[8]; const char *mode = settings_str("input_mode", "auto", mb, sizeof mb);
 			int on = !strcmp(mode, "kbm") ? 1 : !strcmp(mode, "pad") ? 0 : kbm_auto;
 			const int pstv = display_pstv_active();   /* the PS TV layout is a controller's only: no keyboard-and-mouse scheme, no capture */

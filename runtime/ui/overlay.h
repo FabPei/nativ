@@ -26,6 +26,9 @@ void overlay_toast(const char *msg, double seconds);   /* (no title) */
  * question -- and the overlay is drawing it: window.c then routes the keyboard to the overlay instead of the
  * game, drops the mouse capture and lets go of what was held (the game is polling the dialog, not the pad) */
 int overlay_dialog_active(void);
+/* overlay_modal_open: one of our modal dialogs is up (the menu's "Reset all settings…"): window.c must leave Esc
+ * to it, so the dialog cancels instead of the whole menu closing */
+int overlay_modal_open(void);
 
 /* once, after the SDL_GPUDevice (and, in windowed mode, the SDL_Window) exist. `window` is the real
  * window in interactive mode, or NULL for a headless one-shot render (RECOMP_OVERLAY_DUMP below) --

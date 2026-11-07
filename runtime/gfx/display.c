@@ -15,6 +15,7 @@
 #include <sched.h>   /* sched_yield: vb_sleep_until */
 #include <math.h>
 #include "hle.h"
+#include "hle_small.h"
 #include "gfx.h"
 #include "metrics.h"
 #include "settings.h"
@@ -440,14 +441,24 @@ void audio_output(int dev, const void *buf, uint32_t bytes);
 static uint64_t port_next[8];
 static uint32_t port_vol[8][2];   /* sceAudioOutSetVolume: 0..0x8000 (SCE_AUDIO_VOLUME_0DB) per channel */
 static void h_audio_open(Cpu *c) {   /* (type, samples per buffer, frequency, mode) */
-	for (int i = 0; i < 8; i++) if (!port_len[i]) {
-		port_len[i] = A1; port_freq[i] = A2 ? A2 : 48000; port_ch[i] = A3 == 0 ? 1 : 2;   /* mode 0 mono, 1 stereo */
-		port_vol[i][0] = port_vol[i][1] = 0x8000;
-		port_dev[i] = audio_open(port_freq[i], port_ch[i], A1);
-		fprintf(stderr, "    audio port %d: %u samples at %u Hz, mode %u\n", i, A1, A2, A3);
-		RET(i + 1); return;
-	}
-	RET(0x80260005u);
+	const int i = hle_audio_port_free_slot(port_len);
+	if (i < 0) { RET(HLE_AUDIO_ERR_PORT_FULL); return; }
+	port_len[i] = A1; port_freq[i] = A2 ? A2 : 48000; port_ch[i] = A3 == 0 ? 1 : 2;   /* mode 0 mono, 1 stereo */
+	port_vol[i][0] = port_vol[i][1] = 0x8000; port_next[i] = 0;
+	port_dev[i] = audio_open(port_freq[i], port_ch[i], A1);
+	fprintf(stderr, "    audio port %d: %u samples at %u Hz, mode %u\n", i, A1, A2, A3);
+	RET(i + 1);
+}
+/* (HLE-PORT-01) sceAudioOutReleasePort(port): the slot is free again, its host stream closed. A placeholder before --
+ * a game that opens a port per scene or movie ran out after 8 opens (PORT_FULL) and went silent */
+void audio_close(int dev);
+static void h_audio_release(Cpu *c) {
+	const int i = hle_audio_port_slot(port_len, A0);
+	if (i < 0) { RET(HLE_AUDIO_ERR_INVALID_PORT); return; }
+	if (port_dev[i]) audio_close(port_dev[i]);
+	port_dev[i] = 0; port_len[i] = 0;
+	fprintf(stderr, "    audio port %d released\n", i);
+	RET(0);
 }
 /* RECOMP_AUDIO_WAV=<file>: port 1's output as a WAV file (the header's sizes are patched as it grows);
  * RECOMP_AUDIO_WAV_DIR=<dir>: every port's buffers, each to <dir>/port<i>_<rate>Hz_<ch>ch.wav in its
@@ -868,6 +879,9 @@ static void h_audio_adopt(Cpu *c) { RET(1); }
 static int pstv_looked, pstv_on;
 int display_pstv_looked(void) { return __atomic_load_n(&pstv_looked, __ATOMIC_RELAXED); }
 int display_pstv_active(void) { return __atomic_load_n(&pstv_on, __ATOMIC_RELAXED); }   /* (window.c: the shoulder pair that isn't L and R is the pad's L2/R2, not the touch cursor) */
+/* (HLE-PORT-01) sceKernelGetModel: a handheld, or a PS TV while that layout is on (the same switch the "2" pad reads
+ * follow). SCE_KERNEL_MODEL_VITA 0x10000 / VITATV 0x20000 (vitasdk); the placeholder answered 0, no model at all */
+static void h_kernel_model(Cpu *c) { RET(hle_kernel_model(__atomic_load_n(&pstv_on, __ATOMIC_RELAXED))); }
 static int pstv_mode(void) {   /* the game's look at boot, answered once */
 	static int v = -1;
 	if (v < 0) {
@@ -976,15 +990,36 @@ static void h_touch_panel_info(Cpu *c) {   /* front panel 0..1919 x 0..1087; bac
 /* sceDisplayGetRefreshRate(float *): the panel's nominal rate, 59.94 Hz, as the SDK reports it (a
  * theoretical value; the host's vblank grid above runs at 60) */
 static void h_refresh_rate(Cpu *c) { if (!A0) { RET(0x80290002u); return; } float hz = 59.94f; memcpy(G(A0), &hz, 4); RET(0); }   /* no pointer: SCE_DISPLAY_ERROR_INVALID_ADDR */
+/* sceDisplayGetVcount(): the vblank count since the display started, 60 a second on the host's monotonic
+ * clock (the panel grid above). Unimplemented before (the generic stub returned 0 forever): a game that
+ * polls the count for change hung at its first frame (the fixed-clock probe). The count is anchored at the
+ * first read, so it starts at 0 and only ever moves forward. */
+static uint64_t vcount0_us;
+static void h_vcount(Cpu *c) {
+	uint64_t s = __atomic_load_n(&vcount0_us, __ATOMIC_RELAXED);
+	if (!s) {
+		uint64_t now = raw_us() | 1;   /* never the "unset" 0 */
+		uint64_t prev = __atomic_exchange_n(&vcount0_us, now, __ATOMIC_RELAXED);
+		s = prev ? prev : now;
+	}
+	uint64_t now = raw_us();
+	RET((uint32_t)(((now > s ? now - s : 0) * 60) / 1000000));
+}
 /* sceCtrlSetSamplingMode(mode): 0 digital, 1 analog, 2 analog wide; returns the PREVIOUS mode (the
  * console starts digital). The sticks are reported either way -- a game that left the pad digital
  * doesn't read them */
 static uint32_t ctrl_mode;
 static void h_ctrl_mode(Cpu *c) { if (A0 > 2) { RET(0x80340001u); return; } RET(__atomic_exchange_n(&ctrl_mode, A0, __ATOMIC_RELAXED)); }   /* SCE_CTRL_ERROR_INVALID_ARG */
 /* sceTouchSetSamplingState(port, state): the host samples the panels whenever asked */
+static uint32_t touch_state[2];   /* (HLE-LIB-03) what the game set, read back by GetSamplingState (STOP at boot) */
 static void h_touch_sampling(Cpu *c) {   /* (port, state): logged (rare; a game booted as a PS TV never starts it: Killzone 1.12) */
 	fprintf(stderr, "    touch: panel %u sampling %s (frame %llu, from %#x)\n", A0, A1 ? "on" : "off", (unsigned long long)frames, c->r[14]);
-	RET(A0 > 1 ? 0x80350001u : 0);   /* SCE_TOUCH_ERROR_INVALID_ARG */
+	if (A0 > 1) { RET(0x80350001u); return; }   /* SCE_TOUCH_ERROR_INVALID_ARG */
+	__atomic_store_n(&touch_state[A0], A1, __ATOMIC_RELAXED); RET(0);
+}
+static void h_touch_get_sampling(Cpu *c) {   /* (port, SceTouchSamplingState *) */
+	if (A0 > 1 || !A1) { RET(0x80350001u); return; }
+	WR32(A1, __atomic_load_n(&touch_state[A0], __ATOMIC_RELAXED)); RET(0);
 }
 
 /* ---- SceMotion. With a gamepad's gyro live (motion.c: a DS4/DualSense's gyroscope and accelerometer,
@@ -1067,6 +1102,13 @@ static void h_motion_reset(Cpu *c) { if (motion_log()) fprintf(stderr, "    moti
 
 /* set-up calls with nothing to set up (motion tuning). SceSystemGesture is gesture.c */
 static void h_input_ok(Cpu *c) { RET(0); }
+/* (HLE-LIB-03) sceMotionSet/GetDeadband, sceMotionSet/GetTiltCorrection: the game's switch is kept and read back (both on
+ * at boot, as on the console); the host's gyro fusion (motion.c) doesn't apply them */
+static int mot_deadband = 1, mot_tilt = 1;
+static void h_motion_set_deadband(Cpu *c) { __atomic_store_n(&mot_deadband, A0 ? 1 : 0, __ATOMIC_RELAXED); RET(0); }
+static void h_motion_get_deadband(Cpu *c) { RET(__atomic_load_n(&mot_deadband, __ATOMIC_RELAXED)); }
+static void h_motion_set_tilt(Cpu *c) { __atomic_store_n(&mot_tilt, A0 ? 1 : 0, __ATOMIC_RELAXED); RET(0); }
+static void h_motion_get_tilt(Cpu *c) { RET(__atomic_load_n(&mot_tilt, __ATOMIC_RELAXED)); }
 
 const HleEntry hle_display[] = {
 	{"sceDisplaySetFrameBuf", h_set_frame_buf}, {"sceDisplayWaitVblankStart", h_wait_vblank},
@@ -1076,6 +1118,7 @@ const HleEntry hle_display[] = {
 	{"sceDisplayWaitSetFrameBufCB", h_wait_setbuf_cb}, {"sceDisplayWaitSetFrameBufMultiCB", h_wait_setbuf_multi_cb},
 	{"sceDisplayRegisterVblankStartCallback", h_register_vblank_cb}, {"sceDisplayUnregisterVblankStartCallback", h_unregister_vblank_cb},
 	{"sceAudioOutOpenPort", h_audio_open}, {"sceAudioOutOutput", h_audio_output}, {"sceAudioOutSetVolume", h_audio_set_volume},
+	{"sceAudioOutReleasePort", h_audio_release}, {"sceKernelGetModel", h_kernel_model},   /* (HLE-PORT-01) */
 	{"sceCtrlPeekBufferPositive", h_ctrl_peek}, {"sceTouchPeek", h_touch_peek},
 	{"sceCtrlReadBufferPositive", h_ctrl_read}, {"sceTouchRead", h_touch_read}, {"sceTouchGetPanelInfo", h_touch_panel_info},
 	/* the "2" reads (Killzone 1.12): the same SceCtrlData, on a handheld only from port 0 -- the PS TV's paired pads are ports 1-4,
@@ -1083,9 +1126,10 @@ const HleEntry hle_display[] = {
 	 * PS TV, which has no touch screen, and it never created its touch recognizers (no menu answered a tap) */
 	{"sceCtrlReadBufferPositive2", h_ctrl_read2}, {"sceCtrlPeekBufferPositive2", h_ctrl_peek2},
 	{"sceAudioOutGetAdopt", h_audio_adopt},   /* (port type): 1, the type can be opened -- only voice chat or the system's music takes one */
-	{"sceDisplayGetRefreshRate", h_refresh_rate},
-	{"sceCtrlSetSamplingMode", h_ctrl_mode}, {"sceCtrlSetSamplingModeExt", h_ctrl_mode}, {"sceTouchSetSamplingState", h_touch_sampling},
+	{"sceDisplayGetRefreshRate", h_refresh_rate}, {"sceDisplayGetVcount", h_vcount},
+	{"sceCtrlSetSamplingMode", h_ctrl_mode}, {"sceCtrlSetSamplingModeExt", h_ctrl_mode}, {"sceTouchSetSamplingState", h_touch_sampling}, {"sceTouchGetSamplingState", h_touch_get_sampling},
 	{"sceMotionStartSampling", h_motion_start}, {"sceMotionStopSampling", h_motion_stop}, {"sceMotionGetState", h_motion_state},
-	{"sceMotionGetBasicOrientation", h_motion_basic}, {"sceMotionReset", h_motion_reset}, {"sceMotionSetDeadband", h_input_ok}, {"sceMotionSetTiltCorrection", h_input_ok},
+	{"sceMotionGetBasicOrientation", h_motion_basic}, {"sceMotionReset", h_motion_reset}, {"sceMotionSetDeadband", h_motion_set_deadband}, {"sceMotionSetTiltCorrection", h_motion_set_tilt},
+	{"sceMotionGetDeadband", h_motion_get_deadband}, {"sceMotionGetTiltCorrection", h_motion_get_tilt},   /* (HLE-LIB-03) */
 	{0, 0},
 };

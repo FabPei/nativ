@@ -24,7 +24,7 @@ body:
     attributes:
       label: Nativ release tag
       description: The release you ran (from the GitHub release page or the launcher's About view).
-      placeholder: v0.1.5-fp2
+      placeholder: fp-v0.2.0
     validations:
       required: true
   - type: input

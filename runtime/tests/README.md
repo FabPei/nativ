@@ -46,7 +46,7 @@ A hang in that section fails after 30 seconds with every thread's scheduler stat
 supplies the pieces it needs from `main.c` and `display.c`: a 4 GiB guest memory block, the allocator and the
 function lookup.
 
-    cc -O1 -g -Wall -Wno-unused-function $INC kernel_test.c -o /tmp/kernel_test -lpthread && /tmp/kernel_test
+    cc -O1 -g -Wall -Wno-unused-function -D_GNU_SOURCE $INC kernel_test.c -o /tmp/kernel_test -lpthread && /tmp/kernel_test
 
 It prints `scheduler (RECOMP_SCHED=vita): N checks, 0 failed`, then `N checks, 0 failed`, and exits 0. A failed check
 names its line. Waiter tests use short sleeps to order threads, so a run takes about three seconds.
@@ -158,6 +158,98 @@ including `kernel.c` also link `../debug/waitstats.c` on branches carrying the k
 
 It prints `all passed` and exits 0. A failed check is named in the output.
 
+## The save dialog answers the controller: `savedlg_pad_test.cpp`
+
+Save dialog + gamepad (SAVE-DLG-01): the dialog's keys (Cross = choose, Circle = back, dpad/left stick =
+move) must work with a controller. The fixture drives the real dialog (`savedlg_ui.cpp`, included; the game's
+dialog state machine `apputil.c`, included as in `dlg_term_test.c`) with a headless ImGui context and feeds
+gamepad keys two ways: raw `io.AddKeyEvent` and the host's feed seam `savedlg_ui_gamepad_button/axis` (what
+`overlay_process_event` calls for the pad events routed to the overlay). Case 2 is the fail-before condition:
+a gamepad key fed without `ImGuiBackendFlags_HasGamepad` is cleared again every frame (imgui.cpp
+`UpdateKeyboardInputs`: "Clear gamepad data if disabled") and the step stays unanswered -- the bug behind a
+save dialog that ignored a controller whose pad connected after the overlay's first frame. Cases 3-6 are the
+pass-after contract: the feed marks the flag and the dialog answers the selected row, moves the selection,
+cancels on Circle, and keeps its arm rule (a key already held when the step appeared answers nothing).
+
+    c++ -O1 -g -w -D_GNU_SOURCE -std=c++17 $INC -I ../../third_party/imgui -I $SDL3_INC savedlg_pad_test.cpp \
+        ../../third_party/imgui/imgui.cpp ../../third_party/imgui/imgui_draw.cpp ../../third_party/imgui/imgui_tables.cpp \
+        ../../third_party/imgui/imgui_widgets.cpp -o /tmp/savedlg_pad_test -lpthread && /tmp/savedlg_pad_test
+
+It prints `all passed (7 ok)` and exits 0. `-DAPPUTIL_UNDER_TEST='\"<file>\"'` / `-DSAVEDLG_UI_UNDER_TEST='\"<file>\"'`
+compile against different copies for fail-before comparisons.
+
+## The full menu answers the whole controller: `menu_pad_test.cpp`
+
+A player report (the whole menu could not be driven by a controller): the host's pad feed
+(`savedlg_ui_gamepad_button/axis`, savedlg_ui.cpp) must deliver every pad button and axis as its ImGui key --
+L1 / R1 step the menu's pages, Triangle / Square are ImGui's nav keys -- and `savedlg_ui_gamepad_frame` must
+re-mark `ImGuiBackendFlags_HasGamepad` after the SDL3 backend's frame cleared it (its own pad list is empty, so
+`UpdateGamepads` drops the flag every frame and imgui.cpp wipes all gamepad keys). The fixture simulates that
+per-frame clear. Case 1: every button; case 2: triggers and both sticks; case 3: a held key survives three
+frames; case 4: gamepad nav moves the focus and Cross activates. Fail-before (`-DHAVE_GAMEPAD_FRAME=0` against
+the pre-U12c savedlg_ui.cpp): `20 FAILED`, exit 1.
+
+    c++ -O1 -g -w -D_GNU_SOURCE -std=c++17 $INC -I ../../third_party/imgui -I $SDL3_INC menu_pad_test.cpp         ../../third_party/imgui/imgui.cpp ../../third_party/imgui/imgui_draw.cpp ../../third_party/imgui/imgui_tables.cpp         ../../third_party/imgui/imgui_widgets.cpp -o /tmp/menu_pad_test -lpthread && /tmp/menu_pad_test
+
+It prints `all passed` and exits 0.
+
+## The IME dialog's text and card state: `imedlg_test.c`
+
+HLE-LIB-05: `imedlg.h` converts the guest's UTF-16 to UTF-8 and back (2-, 3-, 4-byte forms, surrogate pairs, never
+splitting a character at a buffer end) and `imedlg.c` holds the card's state: no UI -> open refuses (the dialog keeps
+the HLE-LIB-01 answer), open -> view -> answer -> take once, cancel keeps the initial text, close clears. `cdlg_test.c`
+covers the RUNNING state (BUSY, NOT_FINISHED for GetResult/Term, finish, Abort while running).
+
+    cc -O1 -g -Wall -I ../core imedlg_test.c ../core/imedlg.c -o /tmp/imedlg_test -lpthread && /tmp/imedlg_test
+
+It prints `all passed` and exits 0. The tests that include apputil.c also include `../core/imedlg.c`.
+
+## The trophy set and unlocking: `trophy_test.c`
+
+HLE-LIB-02: `trophy_parse.h` reads a game's TROPHY.TRP (entries by name; TROPCONF.SFM ids, grades, hidden, platinum
+links; TROP_xx.SFM names with XML entities decoded) and unlocks on a 128-bit flag array (platinum refused directly,
+ALREADY_UNLOCKED, the platinum unlocked with the last trophy linked to it). The TRP is built in the test, no game bytes.
+
+    cc -O1 -g -Wall -I ../core trophy_test.c -o /tmp/trophy_test && /tmp/trophy_test
+
+It prints `all passed` and exits 0.
+
+## The common dialogs' state machine: `cdlg_test.c`
+
+HLE-LIB-01: `cdlg.h` runs every SceCommonDialog kind not handled elsewhere (IME, NP message, NP profile, Facebook,
+Twitter, store checkout) through the console contract: Init (BUSY when in use) -> FINISHED -> GetResult -> Term, with
+Abort -> ABORTED and NOT_IN_USE / NOT_RUNNING outside a dialog. The IME answers OK, the PSN/social/store kinds
+USER_CANCELED. Fail-before is the runtime's record: sceNpMessageDialogGetStatus was polled 10000+ times as a placeholder.
+
+    cc -O1 -g -Wall -I ../core cdlg_test.c -o /tmp/cdlg_test && /tmp/cdlg_test
+
+It prints `all passed` and exits 0.
+
+## Small HLE contracts: `hle_small_test.c`
+
+HLE-PORT-01: the pure parts of `sceKernelGetModel` (0x10000 handheld / 0x20000 PS TV, vitasdk sysmem.h),
+the audio output port slots (`sceAudioOutReleasePort` frees a slot; 100 open/release cycles never hit PORT_FULL)
+and NGS patch output slots (`sceNgsVoiceGetOutputPatch`; -1 takes the first free slot). Fail-before is the runtime's
+own record: these imports were logged `not implemented -- returns 0`.
+
+    cc -O1 -g -Wall -I ../core hle_small_test.c -o /tmp/hle_small_test && /tmp/hle_small_test
+
+It prints `all passed` and exits 0.
+
+## sceDisplayGetVcount advances: `vcount_test.c`
+
+`DISP-01`: `sceDisplayGetVcount` was unimplemented (the generic stub returned 0 forever), so a game polling
+the count for change hung at its first frame. The handler (display.c, `hle_display[]`) reports the vblanks
+since the display started, 60 a second on the host's monotonic clock, anchored at the first read. The fixture
+checks the import is registered under its name, the first read is the anchor, two reads at least 1/60 s apart
+differ while the count only moves forward, and 500 ms read as >= 25 vblanks (lower bound only).
+
+    cc -O1 -g -w -D_GNU_SOURCE $INC -I $SDL3_INC -c ../gfx/display.c -o /tmp/disp.o && \
+        cc -O1 -g -w -D_GNU_SOURCE $INC -I $SDL3_INC vcount_test.c /tmp/disp.o -o /tmp/vcount_test -lpthread -lm && /tmp/vcount_test
+
+A fail-before run compiles an older copy of `display.c` in place of `../gfx/display.c` (the first check fails:
+the import is not registered). It prints `all passed (4 ok)` and exits 0.
+
 ## SceSysmodule's IsLoaded contract: `sysmodule_test.c`
 
 Checks `sceSysmoduleIsLoaded` / `LoadModule` / `UnloadModule` in `runtime/core/apputil.c`: a module is loaded (0)
@@ -227,3 +319,42 @@ shared mode) insert no silence after the start; nor do 1024-sample buffers or a 
 previous margin, depth x buffer) inserts ~50 a second in the 256/480 case -- the crackle measured live. Header-only:
 
     cc -O1 -g -Wall audio_pace_test.c -o /tmp/audio_pace_test && /tmp/audio_pace_test
+
+## Metal's scratch folders: `mtl_archive_test.m` (macOS)
+
+Checks the sweep in `runtime/gfx/mtl_archive.m`. Metal gives every binary archive a pipeline is added to a scratch
+folder (`com.apple.gpuarchiver/gpuarchiver-<hex>` in the user's cache folder) and never removes it; the archive keeps
+one per shader library, so a week of test runs once left 43 GB of them. The sweep removes the ones untouched for 20
+minutes. The test checks, in a temporary folder, that only idle `gpuarchiver-*` folders go. Then, with Metal itself, it
+checks the two facts the sweep relies on: the folder is where the sweep looks, and a written archive (and its file)
+still finds its pipelines once the folder is gone. A macOS update that changes either fails here.
+
+    clang -O1 -g -Wall -I ../gfx mtl_archive_test.m -framework Metal -framework Foundation -o /tmp/mtl_archive_test && /tmp/mtl_archive_test
+
+It prints `all passed`.
+
+## The menu dump at any window size: `dump_fit_test.c`
+
+`RECOMP_OVERLAY_DUMP_SIZE=WxH` (window.c's headless menu dump) shows the in-game menu as it looks in a window of
+that size: the game's frame is fitted into W x H (aspect kept, centred, opaque black bars, nearest neighbour), then
+the menu is drawn at W x H. The parser and the scaler are header-only in `runtime/ui/dump_fit.h`. The test checks
+the parser (`WxH`, 16..8192, nothing else accepted, outputs untouched on refusal), the fitted rectangle for
+1920x1088, 1920x1080 and 1280x800 from 960x544, and the scaler (2x2 into 4x4 blocks, into 6x4 with bars, same size
+a plain copy). No SDL:
+
+    cc -O1 -g -Wall -I ../ui dump_fit_test.c -o /tmp/dump_fit_test && /tmp/dump_fit_test
+
+It prints `all passed (17 ok)` and exits 0.
+
+## The in-game overlay's scale: `overlay_scale_test.c`
+
+`runtime/ui/ui_scale.h` gives the overlay's scale from the window height and the display's content scale (overlay.cpp's
+`render_frame` applies it to the base style through `ScaleAllSizes` and `FontSizeBase`, never `FontScaleDpi`: sizes
+pushed as `em * x` are already scaled). Up to 720 lines the scale is 1 (the menu was laid out for 960x544); above it
+grows with the height (1080 lines 1.5, 2160 lines 3); the content scale lifts the floor to 544 lines x scale; at most 4.
+The test checks 544, 720, 800, 1080, 2160 lines, a small window at 200 %, the height winning over the floor, the
+clamps, and an unknown (0) display scale. No SDL:
+
+    cc -O1 -g -Wall -I ../ui overlay_scale_test.c -o /tmp/overlay_scale_test -lm && /tmp/overlay_scale_test
+
+It prints `all passed (11 ok)` and exits 0.

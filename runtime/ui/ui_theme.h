@@ -9,6 +9,7 @@
 #ifndef ATIV_UI_THEME_H
 #define ATIV_UI_THEME_H
 #include "imgui.h"
+#include "ui_text.h"   /* (U12b) ui_tr for the toggle's Off/On */
 #include <cstdio>
 #include <initializer_list>
 #include <sys/stat.h>
@@ -53,7 +54,7 @@ inline ImFont *load_system_font(ImGuiIO &io) {
 	static const char *const faces[] = {"/System/Library/Fonts/SFNS.ttf", "/System/Library/Fonts/Helvetica.ttc", "C:\\Windows\\Fonts\\segoeui.ttf",
 		"/usr/share/fonts/noto/NotoSans-Regular.ttf", "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf",
 		"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/cantarell/Cantarell-VF.otf", 0};
-	for (int i = 0; faces[i]; i++) { struct stat st; if (stat(faces[i], &st) == 0) if (ImFont *f = io.Fonts->AddFontFromFileTTF(faces[i])) return f; }
+	for (int i = 0; faces[i]; i++) { struct stat st; if (stat(faces[i], &st) == 0) if (ImFont *f = io.Fonts->AddFontFromFileTTF(faces[i], 0, nullptr, io.Fonts->GetGlyphRangesDefault())) return f; }   /* (U12a: the default ranges -- Basic Latin + Latin-1 -- are the catalog's contract: English and German both; ui_text_test asserts every string stays in them) */
 	return io.Fonts->AddFontDefaultVector();
 }
 
@@ -64,12 +65,20 @@ inline bool primary_button(const char *label, ImVec2 size = ImVec2(0, 0)) {   /*
 	ImGui::PopStyleColor(4);
 	return r;
 }
-/* a choice of n as one joined control; true when it changes. ids: labels may carry "##" suffixes */
+/* a choice of n as one joined control; true when it changes. ids: labels may carry "##" suffixes.
+ * (2026-11-07: wraps to the next line when the row would overflow the column -- six widescreen
+ * segments clipped at 1280x800's narrower settings column before this.) */
 inline bool segmented(const char *const *labels, int n, int *v) {
 	bool ch = false;
 	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x * 0.25f, 0));
+	const float sp = ImGui::GetStyle().ItemSpacing.x, avail = ImGui::GetContentRegionAvail().x, x0 = ImGui::GetCursorPosX();
+	float xnext = x0;   /* where the next button would start on this line (after Button() the cursor is at the next line's start, so track it) */
 	for (int i = 0; i < n; i++) {
-		if (i) ImGui::SameLine();
+		ImVec2 ts = ImGui::CalcTextSize(labels[i]);
+		float w = ts.x + 2.0f * ImGui::GetStyle().FramePadding.x;
+		bool same = i && (xnext + w <= x0 + avail + 0.5f);
+		if (same) ImGui::SameLine();
+		float placed = same ? xnext : x0;
 		bool on = *v == i;
 		ImGui::PushStyleColor(ImGuiCol_Button, on ? with_alpha(accent, 0.18f) : card);
 		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, on ? with_alpha(accent, 0.24f) : card_hi);
@@ -77,12 +86,13 @@ inline bool segmented(const char *const *labels, int n, int *v) {
 		ImGui::PushStyleColor(ImGuiCol_Text, on ? accent : muted);
 		if (ImGui::Button(labels[i]) && !on) { *v = i; ch = true; }
 		ImGui::PopStyleColor(4);
+		xnext = placed + w + sp;
 	}
 	ImGui::PopStyleVar();
 	return ch;
 }
-inline bool toggle(const char *id, bool *on) {   /* Off / On as a segmented pair */
-	char a[64], b[64]; snprintf(a, sizeof a, "Off##%s", id); snprintf(b, sizeof b, "On##%s", id);
+inline bool toggle(const char *id, bool *on) {   /* Off / On as a segmented pair (U12b: the catalog's words) */
+	char a[64], b[64]; snprintf(a, sizeof a, "%s##%s", ui_tr("common.off"), id); snprintf(b, sizeof b, "%s##%s", ui_tr("common.on"), id);
 	const char *const ls[2] = {a, b};
 	int v = *on ? 1 : 0;
 	if (!segmented(ls, 2, &v)) return false;
@@ -109,21 +119,56 @@ inline void chip(const char *s, const ImVec4 &c) {   /* a small rounded label, t
 	ImGui::Dummy(ImVec2(ts.x + px * 2, ts.y + py * 2));
 }
 
-/* settings rows: rows_begin, then per setting row(label, explanation) and its control(s), then rows_end */
+/* settings rows: rows_begin, then per setting row(label, explanation) and its control(s), then rows_end.
+ * (U10) two_pane: a wide window shows the rows left and the hovered row's help right (build_ui decides; the rows
+ * then carry no inline explanation). help_label/help_text are what the right pane shows -- the page's first row's
+ * help until a row is hovered or its control focused, then sticky. */
+inline bool two_pane = false;
+inline const char *help_label = nullptr, *help_text = nullptr;
+inline const char *r_prev_label = nullptr, *r_prev_help = nullptr;
+inline float r_y0 = 0, r_x0 = 0, r_x1 = 0;
+inline void row_finish(void) {   /* the row above is complete: does it want the right pane? */
+	if (!two_pane || !r_prev_label) return;
+	if (ImGui::IsMouseHoveringRect(ImVec2(r_x0, r_y0), ImVec2(r_x1, ImGui::GetCursorScreenPos().y - ImGui::GetStyle().CellPadding.y))
+	    || ImGui::IsItemFocused()) {   /* (the last item is that row's control) */
+		help_label = r_prev_label; help_text = r_prev_help;
+	}
+	r_prev_label = nullptr;
+}
 inline bool rows_begin(const char *id) {
+	r_x0 = ImGui::GetCursorScreenPos().x; r_x1 = r_x0 + ImGui::GetContentRegionAvail().x;
 	if (!ImGui::BeginTable(id, 2, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX)) return false;
 	ImGui::TableSetupColumn("setting", ImGuiTableColumnFlags_WidthStretch, 1.0f);
 	ImGui::TableSetupColumn("control", ImGuiTableColumnFlags_WidthStretch, 1.15f);
 	return true;
 }
-inline void row(const char *label, const char *explanation = nullptr) {
+inline void row(const char *label, const char *explanation = nullptr, const char *note = nullptr) {
+	row_finish();   /* (U10) */
 	ImGui::TableNextRow(0, ImGui::GetFrameHeight() + ImGui::GetStyle().CellPadding.y * 2);
+	r_y0 = ImGui::GetCursorScreenPos().y;
 	ImGui::TableNextColumn();
 	ImGui::TextUnformatted(label);
-	if (explanation && *explanation) { ImGui::PushFont(nullptr, ImGui::GetFontSize() * 0.88f); muted_wrapped(explanation); ImGui::PopFont(); }
+	if (note && *note) {   /* (U7: a small muted mark -- "default", "next scene", "after restart") */
+		ImGui::SameLine(0, ImGui::GetFontSize() * 0.35f);
+		ImGui::PushFont(nullptr, ImGui::GetFontSize() * 0.82f);
+		ImGui::PushStyleColor(ImGuiCol_Text, muted);
+		ImGui::TextUnformatted(note);
+		ImGui::PopStyleColor();
+		ImGui::PopFont();
+	}
+	if (explanation && *explanation) {
+		if (two_pane) { if (!help_label) { help_label = label; help_text = explanation; } }
+		else { ImGui::PushFont(nullptr, ImGui::GetFontSize() * 0.88f); muted_wrapped(explanation); ImGui::PopFont(); }
+	}
 	ImGui::TableNextColumn();
+	r_prev_label = label; r_prev_help = explanation;
 }
-inline void rows_end(void) { ImGui::EndTable(); }
+inline void rows_end(void) { row_finish(); ImGui::EndTable(); }
+/* (U10) the right pane's content: the hovered row's label and its help */
+inline void help_pane(void) {
+	if (help_label) { ImGui::PushFont(nullptr, ImGui::GetFontSize() * 1.1f); ImGui::TextWrapped("%s", help_label); ImGui::PopFont(); ImGui::Dummy(ImVec2(0, ImGui::GetFontSize() * 0.35f)); }
+	if (help_text) { ImGui::PushStyleColor(ImGuiCol_Text, muted); ImGui::TextWrapped("%s", help_text); ImGui::PopStyleColor(); }
+}
 
 /* the logo, drawn (assets/brand/make.py has the same geometry as SVG). wordmark: "nativ" in lowercase monoline, the n
  * in the text colour and "ativ" (Vita, backwards) in amber, `height` px tall (its units: x -6..282, y 14..110), 3x as
