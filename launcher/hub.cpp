@@ -489,6 +489,12 @@ static std::string first_line(const std::string &path) {
 	std::string v = line; while (!v.empty() && (v.back() == '\n' || v.back() == '\r' || v.back() == ' ')) v.pop_back();
 	return v;
 }
+static std::vector<std::string> split_ws(const std::string &v) {   /* "A B  C" -> {A, B, C} */
+	std::vector<std::string> out; std::string cur;
+	for (char c : v) { if (c == ' ' || c == '	' || c == ',') { if (!cur.empty()) out.push_back(cur), cur.clear(); } else cur += c; }
+	if (!cur.empty()) out.push_back(cur);
+	return out;
+}
 static bool title_like(const char *s) {   /* PCSA00029: four letters, five digits */
 	if (strlen(s) != 9) return false;
 	for (int i = 0; i < 4; i++) if (s[i] < 'A' || s[i] > 'Z') return false;
@@ -501,6 +507,7 @@ static void library_scan(void) {
 	count_licences();
 	for (auto it = g_tex.begin(); it != g_tex.end();) it = it->second.t ? std::next(it) : g_tex.erase(it);   /* (retry art not found before) */
 	std::map<std::string, Game> by;
+	std::map<std::string, std::string> other_of;   /* a pack's OTHER_TITLES: another release's id -> the pack that plays it */
 	std::string packs = g_root + "/packs";
 	if (DIR *d = opendir(packs.c_str())) {
 		while (dirent *e = readdir(d)) {
@@ -516,6 +523,7 @@ static void library_scan(void) {
 			g.versions = p.versions;
 			g.update_note = pack_value(p, "UPDATE_NOTE");
 			g.region = pack_value(p, "REGION");
+			for (const std::string &o : split_ws(pack_value(p, "OTHER_TITLES"))) other_of[o] = n;
 		}
 		closedir(d);
 	}
@@ -526,6 +534,10 @@ static void library_scan(void) {
 			std::string w = dumps + "/" + e->d_name;
 			if (!exists(w + "/elf")) continue;   /* a scratch or analysis folder, not an imported game */
 			Game &g = by[e->d_name]; g.id = e->d_name;
+			/* a copy without its own pack plays with the pack listing it in OTHER_TITLES, as the pipeline does
+			 * (packconf.pack_for): that pack's name, main program and versions, the copy's own title id */
+			auto o = other_of.find(g.id);
+			if (!g.pack && o != other_of.end() && by.count(o->second)) { const std::string id = g.id; g = by[o->second]; g.id = id; }
 		}
 		closedir(d);
 	}
