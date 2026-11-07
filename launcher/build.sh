@@ -55,7 +55,12 @@ for s in $IMGUI/imgui.cpp $IMGUI/imgui_draw.cpp $IMGUI/imgui_tables.cpp $IMGUI/i
   if [[ ! -f $o || $s -nt $o ]]; then ($CXX -c $CXXFLAGS $IMFLAGS $s -o $o.$$ && mv -f $o.$$ $o && echo "  c++ ${s:t}") & fi
 done
 wait
-$CXX $CXXFLAGS -Wall -DREPO_ROOT="\"$ROOTDEF\"" $H/hub.cpp $ROOT/runtime/ui/ui_text.c $objs $SDL_LIBS $LINK -o $OUT
+# the menu string catalog is C: built as C (-x c) by the same driver, since clang refuses -std=c++17 on a .c file
+UITEXT=$IMGUIOBJ/ui_text.o
+if [[ ! -f $UITEXT || $ROOT/runtime/ui/ui_text.c -nt $UITEXT || $ROOT/runtime/ui/ui_text.h -nt $UITEXT ]]; then
+  $CXX -x c -c -O2 -w -I $ROOT/runtime/ui $SDL_CFLAGS $ROOT/runtime/ui/ui_text.c -o $UITEXT.$$ && mv -f $UITEXT.$$ $UITEXT && echo "  cc ui_text.c"
+fi
+$CXX $CXXFLAGS -Wall -DREPO_ROOT="\"$ROOTDEF\"" $H/hub.cpp $UITEXT $objs $SDL_LIBS $LINK -o $OUT
 [[ $TARGET == windows ]] && cp -f $SDLW/bin/SDL3.dll ${OUT:h}/
 [[ -n ${LT:-} ]] && cp -f $LT/SDL3/lib/libSDL3.so.0 ${OUT:h}/libSDL3.so.0.new$$ && mv -f ${OUT:h}/libSDL3.so.0.new$$ ${OUT:h}/libSDL3.so.0
 [[ -n ${MT:-} ]] && cp -f $MT/SDL3/lib/libSDL3.0.dylib ${OUT:h}/libSDL3.0.dylib.new$$ && mv -f ${OUT:h}/libSDL3.0.dylib.new$$ ${OUT:h}/libSDL3.0.dylib   # (whole: a running launcher keeps its file)
