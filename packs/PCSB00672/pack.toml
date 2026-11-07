@@ -7,7 +7,7 @@ ELF = "eboot.bin.elf"     # the main module (the decrypted eboot)
 # The game's own sce_module (libc: C runtime; libfios2: Sony's FIOS scheduler/dearchiver; libult: Sony's ULT
 # task scheduler) and the firmware's GXM + GPU services (GXM runs as Sony's code). Import coverage checked
 # at import -- modules named there get added here.
-MODULES = "libc libgxm_es4 libgpu_es4 libfios2 libult"
+MODULES = "libc libgxm_es4 libgpu_es4 libfios2 libult libSceJson"   # libSceJson: the firmware's JSON library (vs0/sys/external), translated like libc -- the game imports 50 sce::Json functions (HLE-LIB-04)
 TEST_FRAMES = 6000        # a boot probe: toward the game's menu (extended once the boot is characterised)
 
 [versions."1.00"]
