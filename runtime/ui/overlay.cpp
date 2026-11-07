@@ -54,6 +54,7 @@
 #include "savedlg.h"
 #include "ui_theme.h"
 #include "setting_defaults.h"   /* (U7) the shared defaults for the rows' "default" marks */
+#include "frame_rates.h"        /* the allowed rates the frame-rate rows offer */
 #include "ui_scale.h"
 #include "sysinfo.h"   /* the "Copy system info" text (U5) */
 #define STBI_NO_STDIO
@@ -104,6 +105,8 @@ int metrics_frame_times(float *ms, int max);       /* the full level's frame-tim
 extern "C" {
 const char *window_present_mode(void);   /* window.c: vsync, mailbox or immediate */
 int display_frame_rate_60(void);         /* display.c: the frame-rate setting */
+int display_frame_rate(void);            /* display.c: the rate the game runs at now (30 | 60 | 120) */
+int display_frame_rates_allowed(void);   /* display.c: the pack's allowed rates, a mask of frame_rates.h FR_* */
 int gfx_gpu_fsr_active(void);            /* gfx_gpu.c: FSR upscales the frame */
 /* settings.c */
 int settings_has(const char *key);
@@ -476,7 +479,11 @@ static void page_game(void) {
 	prefs_load();
 	if (!ui::rows_begin("game")) return;
 	ui::row(ui_tr("game.fps"), ui_tr("game.fps_help"), note_flt("frame_rate", P.fr));
-	{ static const char *const names[2] = {"30##fr", "60##fr"}; int v = P.fr >= 60; if (ui::segmented(names, 2, &v)) set_frame_rate(v ? 60 : 30); }
+	{	/* only the rates this game's pack allows (RECOMP_FRAME_RATES; frame_rates.h), the one it runs at selected */
+		static const char *const all[3] = {"30##fr", "60##fr", "120##fr"};
+		int l[3], n = fr_list(display_frame_rates_allowed(), l), cur = fr_effective(P.fr, display_frame_rates_allowed()), v = 0;
+		const char *names[3]; for (int i = 0; i < n; i++) { names[i] = all[l[i] >= 120 ? 2 : l[i] >= 60 ? 1 : 0]; if (l[i] == cur) v = i; }
+		if (ui::segmented(names, n, &v)) set_frame_rate(l[v]); }
 	if (game_option("fov")) {
 		ui::row(ui_tr("game.fov"), ui_tr("game.fov_help"));
 		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##fov", &P.fov, 0.75f, 1.5f, "%.2f×")) set_fov(P.fov);
@@ -917,8 +924,8 @@ static void menu_view(void) {
 	if (game_option("scenery_detail")) { ImGui::TextDisabled("%s", ui_tr("game.scen")); ImGui::SetNextItemWidth(170 * g_ui_scale); if (ImGui::SliderFloat("##scen", &P.scen, 1.0f, 8.0f, "%.1fx")) set_scen(P.scen); }
 	if (game_option("character_detail")) { ImGui::TextDisabled("%s", ui_tr("game.chr")); ImGui::SetNextItemWidth(170 * g_ui_scale); if (ImGui::SliderFloat("##chr", &P.chr, 1.0f, 8.0f, "%.1fx")) set_chr(P.chr); }
 	if (ImGui::BeginMenu(ui_tr("game.fps"))) {
-		if (ImGui::MenuItem("30", nullptr, P.fr < 60)) set_frame_rate(30);
-		if (ImGui::MenuItem(ui_tr("bar.fps60"), nullptr, P.fr >= 60)) set_frame_rate(60);
+		int l[3], n = fr_list(display_frame_rates_allowed(), l), cur = fr_effective(P.fr, display_frame_rates_allowed());
+		for (int i = 0; i < n; i++) if (ImGui::MenuItem(l[i] >= 120 ? ui_tr("bar.fps120") : l[i] >= 60 ? ui_tr("bar.fps60") : "30", nullptr, cur == l[i])) set_frame_rate(l[i]);
 		ImGui::EndMenu();
 	}
 	if (ImGui::BeginMenu(ui_tr("perf.osd"))) {
@@ -1178,7 +1185,7 @@ static void build_perf_full(ImDrawList *dl) {
 	dl_[nd] = ui_tr("sys.window"); if (ww && wh) std::snprintf(dv[nd++], 64, "%ux%u", ww, wh); else std::snprintf(dv[nd++], 64, "-");
 	dl_[nd] = ui_tr("sys.game_image"); std::snprintf(dv[nd++], 64, "%dx%d (%dx)", 960 * rs, 544 * rs, rs);
 	dl_[nd] = ui_tr("sys.upscaling"); std::snprintf(dv[nd++], 64, "%s", gfx_gpu_fsr_active() ? "FSR" : "bilinear");
-	dl_[nd] = ui_tr("sys.frame_limit"); std::snprintf(dv[nd++], 64, "%d FPS", display_frame_rate_60() ? 60 : 30);
+	dl_[nd] = ui_tr("sys.frame_limit"); std::snprintf(dv[nd++], 64, "%d FPS", display_frame_rate());
 	dl_[nd] = ui_tr("sys.presentation"); std::snprintf(dv[nd++], 64, "%s", window_present_mode());
 	dl_[nd] = ui_tr("sys.renderer"); std::snprintf(dv[nd++], 64, "%s", m.gpu_backend ? "GPU" : "software");
 
