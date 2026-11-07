@@ -21,6 +21,15 @@ env:
   NATIV_RELEASE_SKIP_BUILDS: "1"
 
 jobs:
+  # The runtime tests that need no game, window or GPU (runtime/tests/run_ci_tests.sh): a tag only becomes a draft
+  # release when they pass.
+  tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+      - name: runtime tests
+        run: bash runtime/tests/run_ci_tests.sh
+
   # The AppImage (made on Linux) and the Windows zip (cross-built on Linux, as upstream makes it), each in its own job so
   # they run side by side (one job did both, one after the other: 2m16s of packaging in the 3m21s of a warm run,
   # 2026-11-06). Both restore and, on a miss, build both toolchains: they share one cache entry, which must hold both.
@@ -181,7 +190,7 @@ jobs:
 
   draft-release:   # only for a pushed tag: every download and SHA256SUMS on a draft release
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [linux, windows, mac]
+    needs: [tests, linux, windows, mac]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

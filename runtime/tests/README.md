@@ -5,6 +5,9 @@ the firmware's behaviour. Run each one from this folder. They all share the runt
 
     INC="-I ../core -I ../gfx -I ../audio -I ../media -I ../input -I ../net -I ../ui -I ../platform -I ../debug -I ../../recompiler -I ../.."
 
+`run_ci_tests.sh` builds and runs every test below that needs no game, window, SDL or GPU, with the lines given
+here, and fails on any compile error or failed check; the release workflow runs it on Linux.
+
 ## The kernel: `kernel_test.c`
 
 Checks `runtime/core/kernel.c`, the thread manager, against the firmware's semantics and error codes. It covers:

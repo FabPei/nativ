@@ -10,6 +10,10 @@
 #include <sys/mman.h>
 #include <stdio.h>
 #include <stdlib.h>
+/* rt.h's store hooks (the debug write watch), unused here */
+#include <stdint.h>
+uint32_t recomp_watch_lo = 0, recomp_watch_hi = 0;
+void recomp_watch_write(uint32_t a, uint32_t v, int width) { (void)a; (void)v; (void)width; }
 #include "../media/jpeg.c"
 
 uint8_t *recomp_mem;
