@@ -1,0 +1,93 @@
+name: Game bug
+description: A game crashes, hangs, draws something wrong or runs slowly at one point
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For how far a whole game gets, use **Game report** instead. For the launcher or the tools, use **Launcher or tools bug**.
+
+        **Never attach or link game files, firmware or keys.** The launcher's **Report a problem…** zip holds only logs, settings and any F5 pictures of the game's last frames. A save goes only in the last field, and only when the bug needs one to reach. Requests for game files are closed.
+  - type: checkboxes
+    id: searched
+    attributes:
+      label: Existing issues
+      options:
+        - label: I [searched the open and closed issues](https://github.com/FabPei/nativ/issues?q=is%3Aissue) for this problem.
+          required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      options:
+        - Crash (the game closes)
+        - Graphics (missing, wrong or flickering)
+        - Performance (slow or uneven at one point)
+        - Hang (freezes or never finishes loading)
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: release
+    attributes:
+      label: Nativ release
+      description: In the game, F10 → Help → About shows "Nativ <release>".
+      placeholder: fp-v0.2.0
+    validations:
+      required: true
+  - type: input
+    id: last-good
+    attributes:
+      label: Last release that worked
+      description: If an earlier release did not have this problem, which one. Leave empty if you don't know.
+  - type: textarea
+    id: sysinfo
+    attributes:
+      label: System info
+      description: In the game, F10 → Help → **Copy system info**, then paste here. On a Steam Deck, say LCD or OLED.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: game
+    attributes:
+      label: Game, title ID and version
+      description: The game's name, its title ID and version, and whether its update is installed.
+      placeholder: Soul Sacrifice Delta, PCSF00532, 1.00
+    validations:
+      required: true
+  - type: textarea
+    id: when
+    attributes:
+      label: When does it happen?
+      description: Where in the game (chapter, level, menu, cutscene) and what you see.
+    validations:
+      required: true
+  - type: dropdown
+    id: blocker
+    attributes:
+      label: Can you keep playing?
+      options:
+        - "Yes: it happened once, or I can avoid it"
+        - "No: it happens every time at the same point"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: What you did just before
+      description: The last few things you did, so someone else can get there.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Report zip
+      description: Press **F5** in the game when the problem shows, then in the launcher open the game's ⋯ menu → **Report a problem…** and drag the zip here. After a crash, make the zip before you start the game again (it keeps the last two sessions' logs). Over 25 MB, share a link to a file host instead.
+    validations:
+      required: true
+  - type: textarea
+    id: save
+    attributes:
+      label: Save and input recording (optional)
+      description: When the bug comes back at one place, a save that gets there lets someone else reproduce it. Zip `decrypted/<title id>/recomp/fs/savedata0/` from your library (your own progress only; it may hold your profile name) and say which slot to load. An input recording (`.rec`, see [input recording](https://github.com/FabPei/nativ/blob/fp/main/docs/input-recording.md)) from loading that save to the bug is even better.

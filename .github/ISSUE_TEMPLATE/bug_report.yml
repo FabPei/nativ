@@ -1,54 +1,63 @@
-name: Bug report
-description: Something in a game or the launcher doesn't work as it should
+name: Launcher or tools bug
+description: The launcher, setup, adding a game, building or another tool doesn't work as it should
 labels: [bug]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting. Two files make a report reproducible: the launcher's `session.log` and an input
-        recording (`.rec`) of the session where the problem happened
-        ([how to record one](https://github.com/FabPei/nativ/blob/fp/main/docs/input-recording.md)).
+        For a problem inside a running game, use **Game bug**; for how far a game gets, **Game report**.
 
-        **Never attach game files, firmware, keys, decrypted modules, or saves that contain personal data.**
-        Logs, input recordings and hashes are enough.
-  - type: input
-    id: game
+        **Never attach or link game files, firmware, keys or saves.** The launcher's **Report a problem…** zip holds only logs, settings and any F5 pictures. Requests for game files are closed.
+  - type: checkboxes
+    id: searched
     attributes:
-      label: Game title ID and version
-      description: The title ID shown in the launcher, and the game's version.
-      placeholder: PCSF00532, v1.00
-    validations:
-      required: true
+      label: Existing issues
+      options:
+        - label: I [searched the open and closed issues](https://github.com/FabPei/nativ/issues?q=is%3Aissue) for this problem.
+          required: true
   - type: input
     id: release
     attributes:
-      label: Nativ release tag
-      description: The release you ran (from the GitHub release page or the launcher's About view).
+      label: Nativ release
+      description: The release you downloaded (or, in a game, F10 → Help → About).
       placeholder: fp-v0.2.0
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: System
+      options: [Windows, Linux, Steam Deck, macOS]
     validations:
       required: true
   - type: input
     id: computer
     attributes:
       label: Your computer
-      description: The operating system and its version, and the GPU (and CPU if you know them).
-      placeholder: Windows 11, NVIDIA RTX 3070
+      description: The OS version and the GPU (and the CPU if you know it). If a game starts, F10 → Help → Copy system info gives all of it.
+      placeholder: Windows 11 24H2, NVIDIA RTX 3070
     validations:
       required: true
+  - type: input
+    id: game
+    attributes:
+      label: Game (if one is involved)
+      description: Its title ID and version.
+      placeholder: PCSE00764, 1.01
   - type: textarea
     id: what
     attributes:
       label: What happened
-      description: What you saw, and what you expected instead.
+      description: What you did, what you saw (the exact message, if any), and what you expected instead.
     validations:
       required: true
   - type: textarea
     id: steps
     attributes:
       label: How to make it happen
-      description: Where in the game, and what you did just before. Does it happen every time?
+      description: The steps from starting the launcher. Does it happen every time?
   - type: textarea
     id: logs
     attributes:
-      label: session.log and input recording
-      description: Drag the launcher's `session.log` and the session's `.rec` input recording here. Over 25 MB, share a link instead of the file.
+      label: Logs
+      description: The launcher's **Report a problem…** zip (the game's ⋯ menu), or its `launcher.log`. Over 25 MB, share a link instead.

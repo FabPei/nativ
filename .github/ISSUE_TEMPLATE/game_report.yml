@@ -1,0 +1,124 @@
+name: Game report
+description: How far a game gets on your computer (adds it to docs/compatibility.md)
+title: "[Game report] <game name> (<title id>)"
+labels: [game-report]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks: every report shows how a game runs on another computer, and that is how [the compatibility list](https://github.com/FabPei/nativ/blob/fp/main/docs/compatibility.md) is kept.
+
+        **Never attach or link game files, firmware, keys or saves.** The launcher's **Report a problem…** zip holds only logs, settings and any F5 pictures of the game's last frames, so it is safe to attach. Requests for game files are closed.
+  - type: checkboxes
+    id: searched
+    attributes:
+      label: Existing reports
+      options:
+        - label: I [searched the open and closed issues](https://github.com/FabPei/nativ/issues?q=is%3Aissue) for a report of this game and release (if there is one, I add to it as a comment instead).
+          required: true
+  - type: input
+    id: game
+    attributes:
+      label: Game
+      placeholder: Soul Sacrifice Delta
+    validations:
+      required: true
+  - type: input
+    id: title-id
+    attributes:
+      label: Title ID
+      description: Shown in the launcher, four letters and five digits.
+      placeholder: PCSF00532
+    validations:
+      required: true
+  - type: dropdown
+    id: region
+    attributes:
+      label: Region
+      options: [US, EU, JP, Asia]
+    validations:
+      required: true
+  - type: input
+    id: game-version
+    attributes:
+      label: Game version
+      description: The game's version, and whether its update is installed (the F10 menu's About line shows the version).
+      placeholder: 1.01 (with update)
+    validations:
+      required: true
+  - type: input
+    id: release
+    attributes:
+      label: Nativ release
+      description: In the game, F10 → Help → About shows "Nativ <release>"; or the release you downloaded.
+      placeholder: fp-v0.2.0
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: System
+      options: [Windows, Linux, Steam Deck, macOS]
+    validations:
+      required: true
+  - type: textarea
+    id: sysinfo
+    attributes:
+      label: System info
+      description: In the game, F10 → Help → **Copy system info**, then paste here. It names your OS, CPU, GPU, window and render settings; your home folder is written as ~.
+      render: text
+    validations:
+      required: true
+  - type: dropdown
+    id: status
+    attributes:
+      label: Status
+      description: The furthest the game gets.
+      options:
+        - Doesn't build
+        - Builds, doesn't start
+        - Intro or logos
+        - Menu
+        - In-game, not playable
+        - Playable with problems
+        - Completed
+    validations:
+      required: true
+  - type: textarea
+    id: furthest
+    attributes:
+      label: Furthest point
+      description: Where you got to, and how long you played.
+      placeholder: Finished the first two chapters (about 3 hours); the second boss fight works.
+    validations:
+      required: true
+  - type: input
+    id: fps
+    attributes:
+      label: Frame rate
+      description: Typical and lowest, from the F1 overlay. Say where it was lowest.
+      placeholder: typical 60, lowest 41 (big fights in chapter 2)
+  - type: checkboxes
+    id: problems
+    attributes:
+      label: Problems seen
+      options:
+        - label: Graphics (missing, wrong or flickering things on screen)
+        - label: Audio (missing, crackling or out-of-sync sound)
+        - label: Crash (the game closes)
+        - label: Hang (the game freezes or never finishes loading)
+        - label: Input (buttons, sticks, touch or motion)
+        - label: Saving or loading
+        - label: Movies or cutscenes
+        - label: Performance (slow or uneven)
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: For each problem ticked above, where it happens and what you see. Anything else worth knowing (settings you changed, a workaround).
+  - type: textarea
+    id: attachments
+    attributes:
+      label: Attachments (optional)
+      description: |
+        Drag files here: the launcher's **Report a problem…** zip (the game's ⋯ menu in the launcher; press F5 in the game first when something goes wrong), screenshots, an input recording (`.rec`, see [input recording](https://github.com/FabPei/nativ/blob/fp/main/docs/input-recording.md)). Over 25 MB, share a link to a file host instead.

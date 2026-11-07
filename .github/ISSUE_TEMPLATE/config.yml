@@ -1,5 +1,11 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Question or help with setup
+    url: https://github.com/FabPei/nativ/discussions
+    about: Installing, updating, first run and settings. Ask in Discussions, not in an issue.
   - name: Player guide
-    url: https://github.com/TheLostPantheon/nativ/blob/main/docs/player-guide.md
-    about: Setup, controls, settings and known issues
+    url: https://github.com/FabPei/nativ/blob/fp/main/docs/player-guide.md
+    about: Setup, controls, saves, known issues and how to make a bug report.
+  - name: Contributing and making a game pack
+    url: https://github.com/FabPei/nativ/blob/fp/main/CONTRIBUTING.md
+    about: The one hard rule, game packs (docs/packs.md) and pull requests.
