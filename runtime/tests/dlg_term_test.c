@@ -19,6 +19,7 @@
 #define APPUTIL_UNDER_TEST "../core/apputil.c"
 #endif
 #include APPUTIL_UNDER_TEST
+#include "../core/imedlg.c"   /* (HLE-LIB-05: apputil.c's IME dialog shares its state) */
 
 /* ---- apputil.c expects these (same shim style as monitor_test.c / kernel_test.c) */
 uint8_t *recomp_mem;

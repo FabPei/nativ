@@ -178,6 +178,17 @@ the pre-U12c savedlg_ui.cpp): `20 FAILED`, exit 1.
 
 It prints `all passed` and exits 0.
 
+## The IME dialog's text and card state: `imedlg_test.c`
+
+HLE-LIB-05: `imedlg.h` converts the guest's UTF-16 to UTF-8 and back (2-, 3-, 4-byte forms, surrogate pairs, never
+splitting a character at a buffer end) and `imedlg.c` holds the card's state: no UI -> open refuses (the dialog keeps
+the HLE-LIB-01 answer), open -> view -> answer -> take once, cancel keeps the initial text, close clears. `cdlg_test.c`
+covers the RUNNING state (BUSY, NOT_FINISHED for GetResult/Term, finish, Abort while running).
+
+    cc -O1 -g -Wall -I ../core imedlg_test.c ../core/imedlg.c -o /tmp/imedlg_test -lpthread && /tmp/imedlg_test
+
+It prints `all passed` and exits 0. The tests that include apputil.c also include `../core/imedlg.c`.
+
 ## The trophy set and unlocking: `trophy_test.c`
 
 HLE-LIB-02: `trophy_parse.h` reads a game's TROPHY.TRP (entries by name; TROPCONF.SFM ids, grades, hidden, platinum

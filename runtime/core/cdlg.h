@@ -22,6 +22,7 @@ enum { CDLG_RESULT_OK = 0, CDLG_RESULT_USER_CANCELED = 1, CDLG_RESULT_ABORTED = 
 #define CDLG_ERR_BUSY        0x80020401u
 #define CDLG_ERR_NOT_RUNNING 0x80020404u
 #define CDLG_ERR_NOT_IN_USE  0x80020411u
+#define CDLG_ERR_NOT_FINISHED 0x80020410u
 
 enum { CDLG_IME, CDLG_NP_MESSAGE, CDLG_NP_PROFILE, CDLG_NP_SNS_FACEBOOK, CDLG_TW, CDLG_STORE_CHECKOUT, CDLG_N };
 typedef struct { int status; int32_t result; } CdlgState;
@@ -33,6 +34,15 @@ static inline uint32_t cdlg_init(CdlgState *s, int kind) {
 	return 0;
 }
 static inline int cdlg_status(const CdlgState *s, int kind) { return s[kind].status; }
+/* (HLE-LIB-05) a kind the host shows to the player (the IME card): it runs until cdlg_finish */
+static inline uint32_t cdlg_init_running(CdlgState *s, int kind) {
+	if (s[kind].status != CDLG_STATUS_NONE) return CDLG_ERR_BUSY;
+	s[kind].status = CDLG_STATUS_RUNNING; s[kind].result = 0;
+	return 0;
+}
+static inline void cdlg_finish(CdlgState *s, int kind, int32_t result) {
+	if (s[kind].status == CDLG_STATUS_RUNNING) { s[kind].status = CDLG_STATUS_FINISHED; s[kind].result = result; }
+}
 static inline uint32_t cdlg_abort(CdlgState *s, int kind) {
 	if (s[kind].status == CDLG_STATUS_NONE) return CDLG_ERR_NOT_RUNNING;
 	s[kind].status = CDLG_STATUS_FINISHED; s[kind].result = CDLG_RESULT_ABORTED;
@@ -40,10 +50,12 @@ static inline uint32_t cdlg_abort(CdlgState *s, int kind) {
 }
 static inline uint32_t cdlg_result(const CdlgState *s, int kind, int32_t *out) {
 	if (s[kind].status == CDLG_STATUS_NONE) return CDLG_ERR_NOT_IN_USE;
+	if (s[kind].status == CDLG_STATUS_RUNNING) return CDLG_ERR_NOT_FINISHED;   /* (HLE-LIB-05) */
 	*out = s[kind].result; return 0;
 }
 static inline uint32_t cdlg_term(CdlgState *s, int kind) {
 	if (s[kind].status == CDLG_STATUS_NONE) return CDLG_ERR_NOT_IN_USE;
+	if (s[kind].status == CDLG_STATUS_RUNNING) return CDLG_ERR_NOT_FINISHED;   /* (HLE-LIB-05) */
 	s[kind].status = CDLG_STATUS_NONE; s[kind].result = 0;
 	return 0;
 }

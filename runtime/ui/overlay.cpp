@@ -49,6 +49,8 @@
 #include "overlay.h"
 #include "ui_text.h"
 #include "savedlg_ui.h"
+#include "imedlg_ui.h"
+#include "imedlg.h"
 #include "savedlg.h"
 #include "ui_theme.h"
 #include "setting_defaults.h"   /* (U7) the shared defaults for the rows' "default" marks */
@@ -185,6 +187,7 @@ int overlay_init(SDL_GPUDevice *device, SDL_Window *window, SDL_GPUTextureFormat
 	g_base_style = ImGui::GetStyle(); g_ui_scale = 1.0f;   /* (scaled per window size in render_frame: ui_scale.h) */
 	g_has_window = window != nullptr; g_window = window;
 	if (g_has_window && !ImGui_ImplSDL3_InitForSDLGPU(window)) { ImGui::DestroyContext(g_ctx); g_ctx = nullptr; return 0; }
+	imedlg_set_ui_ready(g_has_window);   /* (HLE-LIB-05: a window can show the IME card) */
 	/* (U12c) the pad is the host's: window.c routes its events here and savedlg_ui's feed makes them ImGui keys;
 	 * the backend opens no pads of its own (its list went stale for a pad connected after this point, and its
 	 * empty list cleared HasGamepad every frame -- the whole menu and the save dialog lost the controller) */
@@ -1257,7 +1260,8 @@ int overlay_modal_open(void) {
 int overlay_dialog_active(void) {
 	if (!g_ctx || !g_has_window) return 0;
 	SaveDlgView v; const int k = savedlg_view(&v); savedlg_release();
-	return k == SAVEDLG_LIST || k == SAVEDLG_YESNO;
+	if (k == SAVEDLG_LIST || k == SAVEDLG_YESNO) return 1;
+	char t[8], x[8]; uint32_t m; int s; return imedlg_view(t, sizeof t, x, sizeof x, &m, &s);   /* (HLE-LIB-05: the IME card) */
 }
 /* everything the closed state shows, and the bar's state machine (see the file's header comment) */
 static void build_closed(void) {
@@ -1318,6 +1322,7 @@ static void build_closed(void) {
 	if (g_intro) build_intro();   /* (the touch card in place of the pause banner; the markers drawn over it) */
 	build_marks();
 	if (g_has_window) savedlg_ui_build(w, hgt);
+	if (g_has_window) imedlg_ui_build(w, hgt);   /* (HLE-LIB-05) */
 	if (g_paused && !g_intro) build_pause_banner(w, hgt);
 	toasts_take(t);
 	if (g_ntoasts) build_toasts(w, hgt, t);
@@ -1738,6 +1743,11 @@ void overlay_render_forced(SDL_GPUDevice *device, SDL_GPUTexture *target, uint32
 		 * self-corrects at ~60 Hz, imperceptibly, on its own. */
 		for (int i = 0; i < 3; i++) forced_frame(device, target, w, h, i == 2, build_ui);
 		return;
+	}
+	if (!strcmp(ui, "ime")) {   /* (HLE-LIB-05) the IME card with an example dialog */
+		imedlg_set_ui_ready(1); imedlg_open("Enter your name", "Player", 16);
+		for (int i = 0; i < 3; i++) forced_frame(device, target, w, h, i == 2, [] { ImGuiIO &io = ImGui::GetIO(); imedlg_ui_build(io.DisplaySize.x, io.DisplaySize.y); });
+		imedlg_close(); imedlg_set_ui_ready(g_has_window); return;
 	}
 	if (!strcmp(ui, "quit")) { for (int i = 0; i < 3; i++) forced_frame(device, target, w, h, i == 2, build_quit); return; }   /* (the quit card) */
 	if (!strcmp(ui, "layout")) { for (int i = 0; i < 3; i++) forced_frame(device, target, w, h, i == 2, build_layout); return; }   /* (the layout card: RECOMP_GAME_NAME names the game) */

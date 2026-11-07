@@ -28,6 +28,7 @@
 #define SAVEDLG_UI_UNDER_TEST "../ui/savedlg_ui.cpp"
 #endif
 #include APPUTIL_UNDER_TEST
+#include "../core/imedlg.c"   /* (HLE-LIB-05: apputil.c's IME dialog shares its state) */
 #include SAVEDLG_UI_UNDER_TEST
 #include <SDL3/SDL_gamepad.h>
 

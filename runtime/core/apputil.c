@@ -19,6 +19,7 @@
 #include "savedlg.h"
 #include "settings.h"
 #include "cdlg.h"
+#include "imedlg.h"
 #include "hle_small.h"
 
 /* ---- common dialogs: one that was opened finishes at once with an OK result, as if the player
@@ -62,28 +63,54 @@ static void cdlg_call(Cpu *c, int kind, int op) {   /* op: 0 init, 1 status, 2 r
 	pthread_mutex_unlock(&cdlg_lock);
 	RET(r);
 }
-/* sceImeDialogInit(SceImeDialogParam *): maxTextLength +0x2c, initialText +0x30, inputTextBuffer +0x34 (UTF-16) */
+/* sceImeDialogInit(SceImeDialogParam *): title +0x28, maxTextLength +0x2c, initialText +0x30, inputTextBuffer +0x34
+ * (UTF-16). With a window (HLE-LIB-05) the host's card asks the player (imedlg.h, runtime/ui/imedlg_ui.cpp): the dialog
+ * runs until they answer, GetStatus takes the answer and writes the text. Without one (headless, tests) the initial text
+ * is entered as typed (HLE-LIB-01). */
+static uint32_t ime_out, ime_max;
+static void ime_write(const char *utf8) {   /* the answer into the game's inputTextBuffer (max units + terminator) */
+	if (!ime_out) return;
+	static uint16_t u[4097]; const size_t m = ime_max && ime_max < 4096 ? ime_max : 4096;
+	const size_t n = imedlg_utf8_to_utf16(utf8, u, m);
+	for (size_t i = 0; i <= n; i++) WR16(ime_out + 2 * (uint32_t)i, u[i]);
+}
 static void h_ime_dlg_init(Cpu *c) {
 	if (!A0) { RET(0x80020402u); return; }   /* SCE_COMMON_DIALOG_ERROR_NULL */
+	const uint32_t tptr = RD32(A0 + 0x28), max = RD32(A0 + 0x2c), init = RD32(A0 + 0x30), out = RD32(A0 + 0x34);
+	static uint16_t t16[513], i16[2049]; char title[1024], text[IMEDLG_TEXT_MAX];
+	size_t k = 0; if (tptr) while (k < 512 && RD16(tptr + 2 * (uint32_t)k)) { t16[k] = RD16(tptr + 2 * (uint32_t)k); k++; } t16[k] = 0;
+	imedlg_utf16_to_utf8(t16, k, title, sizeof title);
+	k = 0; if (init) while (k < 2048 && k < (max ? max : 2048) && RD16(init + 2 * (uint32_t)k)) { i16[k] = RD16(init + 2 * (uint32_t)k); k++; } i16[k] = 0;
+	imedlg_utf16_to_utf8(i16, k, text, sizeof text);
 	pthread_mutex_lock(&cdlg_lock);
-	const uint32_t r = cdlg_init(cdlg, CDLG_IME);
+	const int card = cdlg_status(cdlg, CDLG_IME) == CDLG_STATUS_NONE && imedlg_ui_ready();
+	const uint32_t r = card ? cdlg_init_running(cdlg, CDLG_IME) : cdlg_init(cdlg, CDLG_IME);
+	if (!r) { ime_out = out; ime_max = max; }
 	pthread_mutex_unlock(&cdlg_lock);
 	if (!r) {
-		const uint32_t max = RD32(A0 + 0x2c), init = RD32(A0 + 0x30), out = RD32(A0 + 0x34);
-		if (out) {
-			uint32_t n = 0;
-			if (init) while (n < max && n < 4096 && RD16(init + 2 * n)) { WR16(out + 2 * n, RD16(init + 2 * n)); n++; }
-			WR16(out + 2 * n, 0);
-		}
-		fprintf(stderr, "    ime dialog: no on-screen keyboard -- the initial text is entered as typed\n");
+		if (card) { imedlg_open(title, text, max); fprintf(stderr, "    ime dialog: \"%s\" -- the card asks the player (max %u)\n", title, max); }
+		else { ime_write(text); fprintf(stderr, "    ime dialog: no window -- the initial text is entered as typed\n"); }
 	}
 	RET(r);
 }
+/* GetStatus: a running card's answer is taken here -- the text written, the dialog FINISHED */
+static void h_ime_dlg_status(Cpu *c) {
+	char t[IMEDLG_TEXT_MAX]; int ok;
+	pthread_mutex_lock(&cdlg_lock);
+	if (cdlg_status(cdlg, CDLG_IME) == CDLG_STATUS_RUNNING && imedlg_take(t, sizeof t, &ok)) {
+		if (ok) ime_write(t);
+		cdlg_finish(cdlg, CDLG_IME, ok ? CDLG_RESULT_OK : CDLG_RESULT_USER_CANCELED);
+	}
+	const int st = cdlg_status(cdlg, CDLG_IME);
+	pthread_mutex_unlock(&cdlg_lock);
+	RET(st);
+}
+static void h_ime_dlg_abort(Cpu *c) { imedlg_close(); cdlg_call(c, CDLG_IME, 4); }
 #define CDLG_HANDLERS(kind, name) \
-	static void h_##name##_status(Cpu *c) { cdlg_call(c, kind, 1); } \
-	static void h_##name##_result(Cpu *c) { cdlg_call(c, kind, 2); } \
-	static void h_##name##_term(Cpu *c) { cdlg_call(c, kind, 3); } \
-	static void h_##name##_abort(Cpu *c) { cdlg_call(c, kind, 4); }
+	static __attribute__((unused)) void h_##name##_status(Cpu *c) { cdlg_call(c, kind, 1); } \
+	static __attribute__((unused)) void h_##name##_result(Cpu *c) { cdlg_call(c, kind, 2); } \
+	static __attribute__((unused)) void h_##name##_term(Cpu *c) { cdlg_call(c, kind, 3); } \
+	static __attribute__((unused)) void h_##name##_abort(Cpu *c) { cdlg_call(c, kind, 4); }
 #define CDLG_INIT(kind, name) static void h_##name##_init(Cpu *c) { cdlg_call(c, kind, 0); }
 CDLG_HANDLERS(CDLG_IME, cime)
 CDLG_HANDLERS(CDLG_NP_MESSAGE, cnpmsg) CDLG_INIT(CDLG_NP_MESSAGE, cnpmsg)
@@ -609,8 +636,8 @@ const HleEntry hle_apputil[] = {
 	{"sceScreenShotEnable", h_zero}, {"sceScreenShotDisable", h_zero}, {"sceScreenShotSetParam", h_zero}, {"sceScreenShotSetOverlayImage", h_zero},
 	{"sceLiveAreaUpdateFrameSync", h_zero},
 	/* (HLE-LIB-01) SceCommonDialog on cdlg.h */
-	{"sceImeDialogInit", h_ime_dlg_init}, {"sceImeDialogGetStatus", h_cime_status}, {"sceImeDialogGetResult", h_cime_result},
-	{"sceImeDialogTerm", h_cime_term}, {"sceImeDialogAbort", h_cime_abort},
+	{"sceImeDialogInit", h_ime_dlg_init}, {"sceImeDialogGetStatus", h_ime_dlg_status}, {"sceImeDialogGetResult", h_cime_result},
+	{"sceImeDialogTerm", h_cime_term}, {"sceImeDialogAbort", h_ime_dlg_abort},
 	{"sceNpMessageDialogInit", h_cnpmsg_init}, {"sceNpMessageDialogGetStatus", h_cnpmsg_status}, {"sceNpMessageDialogGetResult", h_cnpmsg_result},
 	{"sceNpMessageDialogTerm", h_cnpmsg_term}, {"sceNpMessageDialogAbort", h_cnpmsg_abort},
 	{"sceNpProfileDialogInit", h_cnpprof_init}, {"sceNpProfileDialogGetStatus", h_cnpprof_status}, {"sceNpProfileDialogGetResult", h_cnpprof_result},
