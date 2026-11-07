@@ -1023,7 +1023,7 @@ void window_run(void *(*fn)(void *), void *arg) {
 	if (settings_int("fullscreen", 0)) SDL_SetWindowFullscreen(win, true);
 	if (gpu) overlay_init(gpu, win, SDL_GetGPUSwapchainTextureFormat(gpu, win));
 	SDL_Gamepad *pad = 0;
-	int pad_back = 0, pad_start = 0, pad_combo_latch = 0;
+	int pad_back = 0, pad_start = 0, pad_combo_latch = 0, pad_start_solo = 0;   /* (U12c) solo: Start pressed and released with no Select */
 	uint64_t last_overlay_t = 0;
 	active = 1;
 	Game g = {fn, arg};
@@ -1054,9 +1054,15 @@ void window_run(void *(*fn)(void *), void *arg) {
 			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE) { overlay_toggle(); if (overlay_is_open()) { buttons = 0; touch_down = 0; gamepad_touch_release(); } }
 			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_BACK) pad_back = 1;
 			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_UP && e.gbutton.button == SDL_GAMEPAD_BUTTON_BACK) { pad_back = 0; pad_combo_latch = 0; }
-			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_START) pad_start = 1;
-			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_UP && e.gbutton.button == SDL_GAMEPAD_BUTTON_START) { pad_start = 0; pad_combo_latch = 0; }
-			if (pad_back && pad_start && !pad_combo_latch) { pad_combo_latch = 1; overlay_toggle(); if (overlay_is_open()) { buttons = 0; touch_down = 0; gamepad_touch_release(); } }
+			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_START) { pad_start = 1; pad_start_solo = !pad_back; }
+			/* (U12c) Start alone, with the menu up, resumes (Start+Select opened it; a chord's Start never counts) */
+			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_UP && e.gbutton.button == SDL_GAMEPAD_BUTTON_START) {
+				if (pad_start_solo && overlay_is_open() && !overlay_modal_open()) overlay_close();
+				pad_start = 0; pad_combo_latch = 0; pad_start_solo = 0;
+			}
+			/* Start + Select (Back on an Xbox pad, Create/Share on a DualSense), either order: the menu opens or closes
+			 * (for pads whose PS / Guide button the system keeps, e.g. the Game Bar or Steam) */
+			if (pad_back && pad_start && !pad_combo_latch) { pad_combo_latch = 1; pad_start_solo = 0; overlay_toggle(); if (overlay_is_open()) { buttons = 0; touch_down = 0; gamepad_touch_release(); } }
 			/* exclusive while open: the menu gets every key/mouse/gamepad event instead of the game
 			 * (which is paused anyway -- display.c) */
 			if (overlay_is_open()) { overlay_process_event(&e); continue; }

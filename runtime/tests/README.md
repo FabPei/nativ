@@ -163,6 +163,21 @@ cancels on Circle, and keeps its arm rule (a key already held when the step appe
 It prints `all passed (7 ok)` and exits 0. `-DAPPUTIL_UNDER_TEST='\"<file>\"'` / `-DSAVEDLG_UI_UNDER_TEST='\"<file>\"'`
 compile against different copies for fail-before comparisons.
 
+## The full menu answers the whole controller: `menu_pad_test.cpp`
+
+U12c (owner, 2026-11-07: "the whole menu is not controllable by controller"): the host's pad feed
+(`savedlg_ui_gamepad_button/axis`, savedlg_ui.cpp) must deliver every pad button and axis as its ImGui key --
+L1 / R1 step the menu's pages, Triangle / Square are ImGui's nav keys -- and `savedlg_ui_gamepad_frame` must
+re-mark `ImGuiBackendFlags_HasGamepad` after the SDL3 backend's frame cleared it (its own pad list is empty, so
+`UpdateGamepads` drops the flag every frame and imgui.cpp wipes all gamepad keys). The fixture simulates that
+per-frame clear. Case 1: every button; case 2: triggers and both sticks; case 3: a held key survives three
+frames; case 4: gamepad nav moves the focus and Cross activates. Fail-before (`-DHAVE_GAMEPAD_FRAME=0` against
+the pre-U12c savedlg_ui.cpp): `20 FAILED`, exit 1.
+
+    c++ -O1 -g -w -D_GNU_SOURCE -std=c++17 $INC -I ../../third_party/imgui -I $SDL3_INC menu_pad_test.cpp         ../../third_party/imgui/imgui.cpp ../../third_party/imgui/imgui_draw.cpp ../../third_party/imgui/imgui_tables.cpp         ../../third_party/imgui/imgui_widgets.cpp -o /tmp/menu_pad_test -lpthread && /tmp/menu_pad_test
+
+It prints `all passed` and exits 0.
+
 ## sceDisplayGetVcount advances: `vcount_test.c`
 
 `DISP-01`: `sceDisplayGetVcount` was unimplemented (the generic stub returned 0 forever), so a game polling

@@ -16,6 +16,7 @@ void savedlg_ui_build(float w, float hgt);
  * key, which the dialog reads like any other key (sdl_button/sdl_axis: SDL_GAMEPAD_BUTTON_* / SDL_GAMEPAD_AXIS_*) */
 void savedlg_ui_gamepad_button(int sdl_button, int down);
 void savedlg_ui_gamepad_axis(int sdl_axis, int value);
+void savedlg_ui_gamepad_frame(int pad_connected);   /* (U12c) after the backend frame, before ImGui::NewFrame */
 
 #ifdef __cplusplus
 }

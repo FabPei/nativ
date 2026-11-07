@@ -113,17 +113,28 @@ static void sdlg_gamepad_mark(void) {
 	io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
 }
 
+/* (U12c) the host's one pad feed for every ImGui surface (the full menu too, not just this dialog): every SDL
+ * button and axis to its ImGui key. The SDL3 backend is in manual mode with no pads (overlay.cpp), so these
+ * events are the only source of ImGui's gamepad keys. */
 void savedlg_ui_gamepad_button(int sdl_button, int down) {
 	if (!ImGui::GetCurrentContext()) return;
 	sdlg_gamepad_mark();
 	ImGuiKey k;
 	switch (sdl_button) {
-		case SDL_GAMEPAD_BUTTON_SOUTH: k = ImGuiKey_GamepadFaceDown; break;   /* Cross: the dialog's K_OK */
-		case SDL_GAMEPAD_BUTTON_EAST: k = ImGuiKey_GamepadFaceRight; break;   /* Circle: K_BACK */
+		case SDL_GAMEPAD_BUTTON_SOUTH: k = ImGuiKey_GamepadFaceDown; break;   /* Cross: the dialog's K_OK, nav activate */
+		case SDL_GAMEPAD_BUTTON_EAST: k = ImGuiKey_GamepadFaceRight; break;   /* Circle: K_BACK, nav cancel */
+		case SDL_GAMEPAD_BUTTON_NORTH: k = ImGuiKey_GamepadFaceUp; break;     /* Triangle: nav text input */
+		case SDL_GAMEPAD_BUTTON_WEST: k = ImGuiKey_GamepadFaceLeft; break;    /* Square: nav menu */
 		case SDL_GAMEPAD_BUTTON_DPAD_UP: k = ImGuiKey_GamepadDpadUp; break;
 		case SDL_GAMEPAD_BUTTON_DPAD_DOWN: k = ImGuiKey_GamepadDpadDown; break;
 		case SDL_GAMEPAD_BUTTON_DPAD_LEFT: k = ImGuiKey_GamepadDpadLeft; break;
 		case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: k = ImGuiKey_GamepadDpadRight; break;
+		case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: k = ImGuiKey_GamepadL1; break;  /* the menu's page step */
+		case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: k = ImGuiKey_GamepadR1; break;
+		case SDL_GAMEPAD_BUTTON_START: k = ImGuiKey_GamepadStart; break;
+		case SDL_GAMEPAD_BUTTON_BACK: k = ImGuiKey_GamepadBack; break;
+		case SDL_GAMEPAD_BUTTON_LEFT_STICK: k = ImGuiKey_GamepadL3; break;
+		case SDL_GAMEPAD_BUTTON_RIGHT_STICK: k = ImGuiKey_GamepadR3; break;
 		default: return;
 	}
 	ImGui::GetIO().AddKeyEvent(k, down != 0);
@@ -131,15 +142,32 @@ void savedlg_ui_gamepad_button(int sdl_button, int down) {
 
 void savedlg_ui_gamepad_axis(int sdl_axis, int value) {
 	if (!ImGui::GetCurrentContext()) return;
+	sdlg_gamepad_mark();
+	ImGuiIO &io = ImGui::GetIO();
+	const float dead = 8000.0f;   /* the SDL gamepad dead zone, as ImGui's SDL3 backend uses it */
+	if (sdl_axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER || sdl_axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) {
+		const float v = value > 0 ? (float)value / 32767.0f : 0.0f;
+		io.AddKeyAnalogEvent(sdl_axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER ? ImGuiKey_GamepadL2 : ImGuiKey_GamepadR2, v > 0.1f, v);
+		return;
+	}
 	ImGuiKey lo, hi;
 	switch (sdl_axis) {
 		case SDL_GAMEPAD_AXIS_LEFTX: lo = ImGuiKey_GamepadLStickLeft; hi = ImGuiKey_GamepadLStickRight; break;
 		case SDL_GAMEPAD_AXIS_LEFTY: lo = ImGuiKey_GamepadLStickUp; hi = ImGuiKey_GamepadLStickDown; break;
+		case SDL_GAMEPAD_AXIS_RIGHTX: lo = ImGuiKey_GamepadRStickLeft; hi = ImGuiKey_GamepadRStickRight; break;
+		case SDL_GAMEPAD_AXIS_RIGHTY: lo = ImGuiKey_GamepadRStickUp; hi = ImGuiKey_GamepadRStickDown; break;
 		default: return;
 	}
-	const float dead = 8000.0f;   /* the SDL gamepad dead zone, as ImGui's SDL3 backend uses it */
-	ImGui::GetIO().AddKeyAnalogEvent(lo, value < -dead, value < -dead ? (float)-value / 32768.0f : 0.0f);
-	ImGui::GetIO().AddKeyAnalogEvent(hi, value > dead, value > dead ? (float)value / 32767.0f : 0.0f);
+	io.AddKeyAnalogEvent(lo, value < -dead, value < -dead ? (float)-value / 32768.0f : 0.0f);
+	io.AddKeyAnalogEvent(hi, value > dead, value > dead ? (float)value / 32767.0f : 0.0f);
+}
+
+/* (U12c) once per frame, after the backend's own frame (ImGui_ImplSDL3_NewFrame clears HasGamepad while its
+ * pad list is empty) and before ImGui::NewFrame: a connected pad keeps the flag, so the keys fed above are not
+ * wiped and gamepad navigation stays on */
+void savedlg_ui_gamepad_frame(int pad_connected) {
+	if (!ImGui::GetCurrentContext()) return;
+	if (pad_connected) sdlg_gamepad_mark();
 }
 
 }   /* extern "C" */

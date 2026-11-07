@@ -185,6 +185,10 @@ int overlay_init(SDL_GPUDevice *device, SDL_Window *window, SDL_GPUTextureFormat
 	g_base_style = ImGui::GetStyle(); g_ui_scale = 1.0f;   /* (scaled per window size in render_frame: ui_scale.h) */
 	g_has_window = window != nullptr; g_window = window;
 	if (g_has_window && !ImGui_ImplSDL3_InitForSDLGPU(window)) { ImGui::DestroyContext(g_ctx); g_ctx = nullptr; return 0; }
+	/* (U12c) the pad is the host's: window.c routes its events here and savedlg_ui's feed makes them ImGui keys;
+	 * the backend opens no pads of its own (its list went stale for a pad connected after this point, and its
+	 * empty list cleared HasGamepad every frame -- the whole menu and the save dialog lost the controller) */
+	if (g_has_window) ImGui_ImplSDL3_SetGamepadMode(ImGui_ImplSDL3_GamepadMode_Manual, nullptr, 0);
 	ImGui_ImplSDLGPU3_InitInfo info = {};
 	info.Device = device; info.ColorTargetFormat = color_fmt; info.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
 	if (!ImGui_ImplSDLGPU3_Init(&info)) {
@@ -777,13 +781,18 @@ static void build_ui(void) {
 	 * the page are separate panels the D-pad doesn't cross -- and the new page's first row takes the focus */
 	static const int order[TAB_N] = {TAB_DISPLAY, TAB_GAME, TAB_CONTROLS, TAB_PERF, TAB_HELP};
 	static bool focus_page;
+	/* (U12c) Circle resumes the game, as Esc does -- unless it had something to cancel: an edited slider, a combo
+	 * or the reset dialog in the frame before (ImGui's nav took this frame's cancel before we look) */
+	static bool busy_before;
+	if (!busy_before && !g_modal_open && g_rebind < 0 && g_pad_rebind < 0 && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) overlay_close();
 	if (!ImGui::IsAnyItemActive() && !g_modal_open) {   /* (U6) no page step under the reset dialog */
 		const bool ctrl = io.KeyCtrl, shift = io.KeyShift; int step = 0;
 		if (ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || (ctrl && shift && ImGui::IsKeyPressed(ImGuiKey_Tab, false))) step = -1;
 		if (ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) || (ctrl && !shift && ImGui::IsKeyPressed(ImGuiKey_Tab, false))) step = 1;
 		if (step) { int k = 0; while (k < TAB_N - 1 && order[k] != g_section) k++; g_section = order[(k + step + TAB_N) % TAB_N]; focus_page = true; }
 	}
-	ImGui::BeginChild("nav", ImVec2(em * 11.5f, -foot), 0);
+	/* (U12c) NavFlattened: the D-pad / arrow keys cross from the sidebar into the page and back */
+	ImGui::BeginChild("nav", ImVec2(em * 11.5f, -foot), ImGuiChildFlags_NavFlattened);
 	for (int k = 0; k < TAB_N; k++) {
 		int i = order[k]; bool on = g_section == i;
 		ImVec2 p = ImGui::GetCursorScreenPos(); float h = ImGui::GetFrameHeight() * 1.15f, w = ImGui::GetContentRegionAvail().x;
@@ -800,7 +809,7 @@ static void build_ui(void) {
 	ImGui::SameLine(0, em * 0.8f);
 	/* the page */
 	ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::bg);
-	ImGui::BeginChild("page", ImVec2(0, -foot), ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding);
+	ImGui::BeginChild("page", ImVec2(0, -foot), ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding | ImGuiChildFlags_NavFlattened);
 	ImGui::PopStyleColor();
 	ui::heading(ui_tr(g_tab_ids[g_section]), em * 1.25f);
 	ImGui::TextDisabled("%s", ui_tr(g_tab_blurb_ids[g_section]));
@@ -809,7 +818,10 @@ static void build_ui(void) {
 	static void (*const pages[TAB_N])(void) = {page_display, page_performance, page_game, page_controls, page_help};
 	static int shown_section = -1;
 	if (shown_section != g_section) { shown_section = g_section; ui::help_label = nullptr; }   /* (U10) a new page: the pane starts at its first row */
-	if (two_pane) ImGui::BeginChild("rows-l", ImVec2(-em * 23, 0), 0);
+	/* (U12c, owner: "why so much space for the explanation?") the help pane takes 26 % of the page, 12-16 em
+	 * (was a fixed 23 em) -- its texts are a sentence or two; the rows get the rest */
+	const float help_w = ImClamp(ImGui::GetContentRegionAvail().x * 0.26f, em * 12, em * 16);
+	if (two_pane) ImGui::BeginChild("rows-l", ImVec2(-(help_w + em * 0.8f), 0), ImGuiChildFlags_NavFlattened);
 	pages[g_section]();
 	if (two_pane) {
 		ImGui::EndChild();
@@ -835,6 +847,7 @@ static void build_ui(void) {
 	ImGui::PushStyleColor(ImGuiCol_Text, ui::error);
 	if (ImGui::Button(quit)) g_want_quit = true;
 	ImGui::PopStyleColor();
+	busy_before = ImGui::IsAnyItemActive() || ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) || g_modal_open || g_rebind >= 0 || g_pad_rebind >= 0;
 	ImGui::End();
 }
 
@@ -1263,7 +1276,7 @@ static void build_closed(void) {
 			g_toast_checked = true;
 			if (!settings_has("touch_intro_shown")) {   /* the player's first game: the touch card first (it says where the menu is too) */
 				g_intro = true; settings_set_int("menu_hint_shown", 1); save_settings(); g_paused = true; apply_pause();
-			} else if (!settings_has("menu_hint_shown")) { g_toast_until = t + TOAST_S; overlay_toast_titled("Menu", "Move the mouse to the top, or press [F10] or the PS button", TOAST_S); settings_set_int("menu_hint_shown", 1); save_settings(); }
+			} else if (!settings_has("menu_hint_shown")) { g_toast_until = t + TOAST_S; overlay_toast_titled("Menu", "Move the mouse to the top, or press [F10] or Start+Select", TOAST_S); settings_set_int("menu_hint_shown", 1); save_settings(); }
 		}
 		const ImVec2 m = io.MousePos;
 		const bool inside = ImGui::IsMousePosValid(&m) && m.x >= 0 && m.x < w && m.y >= 0 && m.y < hgt;   /* (focused but outside the window, e.g. on the title bar: the backend reports a position there too) */
@@ -1287,7 +1300,7 @@ static void build_closed(void) {
 		if (g_touch_cursor && g_bar_vis <= 0 && !popup_open && !io.WantCaptureMouse) ImGui::SetMouseCursor(ImGuiMouseCursor_None);   /* (the touch mark stands in for it) */
 	} else {   /* headless (the dump): no pointer; RECOMP_OVERLAY_DUMP_UI says what to show */
 		if (g_force_bar) { g_bar_vis = 1; g_bar_want = true; }
-		if (g_force_toast) { g_toast_until = t + TOAST_S; g_tab_a = 1; g_force_toast = false; overlay_toast_titled("Menu", "Move the mouse to the top, or press [F10] or the PS button", TOAST_S); overlay_toast_titled("Balance", "[A] [D] tilt left / right", TOAST_S); }
+		if (g_force_toast) { g_toast_until = t + TOAST_S; g_tab_a = 1; g_force_toast = false; overlay_toast_titled("Menu", "Move the mouse to the top, or press [F10] or Start+Select", TOAST_S); overlay_toast_titled("Balance", "[A] [D] tilt left / right", TOAST_S); }
 	}
 	{	/* the slide, at a fixed rate either way */
 		const float target = g_bar_want ? 1.0f : 0.0f, step = dt > 0.1f ? 1.0f : dt / SLIDE_S;
@@ -1327,6 +1340,7 @@ static void render_frame(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *target, uint
 	ImGui_ImplSDLGPU3_NewFrame();
 	if (have_window) {
 		ImGui_ImplSDL3_NewFrame();
+		savedlg_ui_gamepad_frame(SDL_HasGamepad());   /* (U12c) after the backend cleared the flag: a pad keeps it */
 	} else {
 		io.DisplaySize = ImVec2((float)w, (float)h);
 		io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
