@@ -178,6 +178,17 @@ the pre-U12c savedlg_ui.cpp): `20 FAILED`, exit 1.
 
 It prints `all passed` and exits 0.
 
+## Small HLE contracts: `hle_small_test.c`
+
+HLE-PORT-01: the pure parts of `sceKernelGetModel` (0x10000 handheld / 0x20000 PS TV, vitasdk sysmem.h),
+the audio output port slots (`sceAudioOutReleasePort` frees a slot; 100 open/release cycles never hit PORT_FULL)
+and NGS patch output slots (`sceNgsVoiceGetOutputPatch`; -1 takes the first free slot). Fail-before is the runtime's
+own record: these imports were logged `not implemented -- returns 0`.
+
+    cc -O1 -g -Wall -I ../core hle_small_test.c -o /tmp/hle_small_test && /tmp/hle_small_test
+
+It prints `all passed` and exits 0.
+
 ## sceDisplayGetVcount advances: `vcount_test.c`
 
 `DISP-01`: `sceDisplayGetVcount` was unimplemented (the generic stub returned 0 forever), so a game polling

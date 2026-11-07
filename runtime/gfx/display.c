@@ -15,6 +15,7 @@
 #include <sched.h>   /* sched_yield: vb_sleep_until */
 #include <math.h>
 #include "hle.h"
+#include "hle_small.h"
 #include "gfx.h"
 #include "metrics.h"
 #include "settings.h"
@@ -440,14 +441,24 @@ void audio_output(int dev, const void *buf, uint32_t bytes);
 static uint64_t port_next[8];
 static uint32_t port_vol[8][2];   /* sceAudioOutSetVolume: 0..0x8000 (SCE_AUDIO_VOLUME_0DB) per channel */
 static void h_audio_open(Cpu *c) {   /* (type, samples per buffer, frequency, mode) */
-	for (int i = 0; i < 8; i++) if (!port_len[i]) {
-		port_len[i] = A1; port_freq[i] = A2 ? A2 : 48000; port_ch[i] = A3 == 0 ? 1 : 2;   /* mode 0 mono, 1 stereo */
-		port_vol[i][0] = port_vol[i][1] = 0x8000;
-		port_dev[i] = audio_open(port_freq[i], port_ch[i], A1);
-		fprintf(stderr, "    audio port %d: %u samples at %u Hz, mode %u\n", i, A1, A2, A3);
-		RET(i + 1); return;
-	}
-	RET(0x80260005u);
+	const int i = hle_audio_port_free_slot(port_len);
+	if (i < 0) { RET(HLE_AUDIO_ERR_PORT_FULL); return; }
+	port_len[i] = A1; port_freq[i] = A2 ? A2 : 48000; port_ch[i] = A3 == 0 ? 1 : 2;   /* mode 0 mono, 1 stereo */
+	port_vol[i][0] = port_vol[i][1] = 0x8000; port_next[i] = 0;
+	port_dev[i] = audio_open(port_freq[i], port_ch[i], A1);
+	fprintf(stderr, "    audio port %d: %u samples at %u Hz, mode %u\n", i, A1, A2, A3);
+	RET(i + 1);
+}
+/* (HLE-PORT-01) sceAudioOutReleasePort(port): the slot is free again, its host stream closed. A placeholder before --
+ * a game that opens a port per scene or movie ran out after 8 opens (PORT_FULL) and went silent */
+void audio_close(int dev);
+static void h_audio_release(Cpu *c) {
+	const int i = hle_audio_port_slot(port_len, A0);
+	if (i < 0) { RET(HLE_AUDIO_ERR_INVALID_PORT); return; }
+	if (port_dev[i]) audio_close(port_dev[i]);
+	port_dev[i] = 0; port_len[i] = 0;
+	fprintf(stderr, "    audio port %d released\n", i);
+	RET(0);
 }
 /* RECOMP_AUDIO_WAV=<file>: port 1's output as a WAV file (the header's sizes are patched as it grows);
  * RECOMP_AUDIO_WAV_DIR=<dir>: every port's buffers, each to <dir>/port<i>_<rate>Hz_<ch>ch.wav in its
@@ -868,6 +879,9 @@ static void h_audio_adopt(Cpu *c) { RET(1); }
 static int pstv_looked, pstv_on;
 int display_pstv_looked(void) { return __atomic_load_n(&pstv_looked, __ATOMIC_RELAXED); }
 int display_pstv_active(void) { return __atomic_load_n(&pstv_on, __ATOMIC_RELAXED); }   /* (window.c: the shoulder pair that isn't L and R is the pad's L2/R2, not the touch cursor) */
+/* (HLE-PORT-01) sceKernelGetModel: a handheld, or a PS TV while that layout is on (the same switch the "2" pad reads
+ * follow). SCE_KERNEL_MODEL_VITA 0x10000 / VITATV 0x20000 (vitasdk); the placeholder answered 0, no model at all */
+static void h_kernel_model(Cpu *c) { RET(hle_kernel_model(__atomic_load_n(&pstv_on, __ATOMIC_RELAXED))); }
 static int pstv_mode(void) {   /* the game's look at boot, answered once */
 	static int v = -1;
 	if (v < 0) {
@@ -1091,6 +1105,7 @@ const HleEntry hle_display[] = {
 	{"sceDisplayWaitSetFrameBufCB", h_wait_setbuf_cb}, {"sceDisplayWaitSetFrameBufMultiCB", h_wait_setbuf_multi_cb},
 	{"sceDisplayRegisterVblankStartCallback", h_register_vblank_cb}, {"sceDisplayUnregisterVblankStartCallback", h_unregister_vblank_cb},
 	{"sceAudioOutOpenPort", h_audio_open}, {"sceAudioOutOutput", h_audio_output}, {"sceAudioOutSetVolume", h_audio_set_volume},
+	{"sceAudioOutReleasePort", h_audio_release}, {"sceKernelGetModel", h_kernel_model},   /* (HLE-PORT-01) */
 	{"sceCtrlPeekBufferPositive", h_ctrl_peek}, {"sceTouchPeek", h_touch_peek},
 	{"sceCtrlReadBufferPositive", h_ctrl_read}, {"sceTouchRead", h_touch_read}, {"sceTouchGetPanelInfo", h_touch_panel_info},
 	/* the "2" reads (Killzone 1.12): the same SceCtrlData, on a handheld only from port 0 -- the PS TV's paired pads are ports 1-4,

@@ -24,6 +24,7 @@ void recomp_watch_write(uint32_t a, uint32_t v, int width) { (void)a; (void)v; (
 const char *recomp_cur_tname(void) { return "vcount_test"; }
 void audio_open(void) {}
 void audio_output(void) {}
+void audio_close(void) {}
 void ev_log(void) {}
 void gfx_gpu_last_frame_costs(void) {}
 void gfx_present(void) {}

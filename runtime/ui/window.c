@@ -516,10 +516,13 @@ void *window_handle(void) { return win; }
 static SDL_AudioStream *streams[8];
 static uint32_t afreq[8], achan[8];
 static int adev_frames[8];   /* each port's device buffer, in the port's sample frames (0: unknown -- the pacing keeps its old margin) */
-static int nstreams;
+static int nstreams;   /* slots ever used; a slot below it with no stream was released (audio_close) */
+static int av_applied[8];   /* (defined with its initialiser below, at the A/V sync) */
 int audio_open(uint32_t freq, uint32_t channels, uint32_t samples) {
 	(void)samples;
-	if (!active || nstreams >= 8) return 0;
+	/* (HLE-PORT-01) the first free stream slot: a released port's slot is taken again */
+	int slot = 0; while (slot < nstreams && streams[slot]) slot++;
+	if (!active || slot >= 8) return 0;
 	if (!SDL_WasInit(SDL_INIT_AUDIO) && !SDL_InitSubSystem(SDL_INIT_AUDIO)) return 0;
 	SDL_AudioSpec want = {SDL_AUDIO_S16, (int)channels, (int)freq};
 	/* the device's own buffer, in sample frames (before the first stream opens it): small, so what the
@@ -532,12 +535,18 @@ int audio_open(uint32_t freq, uint32_t channels, uint32_t samples) {
 		SDL_AudioSpec ds; int frames = 0;
 		if (SDL_GetAudioDeviceFormat(SDL_GetAudioStreamDevice(s), &ds, &frames)) {
 			/* in the stream's own format: the device's frames at the device's rate, as many at the port's rate */
-			adev_frames[nstreams] = ds.freq > 0 ? (int)((int64_t)frames * (int64_t)freq / ds.freq) : frames;
-			if (getenv("RECOMP_AUDIO_PAD_LOG")) fprintf(stderr, "    audio device for port %d: %d Hz, %d ch, %d sample frames per buffer\n", nstreams + 1, ds.freq, ds.channels, frames);
+			adev_frames[slot] = ds.freq > 0 ? (int)((int64_t)frames * (int64_t)freq / ds.freq) : frames;
+			if (getenv("RECOMP_AUDIO_PAD_LOG")) fprintf(stderr, "    audio device for port %d: %d Hz, %d ch, %d sample frames per buffer\n", slot + 1, ds.freq, ds.channels, frames);
 		}
 	}
-	streams[nstreams] = s; afreq[nstreams] = freq; achan[nstreams] = channels;
-	return ++nstreams;   /* 1-based handle; 0 means "failed to open" to callers */
+	streams[slot] = s; afreq[slot] = freq; achan[slot] = channels; av_applied[slot] = -1;
+	if (slot == nstreams) nstreams++;
+	return slot + 1;   /* 1-based handle; 0 means "failed to open" to callers */
+}
+/* (HLE-PORT-01) sceAudioOutReleasePort: the port's stream closes and its slot is free for the next open */
+void audio_close(int dev) {
+	if (dev < 1 || dev > nstreams || !streams[dev - 1]) return;
+	SDL_DestroyAudioStream(streams[dev - 1]); streams[dev - 1] = NULL;
 }
 /* ---- automatic A/V sync: the audio held back so that sound and picture of one moment of game time come
  * out together, from measured terms (no per-game or per-frame-rate tuning):
@@ -564,7 +573,7 @@ static int av_auto_delay(int port) {
 	return av_applied[port];
 }
 void audio_output(int dev, const void *buf, uint32_t bytes) {
-	if (dev < 1 || dev > nstreams) return;
+	if (dev < 1 || dev > nstreams || !streams[dev - 1]) return;
 	SDL_AudioStream *s = streams[dev - 1];
 	/* the overlay is open, or the menu bar's Game > Pause is on: the game is paused (display.c's vblank
 	 * wait parks it; see that file's comment), but a buffer already queued before the pause would
@@ -632,7 +641,7 @@ void audio_output(int dev, const void *buf, uint32_t bytes) {
 	}
 	SDL_PutAudioStreamData(s, buf, (int)bytes);
 	{	uint32_t ms = 0;
-		for (int i = 0; i < nstreams; i++) { int q = SDL_GetAudioStreamQueued(streams[i]); uint32_t bps = achan[i] * 2 * (afreq[i] / 1000); if (bps) ms += (uint32_t)q / bps; }
+		for (int i = 0; i < nstreams; i++) { if (!streams[i]) continue; int q = SDL_GetAudioStreamQueued(streams[i]);   /* (a released port's slot: no stream) */ uint32_t bps = achan[i] * 2 * (afreq[i] / 1000); if (bps) ms += (uint32_t)q / bps; }
 		metrics_set_audio(ms, (uint32_t)nstreams, underruns);
 	}
 	/* pacing: the call returns once at most `depth` buffers wait behind the one playing -- the Vita's

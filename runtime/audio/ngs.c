@@ -19,6 +19,7 @@
 #include <string.h>
 #include <time.h>
 #include "hle.h"
+#include "hle_small.h"
 #ifndef _WIN32
 #include <dlfcn.h>
 #include <execinfo.h>
@@ -85,7 +86,7 @@ typedef struct Voice {
 	float bq[5][2][2];
 	uint64_t at9_waited, at9_decoded;   /* RECOMP_NGS_AT9_LOG: output samples spent waiting for data, source samples decoded */
 } Voice;
-typedef struct { uint32_t src, dst, input; float vol[2][2]; int active; } Patch;
+typedef struct { uint32_t src, dst, input; float vol[2][2]; int active; int32_t out, sub; } Patch;   /* (out, sub: the source output and its slot -- HLE-PORT-01) */
 #define ENV_ID 0x5ce3   /* the envelope module's parameter block id (voice_stages, below) */
 static int stages_off(void); static int stage_module(const Voice *v, uint32_t id);
 
@@ -365,6 +366,11 @@ static void h_patch_create(Cpu *c) {
 	pthread_mutex_lock(&lock);
 	Patch *p = &patches[npatches < 1024 ? npatches++ : 1023];
 	p->src = RD32(A0); p->dst = RD32(A0 + 12); p->input = RD32(A0 + 16);
+	{	/* (HLE-PORT-01) SceNgsPatchSetupInfo's source output (+4) and slot (+8; -1: the first free one) */
+		HleNgsPatchSrc ps[1024]; int n = (int)(p - patches);
+		for (int k = 0; k < n; k++) ps[k] = (HleNgsPatchSrc){patches[k].src, patches[k].out, patches[k].sub, patches[k].active};
+		p->out = (int32_t)RD32(A0 + 4); p->sub = hle_ngs_patch_sub(ps, n, p->src, p->out, (int32_t)RD32(A0 + 8));
+	}
 	p->vol[0][0] = p->vol[1][1] = 1; p->vol[0][1] = p->vol[1][0] = 0; p->active = 1;
 	pthread_mutex_unlock(&lock);
 	dump_setup();
@@ -373,6 +379,17 @@ static void h_patch_create(Cpu *c) {
 }
 static Patch *patch_of(uint32_t h) { uint32_t i = h - 0x60000000u; return i < (uint32_t)npatches ? &patches[i] : 0; }
 static void h_patch_remove(Cpu *c) { Patch *p = patch_of(A0); if (p) p->active = 0; RET(0); }
+/* (HLE-PORT-01) sceNgsVoiceGetOutputPatch(voice, output, slot, SceNgsHPatch *out): the active patch from that output slot,
+ * else SCE_NGS_ERROR_PATCH_NOT_AVAIL with a null handle (vitasdk ngs.h; the placeholder answered 0 and wrote nothing) */
+static void h_voice_output_patch(Cpu *c) {
+	if (!A0 || !A3 || (int32_t)A1 < 0 || (int32_t)A2 < 0) { RET(0x804A0002u); return; }   /* SCE_NGS_ERROR_INVALID_PARAM */
+	pthread_mutex_lock(&lock);
+	int found = -1;
+	for (int k = 0; k < npatches && found < 0; k++) if (patches[k].active && patches[k].src == A0 && patches[k].out == (int32_t)A1 && patches[k].sub == (int32_t)A2) found = k;
+	pthread_mutex_unlock(&lock);
+	WR32(A3, found < 0 ? 0 : 0x60000000u + (uint32_t)found);
+	RET(found < 0 ? 0x804A000Eu : 0);
+}
 static void h_patch_volumes(Cpu *c) {   /* (patch, SceNgsVolumeMatrix*: float m[2][2]) */
 	Patch *p = patch_of(A0);
 	if (p && A1) for (int i = 0; i < 4; i++) { float f; memcpy(&f, G(A1 + 4 * i), 4); p->vol[i / 2][i % 2] = f; }
@@ -1248,7 +1265,7 @@ const HleEntry hle_ngs[] = {
 	{"sceNgsSystemRelease", h_ok}, {"sceNgsSystemUpdate", h_system_update},
 	{"sceNgsRackGetRequiredMemorySize", h_rack_mem}, {"sceNgsRackInit", h_rack_init}, {"sceNgsRackRelease", h_ok},
 	{"sceNgsRackGetVoiceHandle", h_rack_voice},
-	{"sceNgsPatchCreateRouting", h_patch_create}, {"sceNgsPatchRemoveRouting", h_patch_remove},
+	{"sceNgsPatchCreateRouting", h_patch_create}, {"sceNgsPatchRemoveRouting", h_patch_remove}, {"sceNgsVoiceGetOutputPatch", h_voice_output_patch},
 	{"sceNgsVoicePatchSetVolumesMatrix", h_patch_volumes},
 	{"sceNgsVoicePlay", h_voice_play}, {"sceNgsVoiceKill", h_voice_kill}, {"sceNgsVoicePause", h_voice_pause},
 	{"sceNgsVoiceKeyOff", h_voice_keyoff},   /* key-off = release and stop, then the finished callback: stubbed, a keyed-off voice stayed "playing" and a sound system that waits for a voice to stop before reusing it (Unit 13 polls GetStateData 100K times a session; Killzone frees its voice in the finished callback) never got a free voice -- a silent gun */

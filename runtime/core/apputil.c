@@ -507,6 +507,11 @@ static void h_app_state(Cpu *c) { memset(G(A0), 0, A1); RET(0); }   /* (SceAppMg
 static uint8_t sysmodule_loaded[0x200];
 static void h_sysmodule_load(Cpu *c) { if (A0 < sizeof sysmodule_loaded) __atomic_store_n(&sysmodule_loaded[A0], 1, __ATOMIC_RELAXED); RET(0); }
 static void h_sysmodule_unload(Cpu *c) { if (A0 < sizeof sysmodule_loaded) __atomic_store_n(&sysmodule_loaded[A0], 0, __ATOMIC_RELAXED); RET(0); }
+/* (HLE-PORT-01) the IME: the host has no on-screen keyboard, so no IME is ever open and no IME dialog runs --
+ * sceImeUpdate says so (SCE_IME_ERROR_NOT_OPENED, vitasdk libime.h) and the dialog status is
+ * SCE_COMMON_DIALOG_STATUS_NONE (0; the placeholder answered the same 0, now on purpose and without the warning) */
+static void h_ime_update(Cpu *c) { RET(0x80100701u); }
+static void h_ime_dialog_status(Cpu *c) { RET(0); }
 static void h_sysmodule_is_loaded(Cpu *c) {
 	RET(A0 < sizeof sysmodule_loaded && __atomic_load_n(&sysmodule_loaded[A0], __ATOMIC_RELAXED) ? 0 : 0x805a1001u);
 }
@@ -518,6 +523,7 @@ static void h_app_param_string(Cpu *c) {
 	RET(0);
 }
 const HleEntry hle_apputil[] = {
+	{"sceImeUpdate", h_ime_update}, {"sceImeDialogGetStatus", h_ime_dialog_status},   /* (HLE-PORT-01) */
 	{"sceAppMgrAppParamGetString", h_app_param_string},
 	{"sceAppMgrReceiveSystemEvent", h_receive_system_event},
 	{"sceAppUtilSystemParamGetInt", h_system_param_int}, {"_sceAppMgrGetAppState", h_app_state}, {"sceSysmoduleIsLoaded", h_sysmodule_is_loaded},
