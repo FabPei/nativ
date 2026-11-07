@@ -131,6 +131,8 @@ reporting a bug.
 - [Player guide](docs/player-guide.md): installing, first run, controls, online play, known issues and bug reports.
 - [How it works](docs/architecture.md): the design, layer by layer.
 - [Working on Nativ](docs/developers.md): the pipeline, packs and versions, and working across machines.
+- [Making a game pack](docs/packs.md): `pack-init`, `bootstrap`, the pack format, hooks and submitting a pack.
+- [Contributing](CONTRIBUTING.md): the one hard rule, reports, pull requests and the content check.
 - [The runtime in detail](docs/runtime.md): display timing, audio, the GPU backend, controls, hooks and metrics.
 - [Verification](docs/verification.md): the regression gate and how the translation and renderer are checked.
 - [Debugging a game](docs/debugging.md): logs, captures, replays and the renderer's switches.
