@@ -483,8 +483,7 @@ void savedlg_answer(int seq, int choice) {
 	pthread_mutex_unlock(&sd_mu);
 }
 
-/* ---- trophies: a context and a handle that accept everything */
-static void h_trophy_create(Cpu *c) { if (A0) WR32(A0, 1); RET(0); }
+/* ---- trophies: trophy.c (HLE-LIB-02) */
 
 /* system events (suspend/resume and the like): none ever arrives; the real call returns an error
  * when the queue is empty, which ends a game's drain loop */
@@ -641,7 +640,5 @@ const HleEntry hle_apputil[] = {
 	{"sceAppUtilSaveDataDataSave", h_save_data_save},
 	{"sceAppUtilSaveDataMount", h_save_data_mount}, {"sceAppUtilSaveDataUmount", h_save_data_umount},
 	{"sceAppUtilSaveDataDataRemove", h_save_data_remove},
-	{"sceNpTrophyCreateContext", h_trophy_create},
-	{"sceNpTrophyCreateHandle", h_trophy_create},
 	{0, 0},
 };

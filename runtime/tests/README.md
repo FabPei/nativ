@@ -178,6 +178,16 @@ the pre-U12c savedlg_ui.cpp): `20 FAILED`, exit 1.
 
 It prints `all passed` and exits 0.
 
+## The trophy set and unlocking: `trophy_test.c`
+
+HLE-LIB-02: `trophy_parse.h` reads a game's TROPHY.TRP (entries by name; TROPCONF.SFM ids, grades, hidden, platinum
+links; TROP_xx.SFM names with XML entities decoded) and unlocks on a 128-bit flag array (platinum refused directly,
+ALREADY_UNLOCKED, the platinum unlocked with the last trophy linked to it). The TRP is built in the test, no game bytes.
+
+    cc -O1 -g -Wall -I ../core trophy_test.c -o /tmp/trophy_test && /tmp/trophy_test
+
+It prints `all passed` and exits 0.
+
 ## The common dialogs' state machine: `cdlg_test.c`
 
 HLE-LIB-01: `cdlg.h` runs every SceCommonDialog kind not handled elsewhere (IME, NP message, NP profile, Facebook,
