@@ -312,6 +312,8 @@ static inline uint64_t SATU(int64_t v, int bits) { int64_t mx = ((int64_t)1 << b
  * shifts right (logical/arithmetic by sign), results truncated or saturated to the element */
 static inline uint32_t SHLR_U(uint32_t v, int sh, int bits) { return sh >= bits || sh <= -bits ? 0 : sh >= 0 ? v << sh : v >> -sh; }
 static inline uint32_t SHLR_S(int32_t v, int sh, int bits) { return sh >= bits ? 0 : sh <= -bits ? (uint32_t)(v >> 31) : sh >= 0 ? (uint32_t)v << sh : (uint32_t)(v >> -sh); }
+static inline uint64_t SHLR64_U(uint64_t v, int sh, int bits) { return sh >= bits || sh <= -bits ? 0 : sh >= 0 ? v << sh : v >> -sh; }   /* vshl.u64 by register (Medieval Defenders' GHASH, 2026-11-07) */
+static inline uint64_t SHLR64_S(int64_t v, int sh, int bits) { return sh >= bits ? 0 : sh <= -bits ? (uint64_t)(v >> 63) : sh >= 0 ? (uint64_t)v << sh : (uint64_t)(v >> -sh); }
 static inline uint64_t QSHLU(uint64_t v, int sh, int bits) {
 	uint64_t mx = bits == 64 ? ~0ull : (1ull << bits) - 1;
 	if (sh <= -64) return 0;

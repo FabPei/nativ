@@ -1,0 +1,14 @@
+# Medieval Defenders (PCSB00672, EU). Only facts about the game (the format: pipeline/packconf.py).
+NAME = "Medieval Defenders"
+# REGION: the release this pack plays (its content id: EP4384-PCSB00672_00-MDEFENDERS00000E, Europe)
+REGION = "EU"
+SPLIT = 8                 # recompiled C split into this many part files
+ELF = "eboot.bin.elf"     # the main module (the decrypted eboot)
+# The game's own sce_module (libc: C runtime; libfios2: Sony's FIOS scheduler/dearchiver; libult: Sony's ULT
+# task scheduler) and the firmware's GXM + GPU services (GXM runs as Sony's code). Import coverage checked
+# at import -- modules named there get added here.
+MODULES = "libc libgxm_es4 libgpu_es4 libfios2 libult"
+TEST_FRAMES = 6000        # a boot probe: toward the game's menu (extended once the boot is characterised)
+
+[versions."1.00"]
+sha256 = "00a293aa357e502980c992e0de9b65d45351c21a3f62ae751fecd3da4a31fb53"   # app0/eboot.bin.elf, measured 2026-11-07

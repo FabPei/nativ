@@ -716,6 +716,20 @@ class Fn:
             n = 8 * cnt // es
             return [f"{{ {ty} a[16]; {oty} o[8]; memcpy(a, &c->vfp.d[{an}], {8 * cnt}); for (int k = 0; k < {n // 2}; k++) o[k] = ({oty})a[2 * k] + ({oty})a[2 * k + 1];"
                     f" memcpy(&c->vfp.d[{dn}], o, {8 * cnt}); }}"]
+        if mn == "vpadal" and dt in ("u8", "u16", "s8", "s16"):
+            # pairwise add of the source's adjacent elements, accumulated into the dest's elements at
+            # twice the source's width (VPADAL.U8 d10, d0: each halfword of d10 += the sum of a byte
+            # pair, wrapping at the dest width; pairs never cross a 64-bit half). Measured on Unicorn
+            # 2026-11-07: VPADAL.U8 accumulates FOUR 16-bit lanes, not two 32-bit ones -- the earlier
+            # per=4 / c->vfp.s shape was wrong for u8/s8 and is replaced by the vpaddl mirror below.
+            (dn, cnt), (an, _) = dbytes(regs[0]), dbytes(regs[1])
+            es = int(dt[1:]) // 8
+            ty, oty = {("u", 1): ("uint8_t", "uint16_t"), ("s", 1): ("int8_t", "int16_t"),
+                       ("u", 2): ("uint16_t", "uint32_t"), ("s", 2): ("int16_t", "int32_t")}[(dt[0], es)]
+            n = 8 * cnt // es
+            return [f"{{ {ty} a[16]; {oty} o[8]; memcpy(a, &c->vfp.d[{an}], {8 * cnt}); memcpy(o, &c->vfp.d[{dn}], {8 * cnt});"
+                    f" for (int k = 0; k < {n // 2}; k++) o[k] = ({oty})(o[k] + ({oty})a[2 * k] + ({oty})a[2 * k + 1]);"
+                    f" memcpy(&c->vfp.d[{dn}], o, {8 * cnt}); }}"]
         # half precision, 4 lanes: vcvt.f32.f16 qD, dM / vcvt.f16.f32 dD, qM
         if mn == "vcvt" and i.mnemonic.endswith((".f32.f16", ".f16.f32")) and len(regs) == 2:
             if i.mnemonic.endswith(".f32.f16") and regs[0][0] == "q":
@@ -778,6 +792,25 @@ class Fn:
                 e = lambda k: f"PACK16({A_(2 * k)} {op} {narrow(b, 2 * k)}, {A_(2 * k + 1)} {op} {narrow(b, 2 * k + 1)})"
             tmp = " ".join(f"uint32_t t{k} = {e(k)};" for k in range(4))
             return [f"{{ {tmp} " + " ".join(f"c->vfp.s[{D + k}] = t{k};" for k in range(4)) + " }"]
+        # widening shift left: vshll.{u,s}{16,32} qD, dN, #imm -- every element of dN shifted left and
+        # widened (zero- or sign-extended) to twice the element width. Medieval Defenders' boot asserts
+        # on vshll.u16 q8, d16, #8 (PCSB00672, 2026-11-07) -- the demonstrated contract; vshll2 (the
+        # high-half source) and vshll.i8 stay unimplemented and assert like any other gap.
+        if mn == "vshll" and re.fullmatch(r"[us](16|32)", dt) and len(ops) == 3 and ops[2].type == ARM_OP_IMM and regs[0][0] == "q" and regs[1][0] == "d":
+            bits, sg, sh = int(dt[1:]), dt[0] == "s", ops[2].imm
+            es = bits // 8
+            a = regs[1][1]
+            def nx(j):   # element j of dN widened to 32 (sign- or zero-extended), as vaddl's narrow
+                w = f"c->vfp.s[{2 * a + j // (4 // es)}]"
+                raw = {2: f"LANE16({w}, {j % 2})", 4: w}[es]
+                return f"(uint32_t)(int{bits}_t){raw}" if sg else raw
+            D = 4 * regs[0][1]
+            if es == 2:   # 32-bit results, one per lane of qD
+                tmp = " ".join(f"uint32_t t{k} = (uint32_t)({nx(k)} << {sh});" for k in range(4))
+                return [f"{{ {tmp} " + " ".join(f"c->vfp.s[{D + k}] = t{k};" for k in range(4)) + " }"]
+            cast = "(uint64_t)(int64_t)(int32_t)" if sg else "(uint64_t)"   # es == 4: 64-bit results, one per d of qD
+            tmp = " ".join(f"uint64_t t{k} = {cast}c->vfp.s[{2 * a + k}] << {sh};" for k in range(2))
+            return [f"{{ {tmp} c->vfp.d[{D // 2}] = t0; c->vfp.d[{D // 2 + 1}] = t1; }}"]
         if any(r and r[0] and r[0] in "dq" and (r[0] == "q") != q for r in regs[1:]) and mn != "vdup":
             return None
         base = lambda r: (4 if r[0] == "q" else 2) * r[1]
@@ -835,6 +868,17 @@ class Fn:
             sr = "(uint32_t)((int32_t)" if dt == "s32" else "("
             return lanes(lambda k: f"({{ int8_t sh = (int8_t){B(k)}; sh >= 32 || sh <= -32 ? {'((int32_t)' + A(k) + ' < 0 && sh < 0 ? 0xffffffffu : 0u)' if dt == 's32' else '0u'}"
                                    f" : sh >= 0 ? {A(k)} << sh : {sr}{A(k)} >> -sh); }})")
+        # 64-bit elements, shift by register: vshl.{u,s}64 qD|dD, qN|dN, qM|dM -- the signed low byte
+        # of M's element, SHLR64 mirroring SHLR_U/SHLR_S. Medieval Defenders' GHASH (vshl.u64 q14, q0,
+        # q15 and vshl.u64 d1, d28, d18, 2026-11-07) is the demonstrated contract.
+        if mn == "vshl" and dt in ("u64", "s64", "i64") and len(ops) == 3 and not imm0 and regs[2] and regs[2][0] in "dq":
+            f_ = "SHLR64_S" if dt == "s64" else "SHLR64_U"
+            db = lambda r: (2 if r[0] == "q" else 1) * r[1]
+            Dd, Nn, Mm = db(regs[0]), db(regs[1]), db(regs[2])
+            nb = 2 if regs[0][0] == "q" else 1
+            tmp = " ".join(f"uint64_t t{k} = {f_}(c->vfp.d[{Nn + k}], (int8_t)c->vfp.d[{Mm + k}], 64);" for k in range(nb))
+            put = " ".join(f"c->vfp.d[{Dd + k}] = t{k};" for k in range(nb))
+            return [f"{{ {tmp} {put} }}"]
         cmp = {"vcgt": ">", "vcge": ">=", "vclt": "<", "vcle": "<=", "veq": "==", "vceq": "=="}
         if mn in cmp and (len(ops) == 3) and dt == "f32":
             op = cmp[mn]
@@ -1106,6 +1150,32 @@ class Fn:
                 return [f"c->vfp.f[{d[1]}] = (float)({src});"]
             if to == "f64":
                 return [f"c->vfp.fd[{d[1]}] = {src};"]
+        if mn == "vmvn" and ops and ops[-1].type == ARM_OP_IMM and regs[0] and regs[0][0] in "dq":
+            # vmvn.i8/i16/i32 dD|qD, #imm: the dest is OVERWRITTEN with NOT(capstone's per-lane pattern)
+            # in every lane (vmvn.i16 d0, #0xe -> 0xfff1fff1fff1fff1 -- verified on Unicorn; the source
+            # register is not read). Medieval Defenders' GHASH (vmvn.i16 d0, #0xe, 2026-11-07).
+            es = {"i8": 1, "i16": 2, "i32": 4}[dt]
+            imm = ops[-1].imm & ((1 << (8 * es)) - 1)
+            word = sum(((~imm) & ((1 << (8 * es)) - 1)) << (8 * es * t) for t in range(64 // (8 * es)))
+            n = 2 if regs[0][0] == "q" else 1
+            db = (2 if regs[0][0] == "q" else 1) * regs[0][1]
+            return [" ".join(f"c->vfp.d[{db + w}] = 0x{word:x}ull;" for w in range(n))]
+        if mn in ("vorr", "vand", "veor", "vbic", "vorn") and dt == "i32" and ops and ops[-1].type == ARM_OP_IMM and regs[0] and regs[0][0] in "dq":
+            # NEON modified immediate: the 32-bit pattern capstone prints, replicated into every lane
+            # (vorr.i32 d31, #0xc0 ORs 0x000000c0 into both words -- verified on Unicorn). dD|qD, #imm
+            # and dD|qD, dN|qN, #imm forms, done on the 64-bit words like the register form below.
+            # Medieval Defenders' GHASH (vorr.i32 d31, #0xc0, 2026-11-07).
+            op = {"vorr": "a | b", "vand": "a & b", "veor": "a ^ b", "vbic": "a & ~b", "vorn": "a | ~b"}[mn]
+            imm = ops[-1].imm & 0xffffffff
+            pat = (imm | (imm << 32)) & 0xffffffffffffffff
+            src = regs[1] if len(ops) == 3 and regs[1] else regs[0]
+            n = 2 if regs[0][0] == "q" else 1
+            db = lambda r: (2 if r[0] == "q" else 1) * r[1]
+            out = []
+            for k in range(n):
+                d, a = db(regs[0]) + k, db(src) + k
+                out.append(f"{{ uint64_t a = c->vfp.d[{a}], b = 0x{pat:x}ull; c->vfp.d[{d}] = {op}; }}")
+            return [" ".join(out)]
         if mn in ("vorr", "vand", "veor", "vbic", "vorn") and len(regs) == 3 and all(r and r[0] in "dq" for r in regs):
             op = {"vorr": "a | b", "vand": "a & b", "veor": "a ^ b", "vbic": "a & ~b", "vorn": "a | ~b"}[mn]
             n = 2 if regs[0][0] == "q" else 1
