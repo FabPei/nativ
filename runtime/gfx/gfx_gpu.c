@@ -1853,7 +1853,7 @@ static int fetch_blit(void) {
 	if (v < 0) { const char *e = getenv("RECOMP_GPU_FETCH_BLIT"), *dv = gpu() ? SDL_GetGPUDeviceDriver(gpu()) : 0; v = e && *e ? *e != '0' : dv && !strcmp(dv, "vulkan"); }
 	return v;
 }
-static int present_nosync(void) { static int v = -1; if (v < 0) { const char *e = getenv("RECOMP_GPU_PRESENT_NOSYNC"); v = e && *e && *e != '0'; } return v; }
+static int present_nosync(void) { static int v = -1; if (v < 0) { const char *e = getenv("RECOMP_GPU_PRESENT_NOSYNC"); v = !(e && *e && *e == '0'); } return v; }   /* headless present default: lazy (2026-11-07); =0 restores the eager guest-memory present */
 static void render_scale_init(void) {
 	static int done; if (done) return; done = 1;
 	const char *e = getenv("RECOMP_RENDER_SCALE"); int n = e ? atoi(e) : settings_int("render_scale", 1);   /* the environment over the game's settings.ini */
@@ -6522,7 +6522,7 @@ void gfx_gpu_present(uint32_t base, uint32_t width, uint32_t height, uint32_t pi
 			 * per frame. Guest memory keeps the frame before this one until something reads it (a
 			 * shot, a texture over it, a CPU write: each syncs first) */
 			window_present_gpu(e->color, TSX(e, width), TSY(e, height), e->kind == TK_U8S); gfx_soft_skip_window = 1;
-		} else if (!window_active() && !gfx_soft_shot_due() && format == 0 && present_nosync()) { /* RECOMP_GPU_PRESENT_NOSYNC=1, headless: the frame stays on the GPU, as it does with a window (see present_nosync); window_present below is a no-op without a window */ }
+		} else if (!window_active() && !gfx_soft_shot_due() && format == 0 && present_nosync()) { /* headless default (2026-11-07): the frame stays on the GPU, as it does with a window; RECOMP_GPU_PRESENT_NOSYNC=0 presents through guest memory (a download and a wait per frame) */ }
 		else { sync_why = "(present)"; target_sync_for_cpu(e); }   /* guest memory must hold what the GPU rendered before anything reads it below */
 	}
 	if (hitch_log() || metrics_osd_level() == 2) {   /* this frame's first-use work and waits, for display.c's hitch line and the full overlay; then the counters start the next frame (RECOMP_GPU_STATS, if also on, zeroed them above already: run one or the other) */
