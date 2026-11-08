@@ -56,6 +56,7 @@
 #include "setting_defaults.h"   /* (U7) the shared defaults for the rows' "default" marks */
 #include "frame_rates.h"        /* the allowed rates the frame-rate rows offer */
 #include "ui_scale.h"
+#include "pad_family.h"   /* (UI-01e) the pad's own button names, shared with the launcher */
 #include "sysinfo.h"   /* the "Copy system info" text (U5) */
 #define STBI_NO_STDIO
 #include "third_party/stb/stb_image.h"   /* (its implementation: runtime/media/jpeg.c) */
@@ -846,7 +847,15 @@ static void build_ui(void) {
 	/* the foot */
 	ImGui::Dummy(ImVec2(0, em * 0.15f));
 	if (ImGui::Button(ui_tr("foot.capture"))) g_want_capture = true;
-	ImGui::SameLine(); ImGui::TextDisabled("%s", SDL_HasGamepad() ? ui_tr("foot.hint_pad") : ui_tr("foot.hint"));
+	if (SDL_HasGamepad()) {   /* (UI-01e) the buttons as printed on the pad in use: LB / RB and B on an Xbox pad or the Deck's A/B, Circle on a PlayStation pad */
+		int n = 0; SDL_JoystickID *ids = SDL_GetGamepads(&n);
+		const int type = ids && n > 0 ? (int)SDL_GetGamepadTypeForID(ids[0]) : -1;
+		SDL_free(ids);
+		const char *deck = std::getenv("SteamDeck");
+		const PadNames *pn = pad_names_of(pad_family(type, deck && !strcmp(deck, "1")));
+		char hint[160]; snprintf(hint, sizeof hint, ui_tr("foot.hint_pad"), pn->l, pn->r, pn->back, pn->menu, pn->menu, pn->view);
+		ImGui::SameLine(); ImGui::TextDisabled("%s", hint);
+	} else { ImGui::SameLine(); ImGui::TextDisabled("%s", ui_tr("foot.hint")); }
 	if (g_save_failed) {   /* (U8: until a later save succeeds) */
 		ImGui::SameLine();
 		ImGui::PushStyleColor(ImGuiCol_Text, ui::error);

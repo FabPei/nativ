@@ -36,6 +36,7 @@
 #include "backends/imgui_impl_sdl3.h"
 #include "backends/imgui_impl_sdlgpu3.h"
 #include "ui_theme.h"   /* the look shared with the in-game overlay */
+#include "pad_family.h"   /* (UI-01e) the controller in use and its buttons' names, shared with the in-game menu */
 #include <ctime>
 #include <SDL3/SDL.h>
 #include <algorithm>
@@ -744,6 +745,77 @@ static bool menu_item(const char *label, const char *hint = nullptr) {   /* a me
 	std::string l = hint ? std::string(label) + "  (" + hint + ")" : std::string(label);
 	return ImGui::Selectable(l.c_str(), false, 0, ImVec2(0, touch_target()));
 }
+/* ---- button hints (UI-01e): "A Select  B Back" in the controller's own names -- shown while a controller or the keyboard
+ * moves the focus, never for a mouse or a finger (they have the buttons themselves). The family: the first pad's SDL type,
+ * the Deck from Steam's SteamDeck=1 (pad_family.h); ATIV_SHOT_PAD=ps|xbox|deck|switch sets it in a screenshot run */
+static int g_pad_fam = PAD_FAM_PS;
+static int pad_family_now(void) {
+	if (const char *e = getenv("ATIV_SHOT_PAD"))
+		return !strcmp(e, "xbox") ? PAD_FAM_XBOX : !strcmp(e, "deck") ? PAD_FAM_DECK : !strcmp(e, "switch") ? PAD_FAM_SWITCH : PAD_FAM_PS;
+	int n = 0; SDL_JoystickID *ids = SDL_GetGamepads(&n);
+	const int type = ids && n > 0 ? (int)SDL_GetGamepadTypeForID(ids[0]) : -1;
+	SDL_free(ids);
+	const char *deck = getenv("SteamDeck");
+	return pad_family(type, deck && !strcmp(deck, "1"));
+}
+static bool hints_keyboard(void) { return GImGui->NavInputSource == ImGuiInputSource_Keyboard; }
+static bool hints_visible(void) {
+	const ImGuiContext &g = *GImGui;
+	return !g_touch && g.NavCursorVisible && (g.NavInputSource == ImGuiInputSource_Gamepad || g.NavInputSource == ImGuiInputSource_Keyboard);
+}
+/* one button as a badge: a round one for a face button (PlayStation's drawn as its shape), a pill for a key or a shoulder */
+static float badge_w(const char *name) {
+	const float h = ImGui::GetTextLineHeight();
+	const bool round = strlen(name) == 1 || (g_pad_fam == PAD_FAM_PS && !hints_keyboard() && (!strcmp(name, "Cross") || !strcmp(name, "Circle") || !strcmp(name, "Square") || !strcmp(name, "Triangle")));
+	return round ? h * 1.3f : ImGui::CalcTextSize(name).x + h * 0.9f;
+}
+static void badge_draw(ImDrawList *dl, ImVec2 p, const char *name) {
+	const float h = ImGui::GetTextLineHeight(), w = badge_w(name), r = h * 0.62f;
+	const ImVec2 c(p.x + w * 0.5f, p.y + h * 0.5f);
+	const ImU32 fill = ui::u32(ui::card_hi), edge = ui::u32(ui::border), ink = ui::u32(ui::text);
+	const bool ps = g_pad_fam == PAD_FAM_PS && !hints_keyboard();
+	if (w <= h * 1.31f) {
+		dl->AddCircleFilled(c, r, fill); dl->AddCircle(c, r, edge, 0, 1.0f);
+		const float s = r * 0.48f, t = std::max(1.5f, h * 0.09f);
+		if (ps && !strcmp(name, "Cross")) { dl->AddLine(ImVec2(c.x - s, c.y - s), ImVec2(c.x + s, c.y + s), ink, t); dl->AddLine(ImVec2(c.x - s, c.y + s), ImVec2(c.x + s, c.y - s), ink, t); }
+		else if (ps && !strcmp(name, "Circle")) dl->AddCircle(c, s * 1.1f, ink, 0, t);
+		else if (ps && !strcmp(name, "Square")) dl->AddRect(ImVec2(c.x - s, c.y - s), ImVec2(c.x + s, c.y + s), ink, 0, 0, t);
+		else if (ps && !strcmp(name, "Triangle")) dl->AddTriangle(ImVec2(c.x, c.y - s * 1.1f), ImVec2(c.x + s * 1.1f, c.y + s * 0.8f), ImVec2(c.x - s * 1.1f, c.y + s * 0.8f), ink, t);
+		else { const ImVec2 ts = ImGui::CalcTextSize(name); dl->AddText(ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), ink, name); }
+	} else {
+		dl->AddRectFilled(ImVec2(p.x, c.y - r), ImVec2(p.x + w, c.y + r), fill, r); dl->AddRect(ImVec2(p.x, c.y - r), ImVec2(p.x + w, c.y + r), edge, r);
+		const ImVec2 ts = ImGui::CalcTextSize(name); dl->AddText(ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), ink, name);
+	}
+}
+/* "<select> Select  <back> Back": as one row, its width first (a place that has room for it) */
+static std::vector<std::pair<std::string, std::string>> hint_items(bool back) {
+	const PadNames *n = pad_names_of(g_pad_fam); const bool kb = hints_keyboard();
+	std::vector<std::pair<std::string, std::string>> v{{kb ? "Enter" : n->select, "Select"}};
+	if (back) v.push_back({kb ? "Esc" : n->back, "Back"});
+	return v;
+}
+static float hints_width(bool back) {
+	const float h = ImGui::GetTextLineHeight(); float w = 0;
+	for (auto &it : hint_items(back)) w += (w > 0 ? h * 1.1f : 0) + badge_w(it.first.c_str()) + h * 0.35f + ImGui::CalcTextSize(it.second.c_str()).x;
+	return w;
+}
+static void hints_draw(bool back) {   /* at the cursor, one line; a Dummy holds its place */
+	const float h = ImGui::GetTextLineHeight(), base = ImGui::GetCurrentWindow()->DC.CurrLineTextBaseOffset;
+	ImDrawList *dl = ImGui::GetWindowDrawList(); ImVec2 p = ImGui::GetCursorScreenPos(); p.y += base; const float x0 = p.x;
+	bool first = true;
+	for (auto &it : hint_items(back)) {
+		if (!first) p.x += h * 1.1f;
+		first = false;
+		badge_draw(dl, p, it.first.c_str()); p.x += badge_w(it.first.c_str()) + h * 0.35f;
+		dl->AddText(p, ui::u32(ui::muted), it.second.c_str()); p.x += ImGui::CalcTextSize(it.second.c_str()).x;
+	}
+	ImGui::Dummy(ImVec2(p.x - x0, h));
+}
+static void dialog_hints(void) {   /* a dialog's foot: the hints on a line of their own under its buttons */
+	if (!hints_visible()) return;
+	ImGui::Dummy(ImVec2(0, ImGui::GetFontSize() * 0.15f));
+	hints_draw(true);
+}
 static float button_w(const char *label) { return ImGui::CalcTextSize(label, nullptr, true).x + ImGui::GetStyle().FramePadding.x * 2; }
 static void same_line_fits(float next_w) {   /* SameLine only when the next item, next_w wide, still fits on this line; else it starts the next one */
 	const ImVec2 at = ImGui::GetCursorScreenPos();   /* (after an item: the next line's start, so this plus the room left is the row's right edge) */
@@ -756,7 +828,8 @@ static void same_line_fits(float next_w) {   /* SameLine only when the next item
  * dialog itself as well gave every dialog a needless scrollbar, 2026-11-08.) */
 static void dialog_body_begin(void) {
 	const ImGuiViewport *vp = ImGui::GetMainViewport(); const ImGuiStyle &s = ImGui::GetStyle(); const float em = ImGui::GetFontSize();
-	const float foot = ImGui::GetFrameHeightWithSpacing() * (vp->WorkSize.x < 44 * em ? 2 : 1) + em * 0.4f;   /* (a narrow window: room for the buttons on two lines) */
+	const float foot = ImGui::GetFrameHeightWithSpacing() * (vp->WorkSize.x < 44 * em ? 2 : 1) + em * 0.4f
+	                 + (hints_visible() ? ImGui::GetTextLineHeightWithSpacing() + em * 0.15f : 0);   /* (the hint line under the buttons) */   /* (a narrow window: room for the buttons on two lines) */
 	float maxh = vp->WorkSize.y * 0.90f - s.WindowPadding.y * 2 - (ImGui::GetCursorPosY() - s.WindowPadding.y) - foot;
 	if (maxh < ImGui::GetFrameHeight() * 2) maxh = ImGui::GetFrameHeight() * 2;
 	ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(FLT_MAX, maxh));
@@ -775,8 +848,11 @@ static bool dialog_back(void) {
 	return ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false);
 }
 static void dialog_body_end(void) { ImGui::EndChild(); ImGui::Dummy(ImVec2(0, ImGui::GetFontSize() * 0.2f)); }
-static void tab_hint(void) {   /* (shown with a controller connected) */
-	if (SDL_HasGamepad()) { same_line_fits(ImGui::CalcTextSize("L1 / R1").x); ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("L1 / R1"); }
+static void tab_hint(void) {   /* (while a controller or the keyboard moves the focus: the buttons that step the tabs) */
+	if (!hints_visible()) return;
+	const PadNames *n = pad_names_of(g_pad_fam);
+	const std::string s = hints_keyboard() ? std::string("Ctrl+Tab") : std::string(n->l) + " / " + n->r;
+	same_line_fits(ImGui::CalcTextSize(s.c_str()).x); ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("%s", s.c_str());
 }
 
 /* ---- shared pieces of the setup and the dialogs */
@@ -1431,7 +1507,7 @@ static void settings_modal(void) {
 	g_settings_tab = (g_settings_tab + tab_step() + 4) % 4;
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
 	SetTarget t{&g_shared, shared_path(), SHARED_HEADER};
-	ImGui::BeginChild("settings_rows", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() - em * 0.4f), ImGuiChildFlags_NavFlattened);
+	ImGui::BeginChild("settings_rows", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() - em * 0.4f - (hints_visible() ? ImGui::GetTextLineHeightWithSpacing() + em * 0.15f : 0)), ImGuiChildFlags_NavFlattened);
 	if (g_settings_tab == 3) library_tab();
 	else if (ui::rows_begin("shared")) {
 		if (g_settings_tab == 0) {
@@ -1487,6 +1563,7 @@ static void settings_modal(void) {
 	if (ImGui::IsItemHovered()) ImGui::SetTooltip("Fullscreen, %d× resolution, widescreen to the window, 60 fps, direct mouse aim, softer shadows", recommended_scale());
 	ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize("Done").x - ImGui::GetStyle().FramePadding.x * 2);
 	if (ui::primary_button("Done") || dialog_back()) { g_settings_open = false; ImGui::CloseCurrentPopup(); }
+	dialog_hints();
 	ImGui::EndPopup();
 }
 
@@ -1580,6 +1657,7 @@ static void game_settings_modal(void) {
 	}
 	dialog_body_end();
 	if (ui::primary_button("Done") || dialog_back()) { g_game_settings.clear(); ImGui::CloseCurrentPopup(); }
+	dialog_hints();
 	ImGui::EndPopup();
 }
 
@@ -1629,6 +1707,7 @@ static void online_name_modal(void) {
 	}
 	ImGui::EndDisabled();
 	same_line_fits(button_w("Not now")); if (ImGui::Button("Not now") || dialog_back()) { g_name_game.clear(); ImGui::CloseCurrentPopup(); }
+	dialog_hints();
 	ImGui::EndPopup();
 }
 static void sac_modal(void) {
@@ -1669,6 +1748,7 @@ static void sac_modal(void) {
 	same_line_fits(button_w("Open Smart App Control settings"));
 	if (g_sac_rebuilt ? ui::primary_button("Open Smart App Control settings") : ImGui::Button("Open Smart App Control settings")) settings();
 	same_line_fits(button_w("Close")); if (ImGui::Button("Close") || dialog_back()) { g_sac_open = g_sac_rebuilt = false; ImGui::CloseCurrentPopup(); }
+	dialog_hints();
 	ImGui::EndPopup();
 }
 
@@ -1825,6 +1905,7 @@ static void setup_modal(SDL_Window *win) {
 		same_line_fits(button_w("Back")); if (ImGui::Button("Back") || dialog_back()) g_setup_step = 3;
 		break;
 	}
+	dialog_hints();
 	ImGui::EndPopup();
 }
 
@@ -1913,6 +1994,7 @@ static void steam_closed_modal(void) {
 	if (ui::primary_button("Try again")) { g_steam_closed_open = false; ImGui::CloseCurrentPopup(); task_start(g_steam_name, "steam", g_steam_game, g_steam_steps); }
 	ImGui::EndDisabled();
 	same_line_fits(button_w("Not now")); if (ImGui::Button("Not now") || dialog_back()) { g_steam_closed_open = false; ImGui::CloseCurrentPopup(); }
+	dialog_hints();
 	ImGui::EndPopup();
 }
 
@@ -2231,6 +2313,7 @@ static void touch_scroll(void) {
 }
 static void hub_ui(SDL_Window *win) {
 	touch_style();
+	g_pad_fam = pad_family_now();
 	touch_scroll();
 	const ImGuiViewport *vp = ImGui::GetMainViewport();
 	const float em = ImGui::GetFontSize();
@@ -2379,7 +2462,13 @@ static void hub_ui(SDL_Window *win) {
 		const ImGuiStyle &sty = ImGui::GetStyle();
 		float lw = ImGui::CalcTextSize(g_drawer ? "Hide log" : "Show log").x + sty.FramePadding.x * 2, cw2 = busy ? ImGui::CalcTextSize("Cancel").x + sty.FramePadding.x * 2 + sty.ItemSpacing.x : 0;
 		const float cpw = ImGui::CalcTextSize("Copy log").x + ImGui::CalcTextSize("Save log...").x + sty.FramePadding.x * 4 + sty.ItemSpacing.x * 2;
-		ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - lw - cw2 - cpw);
+		const float right = ImGui::GetWindowContentRegionMax().x - lw - cw2 - cpw;
+		if (hints_visible()) {   /* (the library's hint: A on a game's button; it has no Back) */
+			ImGui::SameLine(0, ImGui::GetFontSize() * 1.5f);
+			if (ImGui::GetCursorPosX() + hints_width(false) + sty.ItemSpacing.x * 2 <= right) { ImGui::AlignTextToFramePadding(); hints_draw(false); }
+			else ImGui::Dummy(ImVec2(0, 0));
+		}
+		ImGui::SameLine(right);
 	}
 	{	bool empty; { std::lock_guard<std::mutex> l(g_log_lock); empty = g_log.empty(); }
 		ImGui::BeginDisabled(empty);
@@ -2419,6 +2508,7 @@ static void hub_ui(SDL_Window *win) {
 		ImGui::PopTextWrapPos();
 		dialog_body_end();
 		if (started || ImGui::Button("Cancel") || dialog_back()) { g_add_open = false; ImGui::CloseCurrentPopup(); }
+		dialog_hints();
 		ImGui::EndPopup();
 	} else ImGui::PopStyleVar(2);
 	sac_modal();
@@ -2517,6 +2607,11 @@ static void fit_check(void) {
 			for (unsigned i = cmd.IdxOffset; i < cmd.IdxOffset + cmd.ElemCount && i < (unsigned)dl->IdxBuffer.Size; i++) {
 				const ImDrawVert &v = dl->VtxBuffer[cmd.VtxOffset + dl->IdxBuffer[i]];
 				if (fabsf(v.uv.x - white.x) < 1e-6f && fabsf(v.uv.y - white.y) < 1e-6f) continue;
+				{	/* (nor the atlas's baked lines: thick strokes -- the focus frame -- are drawn with them, not a glyph) */
+					bool line = false;
+					for (int lw = 0; lw <= IM_DRAWLIST_TEX_LINES_WIDTH_MAX && !line; lw++) { const ImVec4 &u = atlas->TexUvLines[lw]; line = v.uv.x >= std::min(u.x, u.z) - 1e-6f && v.uv.x <= std::max(u.x, u.z) + 1e-6f && v.uv.y >= std::min(u.y, u.w) - 1e-6f && v.uv.y <= std::max(u.y, u.w) + 1e-6f; }
+					if (line) continue;
+				}
 				const ImVec2 p = v.pos;
 				const bool x = p.x > cmd.ClipRect.z + 1.5f || p.x < cmd.ClipRect.x - 1.5f;
 				if (x && !cut_x) at = p;
@@ -2549,7 +2644,8 @@ static int shot(SDL_Window *win, const char *path, int w, int h) {
 	if (const char *ks = getenv("ATIV_SHOT_KEYS")) {
 		static const std::pair<const char *, ImGuiKey> names[] = {{"up", ImGuiKey_GamepadDpadUp}, {"down", ImGuiKey_GamepadDpadDown}, {"left", ImGuiKey_GamepadDpadLeft},
 			{"right", ImGuiKey_GamepadDpadRight}, {"a", ImGuiKey_GamepadFaceDown}, {"b", ImGuiKey_GamepadFaceRight}, {"x", ImGuiKey_GamepadFaceLeft}, {"y", ImGuiKey_GamepadFaceUp},
-			{"l1", ImGuiKey_GamepadL1}, {"r1", ImGuiKey_GamepadR1}, {"start", ImGuiKey_GamepadStart}, {"esc", ImGuiKey_Escape}};
+			{"l1", ImGuiKey_GamepadL1}, {"r1", ImGuiKey_GamepadR1}, {"start", ImGuiKey_GamepadStart}, {"esc", ImGuiKey_Escape},
+			{"kup", ImGuiKey_UpArrow}, {"kdown", ImGuiKey_DownArrow}, {"kleft", ImGuiKey_LeftArrow}, {"kright", ImGuiKey_RightArrow}, {"enter", ImGuiKey_Enter}};   /* (k...: the keyboard's arrows) */
 		std::string s = ks;
 		for (size_t a = 0; a <= s.size(); ) {
 			size_t e = s.find(',', a); if (e == std::string::npos) e = s.size();
