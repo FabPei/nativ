@@ -13,6 +13,7 @@ MODULES = "libc libgxm_es4 libgpu_es4 libfios2 libult libSceFt2 libpvf libscemp4
 # logged by RECOMP_LOG_GAMMA) into linear lighting. Without the modes the first snow level lit far too bright and
 # washed out to white (owner report); with them the same replayed frames show the level's detail and contrast.
 RUN_ENV = "RECOMP_SRGB=1"
+IHOOKS = "0x817c938e:ssd_pace 0x8127eb38:frame_dt 0x81058b50:ssd_aspect 0x8162c838:ssd_aspect 0x816d0a1a:ssd_aspect 0x81759902:ssd_aspect 0x817bf9ce:ssd_aspect 0x817c1e1c:ssd_aspect 0x81289d14:ssd_aspect"   # FEAT-ALL-01 (local): ssd_pace -- the frame pacer fn_817c932c's 1/30 s period (loaded by the ldm at 0x817c938e) made 1/rate at 60/120 fps (runtime/core/hooks.c); frame_dt -- fn_8127eb24's fixed 1/30 s step (movt at 0x8127eb38, used when its flag is set) gets the real frame time; ssd_aspect -- the seven camera setups' 960/544 movt, widened for wider aspect ratios (packs/PCSF00532/hooks.c)
 TEST_ENV = "RECOMP_SRGB=1"
 
 # The build of the game this pack plays: [versions."<version>"], the SHA-256 of its eboot.bin.elf and its status
