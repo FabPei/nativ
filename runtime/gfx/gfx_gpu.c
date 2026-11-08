@@ -2721,14 +2721,17 @@ static int same_region_read(const GfxTexture *tex) {
  * keeps the stretch. Off at the native aspect. */
 static volatile uint32_t presented_ring[4], presented_n;
 static int scene_hud;               /* this scene's target has been presented: its 2D draws are the HUD */
-static int hud_mode_cur = 2;        /* 0 stretch, 1 16:9, 2 edges: settings "hud_layout", read at each present */
+static int hud_mode_cur = 2;        /* 0 stretch, 1 16:9, 2 edges, 3 frame (every group about the centre: the whole 2D layer as one native-width frame -- a menu whose labels and text lines are several draws each, P4D): settings "hud_layout", read at each present */
 static uint32_t n_hud_draws; static uint64_t t_hud;
 static void hud_note_present(uint32_t base) {
 	for (int i = 0; i < 4; i++) if (presented_ring[i] == base) goto mode;
 	presented_ring[presented_n++ & 3] = base;
 mode:;
-	char b[16]; settings_str("hud_layout", "edges", b, sizeof b);
-	hud_mode_cur = !strcmp(b, "stretch") ? 0 : !strcmp(b, "16:9") ? 1 : 2;
+	/* RECOMP_HUD_LAYOUT (a game's RUN_ENV): its default when the player hasn't chosen one -- "16:9" for a game whose 2D
+	 * menus draw one label or text line in several draws, which "edges" would pull apart by thirds (P4D, 2026-11-08) */
+	static const char *pack_def = (const char *)-1; if (pack_def == (const char *)-1) { pack_def = getenv("RECOMP_HUD_LAYOUT"); if (pack_def && !*pack_def) pack_def = 0; }
+	char b[16]; settings_str("hud_layout", pack_def ? pack_def : "edges", b, sizeof b);
+	hud_mode_cur = !strcmp(b, "stretch") ? 0 : !strcmp(b, "16:9") ? 1 : !strcmp(b, "frame") ? 3 : 2;   /* "frame": a pack default only (RECOMP_HUD_LAYOUT) */
 }
 void gfx_gpu_hud_note_present(uint32_t base) { hud_note_present(base); }   /* gfxreplay: a one-frame capture presents after its scenes, so they are noted up front */
 static int hud_scene(uint32_t addr) { for (int i = 0; i < 4; i++) if (addr && presented_ring[i] == addr) return 1; return 0; }
@@ -4485,7 +4488,7 @@ static void hud_layout(void) {
 	}
 	for (int a = 0; a < n; a++) if (par[a] == a) {
 		const float cx = 0.5f * (g[a][0] + g[a][1]), w = g[a][1] - g[a][0];
-		anc[a] = edge[a] ? (hud_mode_cur == 1 ? 0.0f : (float)edge[a]) : (fabsf(cx) < 0.15f && w < 0.5f) ? 0.0f : cx;
+		anc[a] = hud_mode_cur == 3 ? 0.0f : edge[a] ? (hud_mode_cur == 1 ? 0.0f : (float)edge[a]) : (fabsf(cx) < 0.15f && w < 0.5f) ? 0.0f : cx;
 	}
 	{	static int log = -1; if (log < 0) { const char *e = getenv("RECOMP_HUD_LOG"); log = e ? atoi(e) : 0; }
 		if (log >= 2) for (int a = 0; a < n; a++) if (par[a] == a) {   /* RECOMP_HUD_LOG=2: the groups */

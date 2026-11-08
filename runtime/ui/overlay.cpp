@@ -387,8 +387,10 @@ static void page_display(void) {
 	if (gfx_gpu_hud_supported()) {
 		ui::row(ui_tr("display.hud"), ui_tr("display.hud_help"), note_s("hud_layout"));
 		static const char *const ids[3] = {"edges", "16:9", "stretch"};
-		char cur[16]; settings_str("hud_layout", "edges", cur, sizeof cur);
+		const char *hud_def = getenv("RECOMP_HUD_LAYOUT");   /* the game's default (RUN_ENV), as gfx_gpu.c hud_note_present */
+		char cur[16]; settings_str("hud_layout", hud_def && *hud_def ? hud_def : "edges", cur, sizeof cur);
 		int v = 0; for (int i = 0; i < 3; i++) if (!strcmp(cur, ids[i])) v = i;
+		if (!strcmp(cur, "frame")) v = 1;   /* the pack default "frame" (all centred) shown as its nearest choice, 16:9 */
 		char t0[48], t1[48], t2[48];
 		const char *names[3] = {tr_suf(ui_tr("display.hud_edges"), "##hud", t0, sizeof t0), tr_suf("16:9", "##hud", t1, sizeof t1),
 		                        tr_suf(ui_tr("display.hud_stretched"), "##hud", t2, sizeof t2)};
