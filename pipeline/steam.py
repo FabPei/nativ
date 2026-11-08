@@ -194,9 +194,11 @@ def running():
     if v in ("0", "1"):
         return v == "1"
     if sys.platform == "win32":
-        r = subprocess.run(["tasklist", "/FI", "IMAGENAME eq steam.exe", "/NH"], capture_output=True, text=True,
+        # (bytes, not text: tasklist answers in the console's code page -- a German umlaut in its no-match line is
+        # not UTF-8, and Python's UTF-8 mode, which the launcher sets, failed on it)
+        r = subprocess.run(["tasklist", "/FI", "IMAGENAME eq steam.exe", "/NH"], capture_output=True,
                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        return "steam.exe" in r.stdout.lower()
+        return b"steam.exe" in r.stdout.lower()
     for c in glob.glob("/proc/[0-9]*/comm"):
         try:
             if open(c).read().strip() in ("steam", "steam_osx"):

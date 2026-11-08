@@ -1750,6 +1750,15 @@ static void steam_refresh(void) {
 		std::string out; char b[512]; long n; while ((n = proc_read(p, b, sizeof b)) > 0) out.append(b, (size_t)n);
 		proc_wait(p); proc_done(p);
 		steam_parse(out);
+		std::string dir = "-", run = "0"; size_t n_in = 0;   /* one line in the log: what was found (for a question about it) */
+		for (size_t a = 0; a < out.size(); ) {
+			size_t e = out.find('\n', a); if (e == std::string::npos) e = out.size();
+			std::string l = out.substr(a, e - a); while (!l.empty() && l.back() == '\r') l.pop_back();
+			if (l.rfind("steam ", 0) == 0) dir = l.substr(6); else if (l.rfind("running ", 0) == 0) run = l.substr(8); else if (l.rfind("in ", 0) == 0) n_in++;
+			a = e + 1;
+		}
+		log_line(dir == "-" ? std::string("Steam: not found on this computer") :
+		         "Steam: " + dir + (run == "1" ? ", running" : ", not running") + ", " + std::to_string(n_in) + " game(s) added from here");
 	}).detach();
 }
 static std::string self_exe(void) {   /* this launcher, as Steam is to start it (in an AppImage: the AppImage; "": not known) */
@@ -1972,6 +1981,42 @@ static void game_card(const Game &g, float w, float name_h) {
 	ImGui::PopID();
 }
 
+/* ---- the log, copied or saved whole (the activity bar's Copy log / Save log...): for a bug report or a question */
+static std::mutex g_log_note_lock;
+static std::string g_log_note, g_log_note_key; static Uint64 g_log_note_until;   /* "Copied" / "Saved" on its button for a moment */
+static std::string g_log_to_save;                                 /* the log as it was when Save log was pressed */
+static void log_note(const char *key, const std::string &n) { std::lock_guard<std::mutex> l(g_log_note_lock); g_log_note_key = key; g_log_note = n; g_log_note_until = SDL_GetTicks() + 2500; }
+static std::string log_copy(void) { std::lock_guard<std::mutex> l(g_log_lock); return g_log; }
+static void SDLCALL log_saved(void *, const char *const *files, int) {   /* (the dialog's callback: on its own thread) */
+	if (!files || !files[0]) return;   /* (cancelled, or the dialog failed) */
+	std::string path = files[0];
+	size_t slash = path.find_last_of("/\\"), dot = path.rfind('.');
+	if (dot == std::string::npos || (slash != std::string::npos && dot < slash)) path += ".log";
+	FILE *f = fopen(path.c_str(), "wb");
+	bool ok = f && fwrite(g_log_to_save.data(), 1, g_log_to_save.size(), f) == g_log_to_save.size();
+	if (f && fclose(f) != 0) ok = false;
+	log_note("save", ok ? "Saved" : "Not saved");
+}
+static void log_save(SDL_Window *win) {
+	static const SDL_DialogFileFilter f[] = {{"Log file (*.log)", "log"}, {"Text file (*.txt)", "txt"}, {"All files (*.*)", "*"}};
+	g_log_to_save = log_copy();
+	char name[64]; time_t t = time(nullptr); struct tm tm;
+#ifdef _WIN32
+	localtime_s(&tm, &t);
+#else
+	localtime_r(&t, &tm);
+#endif
+	strftime(name, sizeof name, "nativ-launcher-%Y%m%d-%H%M%S.log", &tm);
+	const char *docs = SDL_GetUserFolder(SDL_FOLDER_DOCUMENTS);
+	std::string where = docs ? std::string(docs) + name : std::string(name);
+	SDL_ShowSaveFileDialog(log_saved, nullptr, win, f, 3, where.c_str());
+}
+static bool log_button(const char *label, const char *id) {   /* its label, or the note for a moment after it was used */
+	std::string shown = label;
+	{ std::lock_guard<std::mutex> l(g_log_note_lock); if (SDL_GetTicks() < g_log_note_until && !g_log_note.empty() && g_log_note_key == id) shown = g_log_note; }
+	return ImGui::Button((shown + "###" + id).c_str());
+}
+
 /* ---- the window */
 static void hub_ui(SDL_Window *win) {
 	const ImGuiViewport *vp = ImGui::GetMainViewport();
@@ -2106,7 +2151,18 @@ static void hub_ui(SDL_Window *win) {
 	{
 		const ImGuiStyle &sty = ImGui::GetStyle();
 		float lw = ImGui::CalcTextSize(g_drawer ? "Hide log" : "Show log").x + sty.FramePadding.x * 2, cw2 = busy ? ImGui::CalcTextSize("Cancel").x + sty.FramePadding.x * 2 + sty.ItemSpacing.x : 0;
-		ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - lw - cw2);
+		const float cpw = ImGui::CalcTextSize("Copy log").x + ImGui::CalcTextSize("Save log...").x + sty.FramePadding.x * 4 + sty.ItemSpacing.x * 2;
+		ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - lw - cw2 - cpw);
+	}
+	{	bool empty; { std::lock_guard<std::mutex> l(g_log_lock); empty = g_log.empty(); }
+		ImGui::BeginDisabled(empty);
+		if (log_button("Copy log", "copy")) { SDL_SetClipboardText(log_copy().c_str()); log_note("copy", "Copied"); }
+		if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip(empty ? "Nothing in the log yet" : "Copies the whole launcher log, to paste into a bug report or a message");
+		ImGui::SameLine();
+		if (log_button("Save log...", "save")) log_save(win);
+		if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip(empty ? "Nothing in the log yet" : "Saves the whole launcher log as a file");
+		ImGui::EndDisabled();
+		ImGui::SameLine();
 	}
 	if (busy) { if (ImGui::Button("Cancel")) task_cancel(); ImGui::SameLine(); }
 	if (ImGui::Button(g_drawer ? "Hide log" : "Show log")) g_drawer = !g_drawer;
