@@ -676,8 +676,13 @@ def cmd_test(g):
         ("RECOMP_TOUCH", g.TEST_TOUCH), ("RECOMP_HEADLESS", "1"), ("RECOMP_FS", "fs"), ("RECOMP_LOG", "0"), ("RECOMP_SHOT", every or frames),
         ("RECOMP_SHOT_LAST", frames)])   # (a series too ends at the test frame: it ran on to the timeout, 15 minutes for shots it had long since taken)
     with open(os.path.join(td, "test.log"), "wb") as log:
-        timed(g.exe_argv(os.path.join(OUT, g.EXE)) + [os.path.join("..", g.BASE + ".img"), g.entry(), "100000000000"], e, td, subprocess.DEVNULL, log,
-              test_timeout(g))
+        t0 = time.time()
+        rc = timed(g.exe_argv(os.path.join(OUT, g.EXE)) + [os.path.join("..", g.BASE + ".img"), g.entry(), "100000000000"], e, td, subprocess.DEVNULL, log,
+                   test_timeout(g))
+        # how the host ended, for whoever reads the log (bootstrap's classify): a run that stops without a word of its own
+        # was a game- or runtime-requested exit (0), a host fault (an NTSTATUS such as 0xc0000094) or the time limit
+        late = " at the time limit" if time.time() - t0 >= test_timeout(g) - 1 else ""
+        log.write(f"\n== host exit code {rc} ({(rc or 0) & 0xffffffff:#x}){late}\n".encode())
     missed = os.path.join(td, "missed_functions.txt")
     if os.path.isfile(missed) and os.path.getsize(missed):
         # each address to its module: a firmware module's as an offset into $SEEDS/<module>.txt, the rest the game's
@@ -948,7 +953,10 @@ def cmd_pack_init(T, force):
     if elf != "eboot.bin.elf":   # (the program it launches: its imports decide the modules)
         libs = {lib for lib, *_ in imp.imports(os.path.join(edir, elf))[1]}
     g = Game(T, "import")
-    mods, left = bootstrap.modules(app0, libs, lambda m: os.path.isfile(g.modelf(m)))
+    def mod_libs(m):   # (the libraries a chosen firmware module imports; one that isn't a readable ELF adds none)
+        try: return {lib for lib, *_ in imp.imports(g.modelf(m))[1]}
+        except Exception: return set()
+    mods, left = bootstrap.modules(app0, libs, lambda m: os.path.isfile(g.modelf(m)), mod_libs)
     name, version = bootstrap.identity(app0, sfo.read_sfo_file)
     notes = ([note] if note else []) + ([f"shipped in sce_module/ but not loaded: {' '.join(left)} (add to MODULES if the run stubs their imports)"] if left else [])
     notes += [f"imports {lib}: {m} is not on this machine (vitarecomp firmware)" for lib, m in bootstrap.IMPORT_MODULES.items() if lib in libs and m not in mods]
@@ -996,10 +1004,17 @@ class GameSteps(bootstrap.Steps):
         return out
 
 
+def scan_data(g):
+    """the main program's analysis now (Game fixes g.DATA when it is made: before bootstrap's first analyze it names the
+    old Ghidra export, the file analyze then writes is the analysis one)"""
+    return next((p for p in (os.path.join(g.W, "analysis", "eboot.data.json"), g.DATA) if os.path.isfile(p)), "")
+
+
 def cmd_hooks_scan(g, quiet=False):
     """finder A1 (pipeline/hookscan.py) over the main program's analysis: analysis/hook_candidates.json; the result"""
-    if not os.path.isfile(g.DATA): die(f"{g.T}: no analysis yet (vitarecomp analyze {g.T})")
-    res = hookscan.scan(json.load(open(g.DATA, encoding="utf-8")))
+    data = scan_data(g)
+    if not data: die(f"{g.T}: no analysis yet (vitarecomp analyze {g.T})")
+    res = hookscan.scan(json.load(open(data, encoding="utf-8")))
     with open(os.path.join(g.W, "analysis", "hook_candidates.json"), "w", encoding="utf-8", newline="\n") as f: json.dump(res, f, indent=1)
     if not quiet:
         say(f"{g.T}: {len(res['candidates'])} hook candidate(s) in {res['functions']} functions: " +
@@ -1021,7 +1036,7 @@ def cmd_bootstrap(g, rest):
                 hit = next((l for l in fh if l.startswith(lab)), None)
             if hit: s["detail"] = hit[len(lab):].split("*/")[0].strip(); break
     os.makedirs(os.path.join(g.W, "analysis"), exist_ok=True)
-    if os.path.isfile(g.DATA):   # (finder A1: the auto pack gets the hook candidates as commented lines, once)
+    if scan_data(g):   # (finder A1: the auto pack gets the hook candidates as commented lines, once)
         res = cmd_hooks_scan(g, quiet=True); s["hook_candidates"] = res["counts"]
         if "AUTO_GENERATED" in g.c and os.path.isfile(g.CONF) and "# hook candidates (vitarecomp hooks-scan" not in open(g.CONF, encoding="utf-8").read():
             with open(g.CONF, "a", encoding="utf-8", newline="\n") as f: f.write("\n".join(hookscan.ihooks_lines(res)) + "\n")

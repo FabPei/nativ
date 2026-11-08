@@ -20,8 +20,9 @@ import re
 # every pack's: the C runtime and the C++ library, the firmware's GXM and its GPU services library, the file system
 BASE_MODULES = ("libc", "libgxm_es4", "libgpu_es4", "libfios2")
 # a firmware module the runtime runs as Sony's code when the game imports its library (Uncharted / P4G / Killzone's
-# packs: libscemp4 for SceMp4, libsceavplayer for SceAvPlayer); the runtime's own HLE covers the rest
-IMPORT_MODULES = {"SceMp4": "libscemp4", "SceAvPlayer": "libsceavplayer"}
+# packs: libscemp4 for SceMp4, libsceavplayer for SceAvPlayer; P4G's / SSD's: libpvf for the ScePvf font library, which
+# itself imports SceFt2 from libSceFt2); the runtime's own HLE covers the rest
+IMPORT_MODULES = {"SceMp4": "libscemp4", "SceAvPlayer": "libsceavplayer", "ScePvf": "libpvf", "SceFt2": "libSceFt2"}
 
 STOPS = ("frame_reached", "missed_function", "missed_function_not_fixed", "unimplemented_instruction", "crash",
          "no_frame", "build_failed", "max_iterations")
@@ -62,10 +63,16 @@ def main_elf(app0, eboot_imports):
     return "eboot.bin.elf", ""
 
 
-def modules(app0, libraries, have_module=lambda m: True):
-    """MODULES: the base four, then each firmware module whose library the game imports (when this machine has it);
-    and the shipped sce_module/ modules left out, for the notes"""
-    mods = list(BASE_MODULES) + [m for lib, m in IMPORT_MODULES.items() if lib in libraries and have_module(m)]
+def modules(app0, libraries, have_module=lambda m: True, module_libraries=lambda m: ()):
+    """MODULES: the base four, then each firmware module whose library the game -- or a module already chosen (libpvf
+    imports SceFt2) -- imports (when this machine has it); and the shipped sce_module/ modules left out, for the notes.
+    module_libraries(m): the libraries module m imports"""
+    mods, libs = list(BASE_MODULES), set(libraries)
+    while True:
+        add = [m for lib, m in IMPORT_MODULES.items() if lib in libs and m not in mods and have_module(m)]
+        if not add: break
+        for m in add:
+            mods.append(m); libs |= set(module_libraries(m))
     shipped = sorted({f.split(".")[0] for f in os.listdir(os.path.join(app0, "sce_module"))} if os.path.isdir(os.path.join(app0, "sce_module")) else [])
     return mods, [s for s in shipped if s not in mods]
 
@@ -94,6 +101,7 @@ _MISSED = re.compile(r"call to (0x[0-9a-f]+): neither recompiled code nor an imp
 _UNIMPL = re.compile(r"unimplemented instruction at (0x[0-9a-f]+)")
 _CRASH = re.compile(r"== crash: (.*?) at host address \S+ \(guest (0x[0-9a-f]+)\)")
 _STUB = re.compile(r"    import (\S+): not implemented")
+_EXIT = re.compile(r"== host exit code \S+ \((0x[0-9a-f]+)\)(.*)")
 
 
 def classify(log, shot):
@@ -105,8 +113,10 @@ def classify(log, shot):
     elif (m := _MISSED.search(log)): r.update(stop="missed_function", addr=m.group(1))
     elif (m := _CRASH.search(log)): r.update(stop="crash", addr=m.group(2), detail=m.group(1))
     else:
-        tail = [l for l in log.splitlines() if l.strip()][-1:]
-        r["detail"] = tail[0][:200] if tail else "empty log: the run timed out or exited silently"
+        ex = _EXIT.search(log)
+        tail = [l for l in log.splitlines() if l.strip() and not _EXIT.match(l)][-1:]
+        r["detail"] = (f"host exit code {ex.group(1)}{ex.group(2)}; " if ex else "") + \
+            (tail[0][:200] if tail else "empty log: the run timed out or exited silently")
     return r
 
 
