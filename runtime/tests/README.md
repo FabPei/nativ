@@ -100,9 +100,21 @@ It prints `all passed`.
 Checks `runtime/media/camera.c` (SceCamera) the way Uncharted's hold-it-to-the-light parchment puzzles use it: the
 rear camera opened with YUV420 planes at 640x480, and frames read with the lamp off and on (F7), checking the planes
 come out dark and then bright, along with the frame index and status. Then buffers given per read, and a 32-bit ABGR
-format. The behaviour follows Vita3K's SceCamera module; there's no console reference.
+format. The behaviour follows Vita3K's SceCamera module; there's no console reference. Then the newer SDK's 0x48-byte
+`SceCameraRead` (Soul Sacrifice Delta's AR mode: plane sizes at +0x30, bases at +0x3c, read from the game's own code)
+and `sceCameraGetDeviceLocation`. `-DCAMERA_TEST_BEFORE` leaves out the checks of functions that did not exist before.
 
     cc -O1 -g -Wall -Wno-unused-function $INC $(pkg-config --cflags --libs sdl3) camera_test.c -o /tmp/camera_test && /tmp/camera_test
+
+## Camera AR: `smart_test.c`
+
+Checks `runtime/media/smart.c` (SceSmart) in the order Soul Sacrifice Delta's AR mode calls it: Init, a learned image
+target registered with scene mapping, Start, 120 frames of SceneMappingRun (the mapping state at result+8 must read 0,
+"nothing found", whatever was in it), no initialisation points or landmarks, the Reset/Stop/Start recovery and the
+exit order; calls out of order are refused. No public source documents the library, so the contract is the game's.
+`-DSMART_TEST_BEFORE` runs the same sequence through the generic stub (the fail-before).
+
+    cc -O1 -g -Wall -Wno-unused-function $INC smart_test.c -o /tmp/smart_test && /tmp/smart_test
 
 It prints `all passed`.
 

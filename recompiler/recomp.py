@@ -31,6 +31,7 @@ md_arm = Cs(CS_ARCH_ARM, CS_MODE_ARM)   # ARM-mode functions (hand-written libra
 md_arm.detail = True
 COND = ("eq", "ne", "hs", "lo", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt", "le", "cs", "cc")
 GPR = {f"r{i}": i for i in range(13)} | {"sb": 9, "sl": 10, "fp": 11, "ip": 12, "sp": 13, "lr": 14, "pc": 15}
+CODE = [None]   # main()'s code(lo, hi): the module's bytes, for a tbb/tbh table (Fn.table_targets)
 HOOKS = {}   # --hooks: {entry addr: host hook name}; empty unless a game's conf asks for one (see usage above)
 IHOOKS = {}  # --insn-hooks: {instruction addr: host hook name}, called after that instruction
 # lock-free code: a function with any of these gets ordered loads (each one before every later load, rt.h RD32A). ARMv7
@@ -62,6 +63,25 @@ class Fn:
     def reg(self, rid):
         n = md.reg_name(rid)
         return n
+
+    def table_targets(self, tab, size):
+        """a tbb/tbh table's targets: entries read from the code at tab until the lowest target so far (the code
+        right after an inline table is its first case), each tab + 2 * entry. None when the bytes are not there or a
+        target is not an instruction of this function: the caller keeps the computed JUMP"""
+        targets, end, k = [], None, 0
+        while end is None or tab + (k + 1) * size <= end:
+            b = CODE[0](tab + k * size, tab + (k + 1) * size) if CODE[0] else None
+            if b is None or k >= 4096:
+                return None
+            t = tab + 2 * int.from_bytes(b, "little")
+            if t < tab + (k + 1) * size and size == 1 and tab + (k + 1) * size == end and targets:
+                break   # a byte table's alignment pad before the first case
+            if t not in self.addrs or t < tab + (k + 1) * size:
+                return None
+            targets.append(t)
+            end = t if end is None else min(end, t)
+            k += 1
+        return targets or None
 
     def r(self, rid, insn):
         """a GPR operand's value (pc reads as the instruction's address + 4)"""
@@ -449,7 +469,15 @@ class Fn:
             idx = self.r(m.index, i)
             tab = i.address + 4
             ld = f"RD8(0x{tab:x}u + {idx})" if mn == "tbb" else f"RD16(0x{tab:x}u + 2 * {idx})"
-            return [f"{{ uint32_t t = 0x{tab:x}u + 2 * {ld}; JUMP(t); }}"]
+            targets = self.table_targets(tab, 1 if mn == "tbb" else 2)
+            if targets is None:
+                return [f"{{ uint32_t t = 0x{tab:x}u + 2 * {ld}; JUMP(t); }}"]
+            # the table's own targets, read from the code: a local switch instead of JUMP. JUMP's function-wide
+            # switch makes every instruction a branch target, and one tbh in a 46k-line function cost 21 min of
+            # compile (x86 register coalescer, BUILD-03). An index past the table took JUMP's default before too.
+            return ([f"{{ uint32_t t = 0x{tab:x}u + 2 * {ld}; switch (t) {{"]
+                    + [f"\tcase 0x{a:x}u: goto L_{a:08x};" for a in sorted(set(targets))]
+                    + ["\tdefault: c->r[15] = t; recomp_unimplemented(c, t); return;", "} }"])
         raise Unsupported(mn)
 
     # ------------------------------------------------------------------ VFP / NEON
@@ -708,15 +736,17 @@ class Fn:
         if mn == "vmovn" and dt == "i64" and regs[0][0] == "d" and regs[1][0] == "q":
             d, q0 = regs[0][1], 2 * regs[1][1]
             return [f"c->vfp.d[{d}] = (uint64_t)(uint32_t)c->vfp.d[{q0 + 1}] << 32 | (uint32_t)c->vfp.d[{q0}];"]
-        if mn == "vpaddl" and dt in ("u8", "u16", "s8", "s16"):
+        # (u32/s32: pairs of words into 64-bit lanes -- a shipped image-tracking module's vpaddl.u32 q1, q1)
+        if mn == "vpaddl" and dt in ("u8", "u16", "u32", "s8", "s16", "s32"):
             (dn, cnt), (an, _) = dbytes(regs[0]), dbytes(regs[1])
             es = int(dt[1:]) // 8
             ty, oty = {("u", 1): ("uint8_t", "uint16_t"), ("s", 1): ("int8_t", "int16_t"),
-                       ("u", 2): ("uint16_t", "uint32_t"), ("s", 2): ("int16_t", "int32_t")}[(dt[0], es)]
+                       ("u", 2): ("uint16_t", "uint32_t"), ("s", 2): ("int16_t", "int32_t"),
+                       ("u", 4): ("uint32_t", "uint64_t"), ("s", 4): ("int32_t", "uint64_t")}[(dt[0], es)]
             n = 8 * cnt // es
             return [f"{{ {ty} a[16]; {oty} o[8]; memcpy(a, &c->vfp.d[{an}], {8 * cnt}); for (int k = 0; k < {n // 2}; k++) o[k] = ({oty})a[2 * k] + ({oty})a[2 * k + 1];"
                     f" memcpy(&c->vfp.d[{dn}], o, {8 * cnt}); }}"]
-        if mn == "vpadal" and dt in ("u8", "u16", "s8", "s16"):
+        if mn == "vpadal" and dt in ("u8", "u16", "u32", "s8", "s16", "s32"):
             # pairwise add of the source's adjacent elements, accumulated into the dest's elements at
             # twice the source's width (VPADAL.U8 d10, d0: each halfword of d10 += the sum of a byte
             # pair, wrapping at the dest width; pairs never cross a 64-bit half). Measured on Unicorn
@@ -725,7 +755,8 @@ class Fn:
             (dn, cnt), (an, _) = dbytes(regs[0]), dbytes(regs[1])
             es = int(dt[1:]) // 8
             ty, oty = {("u", 1): ("uint8_t", "uint16_t"), ("s", 1): ("int8_t", "int16_t"),
-                       ("u", 2): ("uint16_t", "uint32_t"), ("s", 2): ("int16_t", "int32_t")}[(dt[0], es)]
+                       ("u", 2): ("uint16_t", "uint32_t"), ("s", 2): ("int16_t", "int32_t"),
+                       ("u", 4): ("uint32_t", "uint64_t"), ("s", 4): ("int32_t", "uint64_t")}[(dt[0], es)]
             n = 8 * cnt // es
             return [f"{{ {ty} a[16]; {oty} o[8]; memcpy(a, &c->vfp.d[{an}], {8 * cnt}); memcpy(o, &c->vfp.d[{dn}], {8 * cnt});"
                     f" for (int k = 0; k < {n // 2}; k++) o[k] = ({oty})(o[k] + ({oty})a[2 * k] + ({oty})a[2 * k + 1]);"
@@ -1322,7 +1353,11 @@ class Fn:
                 reg = GPR.get(i.reg_name(ops[0].reg), -1) if ops and ops[0].type == ARM_OP_REG else -1
                 lines.append(f"\trecomp_ihook_{ih}(c, {reg});   /* --insn-hooks: after this instruction */")
         lines.append("\treturn;")
-        # computed jumps (tbb/tbh) land on any instruction of the function
+        # computed jumps (an indirect branch inside the function, a table recomp could not read) land on any
+        # instruction of the function; a function without one gets no such switch (a quarter of all lines, BUILD-03)
+        if not any("JUMP(" in l or "goto jump" in l for l in lines):
+            lines.append("}")
+            return lines
         lines.append("jump:")
         lines.append("\tswitch (c->r[15]) {")
         for i in self.insns:
@@ -1350,6 +1385,7 @@ def main():
             if s <= lo and hi <= s + len(bb):
                 return bb[lo - s:hi - s]
         return None
+    CODE[0] = code
     entries = sorted({v & ~1 for v in d["functions"].values()})
     # body ranges: [first, last byte] (Ghidra), or [first, last, owner entry] (analyze.py, which knows)
     bodies = sorted(tuple(b) for b in d["bodies"])
@@ -1529,19 +1565,22 @@ def main():
         out = [f'#include "{os.path.basename(base)}.h"']
     else:
         out += decls
-    per = (sum(len(f.insns) for f in fns) // max(nsplit, 1)) + 1
-    k = acc = 0
+    # parts balanced by lines of C (the compile cost), not by guest instructions: a NEON-heavy function is many more
+    # lines per instruction than integer code (BUILD-03)
+    bodies = []
     for f in fns:
         body = f.build()
         total += len(f.insns)
         bad += f.unimpl
-        if nsplit:
-            parts[k] += body
-            acc += len(f.insns)
-            if acc >= per and k < nsplit - 1:
-                k, acc = k + 1, 0
-        else:
-            out += body
+        if nsplit: bodies.append(body)
+        else: out += body
+    per = sum(len(b) for b in bodies) // max(nsplit, 1) + 1
+    k = acc = 0
+    for body in bodies:
+        parts[k] += body
+        acc += len(body)
+        if acc >= per and k < nsplit - 1:
+            k, acc = k + 1, 0
     for n, part in enumerate(parts):
         write_if_changed(f"{base}_part{n}.c", "\n".join([f'#include "{os.path.basename(base)}.h"'] + part) + "\n")
     # --module NAME: a module loaded with the main program (a .suprx): its tables are suffixed and
