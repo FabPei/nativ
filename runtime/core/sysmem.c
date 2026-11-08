@@ -6,6 +6,7 @@
 #include <time.h>
 #include <pthread.h>
 #include "hle.h"
+#include "settings.h"
 
 /* ---- kernel: time, memory blocks (threads and locks: kernel.c) */
 /* the game's clock: display.c's guest_time_us (the host's monotonic clock, or the fixed test clock) */
@@ -173,6 +174,30 @@ static void h_rtc_tick(Cpu *c) { if (!A0) { RET(RTC_EPTR); return; } WR64(A0, rt
 /* the network clock: the console keeps it adjusted from the network; the host's clock is the one clock */
 static void h_rtc_network_tick(Cpu *c) { h_rtc_tick(c); }
 static void h_rtc_resolution(Cpu *c) { RET(1000000); }   /* ticks per second */
+/* (HLE-LIB-06) sceRtcGetAccumulativeTime: a microsecond counter that wall-clock changes never reset (psp2kern rtc.h:
+ * kernel system time plus the RTC's baselines; before those exist, the system time) -- the host's system time */
+static void h_rtc_accumulative(Cpu *c) { uint64_t t = guest_time_us(); c->r[0] = (uint32_t)t; c->r[1] = (uint32_t)(t >> 32); }
+/* (HLE-LIB-06) sceRtcGetLastReincarnatedTick(SceRtcTick *): when the console's clock was last set up from nothing (its
+ * first boot, or a reset that lost the time). The host's "console" clock starts the first time a game asks: that
+ * tick, kept in the shared settings ("rtc_reincarnated_tick") so it stays the same across runs and games; a scripted
+ * run (RECOMP_HEADLESS) keeps nothing and answers its own start (on the fixed clock, a fixed date). Soul Sacrifice
+ * Delta reads it once and turns it into a date (sceRtcSetTick) */
+static void h_rtc_reincarnated(Cpu *c) {
+	if (!A0) { RET(RTC_EPTR); return; }
+	static uint64_t tick; static pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
+	pthread_mutex_lock(&m);
+	if (!tick) {
+		char b[32]; settings_str("rtc_reincarnated_tick", "", b, sizeof b);
+		tick = strtoull(b, 0, 10);
+		if (!tick) {
+			tick = rtc_now();
+			if (!getenv("RECOMP_HEADLESS")) { snprintf(b, sizeof b, "%llu", (unsigned long long)tick); settings_set_str("rtc_reincarnated_tick", b); settings_save(); }
+		}
+	}
+	const uint64_t t = tick;
+	pthread_mutex_unlock(&m);
+	WR64(A0, t); RET(0);
+}
 static void h_rtc_clock(Cpu *c) {   /* (SceDateTime *, time zone in minutes): now, in that zone */
 	if (!A0) { RET(RTC_EPTR); return; }
 	tick_to_dt(A0, rtc_now() + (uint64_t)((int64_t)(int32_t)A1 * 60000000)); RET(0);
@@ -412,6 +437,7 @@ const HleEntry hle_sysmem[] = {
 	{"sceKernelLibcMktime", h_libc_mktime}, {"sceKernelLibcLocaltime_r", h_libc_gmtime}, {"sceKernelLibcGmtime_r", h_libc_gmtime},
 	{"sceKernelGetMemBlockInfoByAddr", h_block_info_by_addr},
 	{"sceRtcGetCurrentTick", h_rtc_tick}, {"sceRtcGetCurrentNetworkTick", h_rtc_network_tick}, {"sceRtcGetTickResolution", h_rtc_resolution},
+	{"sceRtcGetAccumulativeTime", h_rtc_accumulative}, {"sceRtcGetLastReincarnatedTick", h_rtc_reincarnated},   /* (HLE-LIB-06) */
 	{"sceRtcGetCurrentClock", h_rtc_clock}, {"sceRtcGetCurrentClockLocalTime", h_rtc_clock_local},
 	{"sceRtcConvertUtcToLocalTime", h_rtc_utc_local}, {"sceRtcConvertLocalTimeToUtc", h_rtc_utc_local},
 	{"sceRtcCheckValid", h_rtc_check}, {"sceRtcIsLeapYear", h_rtc_leap}, {"sceRtcGetDaysInMonth", h_rtc_days_in_month}, {"sceRtcGetDayOfWeek", h_rtc_day_of_week},

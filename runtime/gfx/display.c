@@ -16,6 +16,7 @@
 #include <math.h>
 #include "hle.h"
 #include "hle_small.h"
+#include "hle_offline.h"
 #include "gfx.h"
 #include "metrics.h"
 #include "settings.h"
@@ -1068,6 +1069,22 @@ static void basic_update(const float a[3]) {
  * vectors' length jump 1 -> 0 -> 1, twice in a row: its "shake" gesture, which can dismiss a touch prompt
  * (the machete minigame's, 2026-10-12) */
 static void ms_put_f(uint8_t *b, uint32_t off, float v) { memcpy(b + off, &v, 4); }
+/* (HLE-LIB-06) sceMotionRotateYaw(radians): the game turns the reported heading about the vertical axis -- the
+ * accumulated turn (hle_offline.h) multiplies every orientation on the left, so the matrices turn with it; sceMotionReset
+ * clears it. Identity until a game calls it, so nothing changes for the others */
+static pthread_mutex_t mot_yaw_lock = PTHREAD_MUTEX_INITIALIZER;
+static float mot_yaw[4] = {0, 0, 0, 1};
+static void motion_game_yaw(float q[4]) {
+	pthread_mutex_lock(&mot_yaw_lock); float y[4]; memcpy(y, mot_yaw, sizeof y); pthread_mutex_unlock(&mot_yaw_lock);
+	if (y[3] == 1.0f) return;
+	float o[4]; hle_quat_mul(y, q, o); memcpy(q, o, sizeof o);
+}
+static void h_motion_rotate_yaw(Cpu *c) {
+	float r; uint32_t bits = A0; memcpy(&r, &bits, 4);   /* (float radians: softfp, in r0) */
+	pthread_mutex_lock(&mot_yaw_lock); if (isfinite(r)) hle_motion_rotate_yaw(mot_yaw, r); pthread_mutex_unlock(&mot_yaw_lock);
+	if (motion_log()) fprintf(stderr, "    motion: rotate yaw %.4f rad at frame %llu\n", r, (unsigned long long)frames);
+	RET(0);
+}
 static void h_motion_state(Cpu *c) {
 	if (!motion_on) { RET(0x80360206u); return; }   /* SCE_MOTION_ERROR_NOT_SAMPLING */
 	if (!A0) { RET(0x80360200u); return; }   /* SCE_MOTION_ERROR_DATA_INVALID */
@@ -1077,10 +1094,12 @@ static void h_motion_state(Cpu *c) {
 	float a[3], g[3], q[4];
 	if (!motion_now(a, g, q)) {
 		ms_put_f(b, 12, -1.0f);   /* acceleration z */
-		ms_put_f(b, 52, 1.0f);    /* quaternion w */
-		for (int i = 0; i < 4; i++) { ms_put_f(b, 56 + 20 * i, 1.0f); ms_put_f(b, 120 + 20 * i, 1.0f); }
+		float qi[4] = {0, 0, 0, 1}, m[16]; motion_game_yaw(qi); motion_matrix(qi, m);   /* identity unless the game turned the heading */
+		for (int i = 0; i < 4; i++) ms_put_f(b, 40 + 4 * i, qi[i]);
+		for (int i = 0; i < 16; i++) { ms_put_f(b, 56 + 4 * i, m[i]); ms_put_f(b, 120 + 4 * i, m[i]); }
 		ms_put_f(b, 196, 1.0f);   /* basic orientation z */
 	} else {
+		motion_game_yaw(q);
 		float m[16]; motion_matrix(q, m); basic_update(a);
 		for (int i = 0; i < 3; i++) { ms_put_f(b, 4 + 4 * i, a[i]); ms_put_f(b, 16 + 4 * i, g[i]); ms_put_f(b, 188 + 4 * i, basic_or[i]); }
 		for (int i = 0; i < 4; i++) ms_put_f(b, 40 + 4 * i, q[i]);
@@ -1098,7 +1117,12 @@ static void h_motion_basic(Cpu *c) {   /* (SceFVector3 *) */
 	RET(0);
 }
 /* sceMotionReset: the console restarts its orientation estimate; here, the heading recentres */
-static void h_motion_reset(Cpu *c) { if (motion_log()) fprintf(stderr, "    motion: reset at frame %llu (lr %#x)\n", (unsigned long long)frames, c->r[14]); motion_recenter(); RET(0); }
+static void h_motion_reset(Cpu *c) {
+	if (motion_log()) fprintf(stderr, "    motion: reset at frame %llu (lr %#x)\n", (unsigned long long)frames, c->r[14]);
+	motion_recenter();
+	pthread_mutex_lock(&mot_yaw_lock); mot_yaw[0] = mot_yaw[1] = mot_yaw[2] = 0; mot_yaw[3] = 1; pthread_mutex_unlock(&mot_yaw_lock);   /* (HLE-LIB-06) */
+	RET(0);
+}
 
 /* set-up calls with nothing to set up (motion tuning). SceSystemGesture is gesture.c */
 static void h_input_ok(Cpu *c) { RET(0); }
@@ -1131,5 +1155,6 @@ const HleEntry hle_display[] = {
 	{"sceMotionStartSampling", h_motion_start}, {"sceMotionStopSampling", h_motion_stop}, {"sceMotionGetState", h_motion_state},
 	{"sceMotionGetBasicOrientation", h_motion_basic}, {"sceMotionReset", h_motion_reset}, {"sceMotionSetDeadband", h_motion_set_deadband}, {"sceMotionSetTiltCorrection", h_motion_set_tilt},
 	{"sceMotionGetDeadband", h_motion_get_deadband}, {"sceMotionGetTiltCorrection", h_motion_get_tilt},   /* (HLE-LIB-03) */
+	{"sceMotionRotateYaw", h_motion_rotate_yaw},   /* (HLE-LIB-06) */
 	{0, 0},
 };
