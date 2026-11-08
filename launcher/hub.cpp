@@ -23,6 +23,11 @@
  * the library folders themselves are <prefs>/library_folders.tsv (ATIV_PREFS=<dir> for a test's).
  * ATIV_TASK=play:<title>|build:<title>|scan:<folder>|licences:<folder>|firmware:<file> (a verification aid, no window): that
  * task run as its button runs it, its log printed, the exit status its outcome; ATIV_TASK_CANCEL=<seconds>: Cancel then.
+ * ATIV_SHOT_STEAM=<file> what Steam has from us (vitarecomp steam list's output) in a screenshot run.
+ * nativ --play <title>: that game started as Play starts it (its build brought up to date first), no launcher window --
+ * what a Steam shortcut made by "Add to Steam" runs; its log in <prefs>/launcher.play.log, an error in a message box
+ * (ATIV_PLAY_QUIET=1: on stderr instead, for a test).
+ * The library's view (hub.ini): library_view = grid | list, library_size = 60..160 (percent, the cards' and icons' size).
  */
 #include "imgui.h"
 #include "backends/imgui_impl_sdl3.h"
@@ -42,6 +47,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <map>
+#include <set>
 #include <random>
 #include <mutex>
 #include <string>
@@ -69,7 +75,6 @@
 static std::string g_root = REPO_ROOT;   /* the repository (ATIV_ROOT overrides; else found from where the launcher is) */
 static std::string g_dump;               /* the player's library: games, firmware, licences, builds, saves (library_dir) */
 static const char *const SONY_FIRMWARE_PAGE = "https://www.playstation.com/en-us/support/hardware/psvita/system-software/";
-static const char *const SUPPORT_PAGE = "https://ko-fi.com/kingtorro";   /* (a tip jar for the work: nothing is sold or held back) */
 
 static bool exists(const std::string &p) { struct stat st; return stat(p.c_str(), &st) == 0; }
 #ifdef _WIN32   /* (paths are UTF-8 throughout: the launcher's manifest sets the process code page, launcher/nativ.manifest) */
@@ -1702,11 +1707,202 @@ static void setup_modal(SDL_Window *win) {
 }
 
 static bool g_add_open;   /* the Add a game dialog */
+
+/* ---- Steam: a game as a Steam shortcut (pipeline/steam.py: "<this launcher> --play <title>" in every Steam user's
+ * shortcuts.vdf, tagged Project Nativ). What Steam has from us is read at start and after each change (vitarecomp steam
+ * list). Steam keeps its list in memory while it runs, so a change waits for it to be closed: the dialog says so */
+static struct { std::mutex m; bool have = false; std::set<std::string> in; } g_steam;
+static void steam_parse(const std::string &out) {
+	bool have = false; std::set<std::string> in;
+	for (size_t a = 0; a < out.size(); ) {
+		size_t e = out.find('\n', a); if (e == std::string::npos) e = out.size();
+		std::string l = out.substr(a, e - a); while (!l.empty() && l.back() == '\r') l.pop_back();
+		if (l.rfind("steam ", 0) == 0) have = l != "steam -";
+		else if (l.rfind("in ", 0) == 0) in.insert(l.substr(3, l.find(' ', 3) - 3));
+		a = e + 1;
+	}
+	std::lock_guard<std::mutex> lk(g_steam.m); g_steam.have = have; g_steam.in = in;
+}
+static void steam_refresh(void) {
+	std::thread([]() {
+		Proc p; if (!proc_start(p, vitarecomp({"steam", "list"}), {})) return;
+		std::string out; char b[512]; long n; while ((n = proc_read(p, b, sizeof b)) > 0) out.append(b, (size_t)n);
+		proc_wait(p); proc_done(p);
+		steam_parse(out);
+	}).detach();
+}
+static std::string self_exe(void) {   /* this launcher, as Steam is to start it (in an AppImage: the AppImage; "": not known) */
+#ifdef _WIN32
+	wchar_t w[MAX_PATH * 4]; DWORD n = GetModuleFileNameW(nullptr, w, MAX_PATH * 4);
+	if (!n || n >= MAX_PATH * 4) return "";
+	int m = WideCharToMultiByte(CP_UTF8, 0, w, (int)n, nullptr, 0, nullptr, nullptr);
+	std::string s((size_t)m, '\0'); WideCharToMultiByte(CP_UTF8, 0, w, (int)n, &s[0], m, nullptr, nullptr);
+	return s;
+#elif defined(__APPLE__)
+	return "";   /* (not offered on the Mac yet) */
+#else
+	if (const char *a = getenv("APPIMAGE")) if (*a) return a;
+	char b[4096]; ssize_t n = readlink("/proc/self/exe", b, sizeof b - 1);
+	return n > 0 ? std::string(b, (size_t)n) : "";
+#endif
+}
+static std::vector<Step> g_steam_steps; static std::string g_steam_name, g_steam_game;   /* the last change, for Try again */
+static bool g_steam_closed_open;   /* the "close Steam first" dialog */
+static void steam_task(const Game &g, bool add) {
+	std::vector<std::string> v{python_exe(), g_root + "/pipeline/vitarecomp.py", "steam", add ? "add" : "remove", g.id};
+	if (add) {
+		v.insert(v.end(), {"--exe", self_exe(), "--name", g.name});
+		if (!g.icon.empty()) v.insert(v.end(), {"--icon", g.icon});
+		if (!g.cover.empty()) v.insert(v.end(), {"--cover", g.cover});
+	}
+	g_steam_steps = {step(add ? "Adding it to Steam" : "Removing it from Steam", v)};
+	g_steam_name = (add ? "Adding " : "Removing ") + g.name + (add ? " to Steam" : " from Steam"); g_steam_game = g.id;
+	task_start(g_steam_name, "steam", g.id, g_steam_steps);
+}
+static void steam_closed_modal(void) {
+	const ImGuiViewport *vp = ImGui::GetMainViewport();
+	const float em = ImGui::GetFontSize();
+	if (g_steam_closed_open && !ImGui::IsPopupOpen("Close Steam")) ImGui::OpenPopup("Close Steam");
+	ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x < 44 * em ? vp->WorkSize.x * 0.94f : 32 * em, 0), ImGuiCond_Always);
+	ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(1.6f * em, 1.3f * em)); ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+	if (!ImGui::BeginPopupModal("Close Steam", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove)) { ImGui::PopStyleVar(2); return; }
+	ImGui::PopStyleVar(2);
+	ui::heading("Close Steam first", em * 1.4f);
+	ImGui::PushTextWrapPos(0);
+	ImGui::TextUnformatted("Steam is running. It keeps its list of games in memory and writes it back when it closes, so a change made now would be lost.");
+	ImGui::Dummy(ImVec2(0, em * 0.3f));
+	ImGui::TextUnformatted("Close Steam completely (in Steam: Steam menu, Exit), then try again. The game shows up the next time Steam starts.");
+	ImGui::PopTextWrapPos();
+	ImGui::Dummy(ImVec2(0, em * 0.5f));
+	ImGui::BeginDisabled(g_task.running);
+	if (ui::primary_button("Try again")) { g_steam_closed_open = false; ImGui::CloseCurrentPopup(); task_start(g_steam_name, "steam", g_steam_game, g_steam_steps); }
+	ImGui::EndDisabled();
+	ImGui::SameLine(); if (ImGui::Button("Not now")) { g_steam_closed_open = false; ImGui::CloseCurrentPopup(); }
+	ImGui::EndPopup();
+}
+
+/* ---- a game's state, its title-id line and its actions: on its card and on its row of the list */
+static void game_state(const Game &g, const Found *lf, bool mine) {
+	if (mine) { ui::spinner(ui::accent); ImGui::TextDisabled("%s", task_status().c_str()); }
+	else if (g.imported && !g.missing.empty()) {
+		ui::dot(ui::warn); ImGui::TextUnformatted("Its game data's drive isn't connected");
+		if (ImGui::IsItemHovered()) ImGui::SetTooltip("This copy reads its data where it was found:\n%s\nConnect that drive again, or add the copy again with Settings, Library, \"Read in place\" off.", g.missing.c_str());
+	}
+	else if (g.built) { ui::dot(ui::ready); ImGui::TextUnformatted("Ready to play"); }
+	else if (g.imported) { ui::dot(ui::warn); ImGui::TextUnformatted("Needs a one-time build"); }
+	else if (lf) {
+		ui::dot(ui::accent); ImGui::Text("Found in %s", leaf_name(lf->source).c_str());
+		if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s %s\n%s", lf->name.c_str(), lf->version.c_str(), lf->path.c_str());
+	}
+	else { ui::dot(ui::border); ImGui::TextDisabled("Not added yet"); }
+}
+static void game_id_line(const Game &g) {   /* the title id and the version: this copy's, else what the pack plays; In Steam; a chip when the pack recommends another */
+	std::string line = g.id, rec = recommended_version(g), vs = played_versions(g);
+	if (!g.pack) line += "  -  experimental (no game pack)";
+	else if (g.imported && !g.version.empty() && g.version != "-") line += "  ·  " + (g.region.empty() ? "" : g.region + " ") + g.version;
+	else if (!g.imported && !vs.empty()) line += "  ·  plays " + (g.region.empty() ? "" : g.region + " ") + vs;
+	{ std::lock_guard<std::mutex> lk(g_steam.m); if (g_steam.in.count(g.id)) line += "  ·  In Steam"; }
+	ImGui::TextDisabled("%s", line.c_str());
+	if (g.imported && !rec.empty() && g.version != rec) {
+		ImGui::SameLine();   /* (one unwrapped line of text, not a chip: every card's lines keep one height) */
+		ImGui::PushTextWrapPos(-1.0f); ImGui::TextColored(ui::warn, "Update %s available", rec.c_str()); ImGui::PopTextWrapPos();   /* ("Update 1.12" beside the version read as the copy's own: a 1.00 copy was taken for 1.12) */
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("%s (this copy is %s).\nAdd it with + Add game: its update folder (ux0:patch/%s) or PKG,\nor search the folder you copied from your Vita.",
+			                  (g.update_note.empty() ? "Version " + rec + " is recommended" : g.update_note).c_str(), g.version.c_str(), g.id.c_str());
+	}
+}
+static void game_actions(const Game &g, const Found *lf, float bw) {   /* the one primary action, the "more" menu beside it */
+	const bool busy = g_task.running;
+	const float em = ImGui::GetFontSize(), more = ImGui::GetFrameHeight();
+	ImDrawList *dl = ImGui::GetWindowDrawList();
+	ImGui::BeginDisabled(busy);
+	if (g.built) { if (ui::primary_button("Play", ImVec2(bw - more - ImGui::GetStyle().ItemSpacing.x, 0))) start_play(g); ImGui::SameLine(); }
+	else if (g.imported) { if (ui::primary_button("Build", ImVec2(bw - more - ImGui::GetStyle().ItemSpacing.x, 0))) start_build(g); ImGui::SameLine(); }
+	else if (lf) {   /* from its library folder, as a search's Add does; a licence still missing: the search's list, to give it */
+		if (ui::primary_button("Add", ImVec2(bw - more - ImGui::GetStyle().ItemSpacing.x, 0))) {
+			if (found_ready(*lf, g_lib_found)) {
+				int n = 0; std::vector<std::string> titles; std::vector<Step> s = found_steps(&n, &titles, g_lib_found, lf->id);
+				task_start("Adding " + g.name, "add", g.id, s);
+				for (const std::string &t : titles) if (t != g.id) g_task.games.push_back(t);
+			} else {
+				g_found.clear(); for (const Found &x : g_lib_found) if (x.id == lf->id) g_found.push_back(x);
+				g_found_ready = true; g_add_kind = 0; g_scan_path = lf->source; g_add_open = true;
+			}
+		}
+		ImGui::SameLine();
+	}
+	else {   /* (a small card: the short label) */
+		const float lw = bw - more - ImGui::GetStyle().ItemSpacing.x;
+		const char *label = ImGui::CalcTextSize("Add your copy…").x + ImGui::GetStyle().FramePadding.x * 2 > lw ? "Add copy" : "Add your copy…";
+		if (ImGui::Button(label, ImVec2(lw, 0))) g_add_open = true;
+		ImGui::SameLine();
+	}
+	ImGui::EndDisabled();
+	{	/* the "more" button: three dots, drawn (the font may have no ellipsis glyph) */
+		if (ImGui::Button("##more", ImVec2(more, 0))) ImGui::OpenPopup("more");
+		ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax(), m((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
+		for (int k = -1; k <= 1; k++) dl->AddCircleFilled(ImVec2(m.x + k * em * 0.32f, m.y), em * 0.09f, ui::u32(ui::text, 0.8f));
+	}
+	if (ImGui::BeginPopup("more")) {
+		ImGui::BeginDisabled(busy || !g.imported);
+		if (ImGui::MenuItem(g.built ? "Rebuild" : "Build")) start_build(g);
+		ImGui::EndDisabled();
+		ImGui::BeginDisabled(!g.imported);
+		if (ImGui::MenuItem("Game settings…")) { make_dir(g_dump + "/decrypted/" + g.id + "/recomp"); g_game_settings = g.id; }
+		ImGui::EndDisabled();
+		{	bool have, in; { std::lock_guard<std::mutex> lk(g_steam.m); have = g_steam.have; in = g_steam.in.count(g.id) > 0; }
+			if (have && !self_exe().empty()) {   /* (Steam installed here, and a launcher it can start) */
+				ImGui::BeginDisabled(busy || (!g.imported && !in));
+				if (ImGui::MenuItem(in ? "Remove from Steam" : "Add to Steam")) steam_task(g, !in);
+				ImGui::EndDisabled();
+				if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+					ImGui::SetTooltip(in ? "Takes this game's shortcut out of your Steam library (only this one: your other shortcuts stay).\nSteam needs to be closed for it."
+					                     : "Puts this game into your Steam library: a shortcut that starts the game directly.\nSteam needs to be closed for it; the game shows up the next time Steam starts.");
+			}
+		}
+		if (ImGui::MenuItem("Show its folder")) open_folder(g_dump + "/decrypted/" + g.id);
+		ImGui::BeginDisabled(busy);
+		if (ImGui::MenuItem("Report a problem…"))   /* (the logs, settings and F5 pictures in one zip, shown in its folder) */
+			task_start("Making a bug report for " + g.name, "report", g.id, {step("Collecting the logs and settings", vitarecomp({"report", g.id}))});
+		ImGui::EndDisabled();
+		if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+			ImGui::SetTooltip("One zip of this game's logs, your settings and the pictures from your last F5,\nto send with a description of what happened. No game files, saves or keys.");
+		ImGui::EndPopup();
+	}
+}
+/* ---- a game's row of the list view: its icon, name, title-id line, state, actions */
+static void game_row(const Game &g, float ic) {
+	const float em = ImGui::GetFontSize(), padv = em * 0.35f;
+	const bool mine = g_task.running && std::find(g_task.games.begin(), g_task.games.end(), g.id) != g_task.games.end();
+	const Found *lf = g.imported ? nullptr : lib_find(g);
+	ImGui::PushID(g.id.c_str());
+	ImGui::TableNextRow(0, ic + padv * 2);
+	ImGui::TableSetColumnIndex(0);
+	ImGui::SetCursorPosY(ImGui::GetCursorPosY() + padv);
+	{	Tex icon = g.icon.empty() ? Tex() : texture(g.icon); ImVec2 p = ImGui::GetCursorScreenPos(); ImDrawList *dl = ImGui::GetWindowDrawList();
+		if (icon.t) dl->AddImageRounded(tex_ref(icon), p, ImVec2(p.x + ic, p.y + ic), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, ic * 0.16f);
+		else dl->AddRectFilled(p, ImVec2(p.x + ic, p.y + ic), ui::u32(ui::card_hi), ic * 0.16f);
+		ImGui::Dummy(ImVec2(ic, ic));
+	}
+	ImGui::SameLine(0, em * 0.8f);
+	{	const float th = ImGui::GetTextLineHeightWithSpacing() * 2;   /* (name and id line, centred on the icon) */
+		if (ic > th) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (ic - th) * 0.5f);
+		ImGui::BeginGroup(); ImGui::PushTextWrapPos(0);
+		ImGui::TextUnformatted(g.name.c_str()); game_id_line(g);
+		ImGui::PopTextWrapPos(); ImGui::EndGroup();
+	}
+	const float mid = padv + (ic - ImGui::GetFrameHeight()) * 0.5f;
+	ImGui::TableSetColumnIndex(1); ImGui::SetCursorPosY(ImGui::GetCursorPosY() + padv + (ic - ImGui::GetTextLineHeight()) * 0.5f); game_state(g, lf, mine);
+	ImGui::TableSetColumnIndex(2); ImGui::SetCursorPosY(ImGui::GetCursorPosY() + mid); game_actions(g, lf, ImGui::GetContentRegionAvail().x);
+	ImGui::PopID();
+}
+
 /* ---- a game's card: its cover (pic0), icon, name, state, one primary action */
 static void game_card(const Game &g, float w, float name_h) {
 	const float em = ImGui::GetFontSize(), pad = em * 0.9f;
 	const float img_h = w * 544.0f / 960.0f;
-	const bool busy = g_task.running, mine = busy && std::find(g_task.games.begin(), g_task.games.end(), g.id) != g_task.games.end();
+	const bool mine = g_task.running && std::find(g_task.games.begin(), g_task.games.end(), g.id) != g_task.games.end();
 	ImGui::PushID(g.id.c_str());
 	ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::card); ImGui::PushStyleColor(ImGuiCol_Border, ui::border);
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
@@ -1742,76 +1938,13 @@ static void game_card(const Game &g, float w, float name_h) {
 	ImGui::SetCursorPosY(y0 + name_h + ImGui::GetStyle().ItemSpacing.y);
 	ImGui::SetCursorPosX(pad);
 	const Found *lf = g.imported ? nullptr : lib_find(g);
-	if (mine) { ui::spinner(ui::accent); ImGui::TextDisabled("%s", task_status().c_str()); }
-	else if (g.imported && !g.missing.empty()) {
-		ui::dot(ui::warn); ImGui::TextUnformatted("Its game data's drive isn't connected");
-		if (ImGui::IsItemHovered()) ImGui::SetTooltip("This copy reads its data where it was found:\n%s\nConnect that drive again, or add the copy again with Settings, Library, \"Read in place\" off.", g.missing.c_str());
-	}
-	else if (g.built) { ui::dot(ui::ready); ImGui::TextUnformatted("Ready to play"); }
-	else if (g.imported) { ui::dot(ui::warn); ImGui::TextUnformatted("Needs a one-time build"); }
-	else if (lf) {
-		ui::dot(ui::accent); ImGui::Text("Found in %s", leaf_name(lf->source).c_str());
-		if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s %s\n%s", lf->name.c_str(), lf->version.c_str(), lf->path.c_str());
-	}
-	else { ui::dot(ui::border); ImGui::TextDisabled("Not added yet"); }
+	game_state(g, lf, mine);
 	ImGui::SetCursorPosX(pad);
-	{	/* the title id and the version: this copy's, else what the pack plays; a chip when the pack recommends another */
-		std::string line = g.id, rec = recommended_version(g), vs = played_versions(g);
-		if (!g.pack) line += "  -  experimental (no game pack)";
-		else if (g.imported && !g.version.empty() && g.version != "-") line += "  ·  " + (g.region.empty() ? "" : g.region + " ") + g.version;
-		else if (!g.imported && !vs.empty()) line += "  ·  plays " + (g.region.empty() ? "" : g.region + " ") + vs;
-		ImGui::TextDisabled("%s", line.c_str());
-		if (g.imported && !rec.empty() && g.version != rec) {
-			ImGui::SameLine();   /* (one unwrapped line of text, not a chip: every card's lines keep one height) */
-			ImGui::PushTextWrapPos(-1.0f); ImGui::TextColored(ui::warn, "Update %s available", rec.c_str()); ImGui::PopTextWrapPos();   /* ("Update 1.12" beside the version read as the copy's own: a 1.00 copy was taken for 1.12) */
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("%s (this copy is %s).\nAdd it with + Add game: its update folder (ux0:patch/%s) or PKG,\nor search the folder you copied from your Vita.",
-				                  (g.update_note.empty() ? "Version " + rec + " is recommended" : g.update_note).c_str(), g.version.c_str(), g.id.c_str());
-		}
-	}
+	game_id_line(g);
 	ImGui::PopTextWrapPos();
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
 	ImGui::SetCursorPosX(pad);
-	float bw = w - pad * 2, more = ImGui::GetFrameHeight();
-	ImGui::BeginDisabled(busy);
-	if (g.built) { if (ui::primary_button("Play", ImVec2(bw - more - ImGui::GetStyle().ItemSpacing.x, 0))) start_play(g); ImGui::SameLine(); }
-	else if (g.imported) { if (ui::primary_button("Build", ImVec2(bw - more - ImGui::GetStyle().ItemSpacing.x, 0))) start_build(g); ImGui::SameLine(); }
-	else if (lf) {   /* from its library folder, as a search's Add does; a licence still missing: the search's list, to give it */
-		if (ui::primary_button("Add", ImVec2(bw - more - ImGui::GetStyle().ItemSpacing.x, 0))) {
-			if (found_ready(*lf, g_lib_found)) {
-				int n = 0; std::vector<std::string> titles; std::vector<Step> s = found_steps(&n, &titles, g_lib_found, lf->id);
-				task_start("Adding " + g.name, "add", g.id, s);
-				for (const std::string &t : titles) if (t != g.id) g_task.games.push_back(t);
-			} else {
-				g_found.clear(); for (const Found &x : g_lib_found) if (x.id == lf->id) g_found.push_back(x);
-				g_found_ready = true; g_add_kind = 0; g_scan_path = lf->source; g_add_open = true;
-			}
-		}
-		ImGui::SameLine();
-	}
-	else { if (ImGui::Button("Add your copy…", ImVec2(bw - more - ImGui::GetStyle().ItemSpacing.x, 0))) g_add_open = true; ImGui::SameLine(); }
-	ImGui::EndDisabled();
-	{	/* the "more" button: three dots, drawn (the font may have no ellipsis glyph) */
-		if (ImGui::Button("##more", ImVec2(more, 0))) ImGui::OpenPopup("more");
-		ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax(), m((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
-		for (int k = -1; k <= 1; k++) dl->AddCircleFilled(ImVec2(m.x + k * em * 0.32f, m.y), em * 0.09f, ui::u32(ui::text, 0.8f));
-	}
-	if (ImGui::BeginPopup("more")) {
-		ImGui::BeginDisabled(busy || !g.imported);
-		if (ImGui::MenuItem(g.built ? "Rebuild" : "Build")) start_build(g);
-		ImGui::EndDisabled();
-		ImGui::BeginDisabled(!g.imported);
-		if (ImGui::MenuItem("Game settings…")) { make_dir(g_dump + "/decrypted/" + g.id + "/recomp"); g_game_settings = g.id; }
-		ImGui::EndDisabled();
-		if (ImGui::MenuItem("Show its folder")) open_folder(g_dump + "/decrypted/" + g.id);
-		ImGui::BeginDisabled(busy);
-		if (ImGui::MenuItem("Report a problem…"))   /* (the logs, settings and F5 pictures in one zip, shown in its folder) */
-			task_start("Making a bug report for " + g.name, "report", g.id, {step("Collecting the logs and settings", vitarecomp({"report", g.id}))});
-		ImGui::EndDisabled();
-		if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-			ImGui::SetTooltip("One zip of this game's logs, your settings and the pictures from your last F5,\nto send with a description of what happened. No game files, saves or keys.");
-		ImGui::EndPopup();
-	}
+	game_actions(g, lf, w - pad * 2);
 	ImGui::Dummy(ImVec2(0, pad * 0.4f));
 	ImGui::EndChild();
 	ImGui::PopStyleVar(); ImGui::PopStyleColor(2);
@@ -1863,6 +1996,28 @@ static void hub_ui(SDL_Window *win) {
 	int nimp = 0; for (const Game &g : g_games) nimp += g.imported;
 	ImGui::PushFont(nullptr, em * 1.15f); ImGui::TextUnformatted("Library"); ImGui::PopFont();
 	ImGui::SameLine(); ImGui::TextDisabled("%d of %zu added", nimp, g_games.size());
+	static int view = -1, size = 100;   /* the library's view (hub.ini library_view, library_size): grid 0 | list 1, percent */
+	if (view < 0) {
+		view = g_prefs["library_view"] == "list";
+		auto it = g_prefs.find("library_size"); size = it == g_prefs.end() ? 100 : atoi(it->second.c_str());
+		size = size < 60 ? 60 : size > 160 ? 160 : size;
+	}
+	{	const ImGuiStyle &sty = ImGui::GetStyle(); const char *const views[] = {"Grid", "List"};
+		const float segw = ImGui::CalcTextSize("Grid").x + ImGui::CalcTextSize("List").x + sty.FramePadding.x * 4 + sty.ItemSpacing.x * 0.25f;
+		const float slw = em * 7, lbw = ImGui::CalcTextSize("Size").x;
+		const float x = ImGui::GetWindowContentRegionMax().x - segw - slw - lbw - sty.ItemSpacing.x * 3;
+		const float text_end = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x + ImGui::GetScrollX();
+		if (x > text_end + em) ImGui::SameLine(x);   /* (else on a line of its own, below) */
+		ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("Size"); ImGui::SameLine();
+		ImGui::SetNextItemWidth(slw);
+		ImGui::SliderInt("##libsize", &size, 60, 160, "%d%%", ImGuiSliderFlags_AlwaysClamp);
+		if (ImGui::IsItemHovered()) ImGui::SetTooltip("How large the games are shown");
+		if (ImGui::IsItemDeactivatedAfterEdit() && g_settings_writable) prefs_set("library_size", std::to_string(size));
+		ImGui::SameLine();
+		int v = view;
+		if (ui::segmented(views, 2, &v) && v != view) { view = v; if (g_settings_writable) prefs_set("library_view", view ? "list" : "grid"); }
+	}
+	const float zoom = size / 100.0f;
 	if (!g_firmware) {
 		ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(ui::warn.x, ui::warn.y, ui::warn.z, 0.10f));
 		ImGui::BeginChild("fwnote", ImVec2(0, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding);
@@ -1897,19 +2052,30 @@ static void hub_ui(SDL_Window *win) {
 		ImGui::Dummy(ImVec2(0, em * 2));
 		ImGui::TextDisabled("No games yet."); ImGui::TextWrapped("Add your own copy of a game — a PKG with its licence file, or a game folder — with + Add game.");
 	}
-	const float gap = em * 1.0f, min_w = em * 15.5f, avail = ImGui::GetContentRegionAvail().x;
-	int cols = (int)((avail + gap) / (min_w + gap)); if (cols < 1) cols = 1;
-	float cw = (avail - gap * (cols - 1)) / cols; if (cw > em * 24) cw = em * 24;   /* (a wide window gets more columns, not giant cards) */
-	float name_h = 0;   /* the longest name's height at this width: every card's text block lines up */
-	ImGui::PushFont(nullptr, em * 1.15f);
-	for (const Game &g : g_games) { float hh = ImGui::CalcTextSize(g.name.c_str(), nullptr, false, cw - em * 1.8f).y; if (hh > name_h) name_h = hh; }
-	ImGui::PopFont();
-	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(gap, gap));
-	for (size_t i = 0; i < g_games.size(); i++) {
-		if (i % cols) ImGui::SameLine();
-		ImGui::BeginGroup(); game_card(g_games[i], cw, name_h); ImGui::EndGroup();
+	if (view == 1 && !g_games.empty()) {   /* the list: one row a game, its icon at the chosen size */
+		ImGui::Dummy(ImVec2(0, em * 0.2f));
+		if (ImGui::BeginTable("gamelist", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_PadOuterX)) {
+			ImGui::TableSetupColumn("Game", ImGuiTableColumnFlags_WidthStretch, 3.0f);
+			ImGui::TableSetupColumn("State", ImGuiTableColumnFlags_WidthStretch, 2.0f);
+			ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, em * 11.5f);
+			for (const Game &g : g_games) game_row(g, em * 2.6f * zoom);
+			ImGui::EndTable();
+		}
+	} else {   /* the grid: cards at the chosen size, as many columns as fit */
+		const float gap = em * 1.0f, min_w = em * 15.5f * zoom, avail = ImGui::GetContentRegionAvail().x;
+		int cols = (int)((avail + gap) / (min_w + gap)); if (cols < 1) cols = 1;
+		float cw = (avail - gap * (cols - 1)) / cols; if (cw > em * 24 * zoom) cw = em * 24 * zoom;   /* (a wide window gets more columns, not giant cards) */
+		float name_h = 0;   /* the longest name's height at this width: every card's text block lines up */
+		ImGui::PushFont(nullptr, em * 1.15f);
+		for (const Game &g : g_games) { float hh = ImGui::CalcTextSize(g.name.c_str(), nullptr, false, cw - em * 1.8f).y; if (hh > name_h) name_h = hh; }
+		ImGui::PopFont();
+		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(gap, gap));
+		for (size_t i = 0; i < g_games.size(); i++) {
+			if (i % cols) ImGui::SameLine();
+			ImGui::BeginGroup(); game_card(g_games[i], cw, name_h); ImGui::EndGroup();
+		}
+		ImGui::PopStyleVar();
 	}
-	ImGui::PopStyleVar();
 	ImGui::EndChild();
 
 	/* the activity bar: what's running (its step), the last failure, the log on demand */
@@ -1919,15 +2085,7 @@ static void hub_ui(SDL_Window *win) {
 	{
 		const ImGuiStyle &sty = ImGui::GetStyle();
 		float lw = ImGui::CalcTextSize(g_drawer ? "Hide log" : "Show log").x + sty.FramePadding.x * 2, cw2 = busy ? ImGui::CalcTextSize("Cancel").x + sty.FramePadding.x * 2 + sty.ItemSpacing.x : 0;
-		const bool tip = !busy && !narrow; const float sw = tip ? ImGui::CalcTextSize("Support Nativ").x + sty.ItemSpacing.x * 3 : 0;
-		ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - lw - cw2 - sw);
-		if (tip) {   /* a quiet link to the developer's tip jar: never a popup, never in a game */
-			ImGui::AlignTextToFramePadding(); ImGui::PushStyleColor(ImGuiCol_TextLink, ui::muted);
-			if (ImGui::TextLink("Support Nativ")) SDL_OpenURL(SUPPORT_PAGE);
-			ImGui::PopStyleColor();
-			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Nativ is free. If you'd like to support its development, you can leave a tip on Ko-fi.");
-			ImGui::SameLine(0, sty.ItemSpacing.x * 2);
-		}
+		ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - lw - cw2);
 	}
 	if (busy) { if (ImGui::Button("Cancel")) task_cancel(); ImGui::SameLine(); }
 	if (ImGui::Button(g_drawer ? "Hide log" : "Show log")) g_drawer = !g_drawer;
@@ -1956,6 +2114,7 @@ static void hub_ui(SDL_Window *win) {
 		ImGui::EndPopup();
 	} else ImGui::PopStyleVar(2);
 	sac_modal();
+	steam_closed_modal();
 	online_name_modal();
 	setup_modal(win);
 	settings_modal();
@@ -2068,6 +2227,33 @@ static int task_cli(const std::string &t) {   /* ATIV_TASK */
 	return g_task.ok ? 0 : 1;
 }
 
+static int play_cli(const std::string &id) {   /* nativ --play <title>: the game as Play starts it, no launcher window */
+	library_scan();
+	const Game *g = nullptr; for (const Game &x : g_games) if (x.id == id) g = &x;
+	std::string err;
+	if (!g || !g->imported) err = id + " isn't in your Project Nativ library. Open Project Nativ and add the game again (or remove its shortcut from Steam there).";
+	else {
+		Step r = step("Checking " + g->name + "'s build is up to date", vitarecomp({"ready", g->id}));
+		Step s = step("Running " + g->name, vitarecomp({"run", g->id}));
+		const std::string name = g->name;
+		task_start("Playing " + name + " (from a shortcut)", "play", id, {r, s});
+		Uint64 run_t0 = 0;
+		while (g_task.running) {
+			SDL_Delay(100);
+			if (!run_t0) { std::lock_guard<std::mutex> l(g_log_lock); if (g_step == s.say) run_t0 = SDL_GetTicks(); }
+		}
+		g_task.reader.join();
+		/* (a game that played a while and ended with an error code is not reported: only one that didn't start) */
+		if (!g_task.ok && (!run_t0 || SDL_GetTicks() - run_t0 < 15000))
+			err = name + " couldn't start. Open Project Nativ and press Play on its card to see what happened (Show log).";
+	}
+	if (!err.empty()) {
+		if (getenv("ATIV_PLAY_QUIET")) fprintf(stderr, "%s\n", err.c_str());   /* (a test: no box to wait on) */
+		else SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Project Nativ", err.c_str(), nullptr);
+	}
+	return err.empty() ? 0 : 1;
+}
+
 #ifdef __APPLE__
 /* the Mac app's own checks, before its window: where it runs from (a temporary copy macOS makes of a downloaded app
  * opened where it landed, or a read-only disk image: it belongs in Applications), the download's quarantine on its own
@@ -2095,7 +2281,7 @@ static bool mac_preflight(void) {
 }
 #endif
 
-int main(int, char **) {
+int main(int argc, char **argv) {
 	g_root = find_root();
 	if (!exists(g_root + "/pipeline/vitarecomp.py")) {   /* (the launcher apart from its folder: run from inside the zip, or copied out alone) */
 		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Project Nativ", "Project Nativ can't find the rest of its files.\n\nIf you opened it from inside the zip, extract the whole zip first (on Windows: right-click it, Extract All), then open Project Nativ from the extracted folder.", nullptr);
@@ -2119,6 +2305,12 @@ int main(int, char **) {
 	}
 #endif
 	if (const char *t = getenv("ATIV_TASK")) return task_cli(t);   /* (after the caches above: a task's steps run as the window's do) */
+	if (argc >= 3 && !strcmp(argv[1], "--play")) {   /* (a Steam shortcut: the game, no window) */
+		prefs_load();
+		set_env("RECOMP_SETTINGS_SHARED", shared_path());
+		const std::string d = pref_dir(); if (!d.empty()) g_log_file = d + "launcher.play.log";
+		return play_cli(argv[2]);
+	}
 	if (!shot_path) {   /* (the last launcher's log kept beside this one's) */
 		const std::string d = pref_dir();
 		if (!d.empty()) { g_log_file = d + "launcher.log"; remove((d + "launcher.prev.log").c_str()); rename(g_log_file.c_str(), (d + "launcher.prev.log").c_str()); }
@@ -2162,6 +2354,7 @@ int main(int, char **) {
 		g_add_open = ui_sel == "add" || ui_sel == "add:vita"; g_open_vita_popup = ui_sel == "add:vita";
 		if (const char *f = getenv("ATIV_SHOT_SCAN")) { scan_load(f); g_add_kind = 0; g_scan_path = "/Volumes/Vita/ux0"; }
 		if (const char *f = getenv("ATIV_SHOT_LIBSCAN")) { scan_parse(f, g_lib_found); }
+		if (const char *f = getenv("ATIV_SHOT_STEAM")) steam_parse(read_file(f));
 		g_drawer = ui_sel == "log";
 		g_sac_open = ui_sel.rfind("sac", 0) == 0; g_sac_game = "PCSE00640"; g_sac_rebuilt = ui_sel == "sac:again";
 		g_settings_open = ui_sel.rfind("settings", 0) == 0; if (g_settings_open && ui_sel.size() > 9) g_settings_tab = atoi(ui_sel.c_str() + 9);
@@ -2177,7 +2370,7 @@ int main(int, char **) {
 		return r;
 	}
 
-	update_check_start(); files_check_start();
+	update_check_start(); files_check_start(); steam_refresh();
 	bool quit = false;
 	while (!quit) {
 		SDL_Event e;
@@ -2207,6 +2400,11 @@ int main(int, char **) {
 			library_scan();
 			if (g_task.kind == "scan" && g_task.ok) scan_load(scan_file());
 			if (g_task.kind == "report" && g_task.ok) open_folder(g_dump + "/reports");
+			if (g_task.kind == "steam") {   /* what Steam has from us, read again; Steam was running: the dialog to close it */
+				steam_refresh();
+				std::lock_guard<std::mutex> l(g_log_lock);
+				if (!g_task.ok && g_log.find("Steam is running", g_task.log_from) != std::string::npos) g_steam_closed_open = true;
+			}
 			if (g_task.kind == "play") {   /* Windows refused the game (vitarecomp's SAC_BLOCKED line): the Smart App Control dialog */
 				bool blocked;
 				{ std::lock_guard<std::mutex> l(g_log_lock); blocked = !g_task.ok && g_log.find("Smart App Control is on", g_task.log_from) != std::string::npos; }
