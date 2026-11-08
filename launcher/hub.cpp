@@ -38,6 +38,7 @@
 #include "ui_theme.h"   /* the look shared with the in-game overlay */
 #include "hub_scale.h"   /* (UI-01h) the UI's scale from the window's height or the display's scale */
 #include "file_browse.h"   /* (UI-01f) the own file / folder browser's listing */
+#include "library_info.h"   /* (UI-01l) a game's own name, play time, size: the list's columns */
 #include "pad_family.h"   /* (UI-01e) the controller in use and its buttons' names, shared with the in-game menu */
 #include <ctime>
 #include <SDL3/SDL.h>
@@ -625,6 +626,7 @@ static void library_scan(void) {
 				fclose(f);
 			}
 		if (g.imported) art_paths(g);
+		if (g.name.empty() && g.imported) g.name = sfo_title_file(w + "/recomp/fs/app0/sce_sys/param.sfo");   /* (no game pack: the game's own title, not its id) */
 		if (g.name.empty()) g.name = g.id;
 		g_games.push_back(g);
 	}
@@ -2209,6 +2211,91 @@ static void steam_closed_modal(void) {
 }
 
 /* ---- a game's state, its title-id line and its actions: on its card and on its row of the list */
+/* ---- what the list shows beside a game (UI-01l): when it was last played and for how long -- <prefs>/playtime.tsv, written
+ * when a game started from here or from a Steam shortcut ends (the time it ran, not its build check) -- and how much
+ * room it takes: its folder in the library, counted in the background; a file shared with another copy (Vita3K's, on
+ * the same drive: a hard link) counts as shared, data read in place from another drive not at all */
+static std::map<std::string, PlayTime> g_playtime;
+static std::string playtime_path(void) { const std::string d = pref_dir(); return d.empty() ? "" : d + "playtime.tsv"; }
+static void playtime_load(void) { g_playtime = playtime_parse(read_file(playtime_path())); }
+static void playtime_record(const std::string &id, long long started, long long seconds) {
+	playtime_load(); playtime_add(g_playtime, id, started, seconds);
+	const std::string p = playtime_path(); if (p.empty() || !g_settings_writable) return;
+	const std::string t = playtime_format(g_playtime);
+	if (FILE *f = fopen((p + ".tmp").c_str(), "wb")) { fwrite(t.data(), 1, t.size(), f); fclose(f);
+#ifdef _WIN32
+		MoveFileExA((p + ".tmp").c_str(), p.c_str(), MOVEFILE_REPLACE_EXISTING);
+#else
+		rename((p + ".tmp").c_str(), p.c_str());
+#endif
+	}
+}
+static struct { std::mutex m; std::map<std::string, std::pair<uint64_t, uint64_t>> sizes; std::atomic<bool> busy{false}, again{false}; } g_size;   /* id -> (own, shared) bytes */
+#ifdef _WIN32
+static std::string utf8_of(const std::wstring &w) {
+	const int m = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+	std::string s((size_t)m, '\0'); if (m) WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), &s[0], m, nullptr, nullptr);
+	return s;
+}
+#endif
+static void size_walk(const std::string &dir, uint64_t &own, uint64_t &shared, int depth) {
+	if (depth > 40) return;
+#ifdef _WIN32
+	WIN32_FIND_DATAW fd; HANDLE h = FindFirstFileW(wide(dir + "/*").c_str(), &fd);
+	if (h == INVALID_HANDLE_VALUE) return;
+	do {
+		const std::wstring n = fd.cFileName;
+		if (n == L"." || n == L".." || (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) continue;   /* (a junction: data read in place elsewhere) */
+		const std::string path = dir + "/" + utf8_of(n);
+		if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) { size_walk(path, own, shared, depth + 1); continue; }
+		const uint64_t sz = ((uint64_t)fd.nFileSizeHigh << 32) | fd.nFileSizeLow;
+		DWORD links = 1;
+		HANDLE f = CreateFileW(wide(path).c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+		if (f != INVALID_HANDLE_VALUE) { BY_HANDLE_FILE_INFORMATION bi; if (GetFileInformationByHandle(f, &bi)) links = bi.nNumberOfLinks; CloseHandle(f); }
+		(links > 1 ? shared : own) += sz;
+	} while (FindNextFileW(h, &fd));
+	FindClose(h);
+#else
+	DIR *d = opendir(dir.c_str()); if (!d) return;
+	while (dirent *e = readdir(d)) {
+		const std::string n = e->d_name; if (n == "." || n == "..") continue;
+		const std::string path = dir + "/" + n; struct stat st;
+		if (lstat(path.c_str(), &st) != 0 || S_ISLNK(st.st_mode)) continue;
+		if (S_ISDIR(st.st_mode)) size_walk(path, own, shared, depth + 1); else (st.st_nlink > 1 ? shared : own) += (uint64_t)st.st_size;
+	}
+	closedir(d);
+#endif
+}
+static void size_refresh(void) {   /* every added game's size, in the background (again when asked while it runs) */
+	if (g_shot_mode) return;   /* (a screenshot run: no sizes, the same picture each time) */
+	if (g_size.busy.exchange(true)) { g_size.again = true; return; }
+	std::vector<std::string> ids; for (const Game &g : g_games) if (g.imported) ids.push_back(g.id);
+	const std::string dump = g_dump;
+	std::thread([ids, dump]() {
+		do {
+			g_size.again = false;
+			for (const std::string &id : ids) { uint64_t own = 0, sh = 0; size_walk(dump + "/decrypted/" + id, own, sh, 0); std::lock_guard<std::mutex> l(g_size.m); g_size.sizes[id] = {own, sh}; }
+		} while (g_size.again.exchange(false));
+		g_size.busy = false;
+	}).detach();
+}
+static uint64_t size_of(const Game &g, uint64_t *shared = nullptr, bool *known = nullptr) {
+	std::lock_guard<std::mutex> l(g_size.m); auto it = g_size.sizes.find(g.id);
+	if (known) *known = it != g_size.sizes.end();
+	if (it == g_size.sizes.end()) return 0;
+	if (shared) *shared = it->second.second;
+	return it->second.first + it->second.second;
+}
+static std::string stat_last(const Game &g) { auto it = g_playtime.find(g.id); const std::string s = it == g_playtime.end() ? "" : fmt_last(it->second.last, (long long)time(nullptr)); return !s.empty() ? s : g.imported ? "Never" : "-"; }
+static std::string stat_time(const Game &g) { auto it = g_playtime.find(g.id); const std::string s = it == g_playtime.end() ? "" : fmt_played(it->second.seconds); return !s.empty() ? s : g.imported ? "Never played" : "-"; }
+static std::string stat_size(const Game &g) {
+	if (!g.imported) return "-";
+	uint64_t sh = 0; bool known = false; const uint64_t all = size_of(g, &sh, &known);
+	if (!known) return "...";
+	return sh ? fmt_size(all) + " (" + fmt_size(sh) + " shared)" : fmt_size(all);
+}
+static bool g_list_stats;
+static long long g_run_started;   /* (a game's run from here: when it began, 0 none) */   /* (the list's table has the three columns: wide enough) */
 static void game_state(const Game &g, const Found *lf, bool mine) {
 	if (mine) { ui::spinner(ui::accent); ImGui::TextDisabled("%s", task_status().c_str()); }
 	else if (g.imported && !g.missing.empty()) {
@@ -2258,6 +2345,35 @@ static bool g_focus_placed;   /* (once a launcher run: then ImGui keeps the focu
  * and the bar only from its end, so up / down in between move through the games (and scroll), not out to them */
 static float g_lib_scroll, g_lib_scroll_max;   /* (the library's scroll, the frame before) */
 static std::map<ImGuiID, std::string> g_nav_game;   /* (ATIV_SHOT_NAV: which game a focused button belongs to) */
+static const Found *lib_find(const Game &g);
+/* the library's order (UI-01l): by state in sections -- ready to play, needs a build, found in your folders, supported but
+ * not added (folded until asked) -- or one list by name, last played, time played or size (hub.ini library_sort,
+ * library_desc, library_show_all) */
+static std::string g_lib_sort; static bool g_lib_desc, g_lib_show_all, g_lib_sort_loaded;
+struct LibSection { const char *title; std::vector<const Game *> games; bool folded = false; };
+static std::vector<LibSection> library_sections(void) {
+	if (!g_lib_sort_loaded) { g_lib_sort_loaded = true; g_lib_sort = g_prefs["library_sort"]; if (g_lib_sort.empty()) g_lib_sort = "state"; g_lib_desc = g_prefs["library_desc"] == "1"; g_lib_show_all = g_prefs["library_show_all"] == "1"; }
+	std::vector<LibSection> v;
+	if (g_lib_sort == "state") {
+		LibSection s[4] = {{"Ready to play", {}}, {"Needs a one-time build", {}}, {"Found in your folders, ready to add", {}}, {"Supported, not added yet", {}}};
+		for (const Game &g : g_games) s[g.built ? 0 : g.imported ? 1 : lib_find(g) ? 2 : 3].games.push_back(&g);
+		s[3].folded = !g_lib_show_all;
+		for (auto &x : s) if (!x.games.empty()) v.push_back(x);
+		return v;
+	}
+	LibSection all{nullptr, {}}; for (const Game &g : g_games) all.games.push_back(&g);
+	auto key_num = [](const Game &g) -> long long {
+		if (g_lib_sort == "last") { auto it = g_playtime.find(g.id); return it == g_playtime.end() ? 0 : it->second.last; }
+		if (g_lib_sort == "time") { auto it = g_playtime.find(g.id); return it == g_playtime.end() ? 0 : it->second.seconds; }
+		return (long long)size_of(g);
+	};
+	std::stable_sort(all.games.begin(), all.games.end(), [&](const Game *a, const Game *b) {
+		if (g_lib_sort == "name") { const std::string x = browse_lower(a->name), y = browse_lower(b->name); return g_lib_desc ? y < x : x < y; }
+		const long long x = key_num(*a), y = key_num(*b); return g_lib_desc ? x < y : x > y;   /* (the most first, as a list of what was played is read) */
+	});
+	v.push_back(all);
+	return v;
+}
 static void first_game_focus(const Game &g) {
 	if (g_shot_mode) g_nav_game[ImGui::GetItemID()] = g.id;
 	if (g.id != g_focus_game) return;
@@ -2356,7 +2472,12 @@ static void game_row(const Game &g, float ic) {
 	}
 	const float mid = padv + (ic - ImGui::GetFrameHeight()) * 0.5f;
 	ImGui::TableSetColumnIndex(1); ImGui::SetCursorPosY(ImGui::GetCursorPosY() + padv + (ic - ImGui::GetTextLineHeight()) * 0.5f); game_state(g, lf, mine);
-	ImGui::TableSetColumnIndex(2); ImGui::SetCursorPosY(ImGui::GetCursorPosY() + mid); game_actions(g, lf, ImGui::GetContentRegionAvail().x);
+	int col = 2;
+	if (g_list_stats) {   /* last played, time played, size */
+		const std::string st[3] = {stat_last(g), stat_time(g), stat_size(g)};
+		for (int c = 0; c < 3; c++) { ImGui::TableSetColumnIndex(col++); ImGui::SetCursorPosY(ImGui::GetCursorPosY() + padv + (ic - ImGui::GetTextLineHeight()) * 0.5f); ImGui::PushTextWrapPos(0); ImGui::TextWrapped("%s", st[c].c_str()); ImGui::PopTextWrapPos(); }
+	}
+	ImGui::TableSetColumnIndex(col); ImGui::SetCursorPosY(ImGui::GetCursorPosY() + mid); game_actions(g, lf, ImGui::GetContentRegionAvail().x);
 	ImGui::PopID();
 }
 
@@ -2374,6 +2495,7 @@ static void game_row_stacked(const Game &g, float ic) {
 	ImGui::SameLine(0, em * 0.8f);
 	ImGui::BeginGroup(); ImGui::PushTextWrapPos(0);
 	ImGui::TextWrapped("%s", g.name.c_str()); game_id_line(g); game_state(g, lf, mine);
+	if (g.imported) ImGui::TextDisabled("Last played: %s  ·  Time played: %s  ·  Size: %s", stat_last(g).c_str(), stat_time(g).c_str(), stat_size(g).c_str());
 	ImGui::PopTextWrapPos(); ImGui::EndGroup();
 	game_actions(g, lf, ImGui::GetContentRegionAvail().x);
 	ImGui::Dummy(ImVec2(0, em * 0.2f)); ImGui::Separator(); ImGui::Dummy(ImVec2(0, em * 0.2f));
@@ -2582,9 +2704,9 @@ static void hub_ui(SDL_Window *win) {
 	ImGui::Dummy(ImVec2(0, em * 0.3f));
 
 	ImGui::PopItemFlag();
-	g_focus_game.clear();
-	for (const Game &g : g_games) if (g.built) { g_focus_game = g.id; break; }
-	if (g_focus_game.empty() && !g_games.empty()) g_focus_game = g_games[0].id;
+	g_focus_game.clear();   /* (the first game shown) */
+	const std::vector<LibSection> sections = library_sections();
+	for (const LibSection &s : sections) if (!s.folded && !s.games.empty()) { g_focus_game = s.games[0]->id; break; }
 	/* the library: a grid of cards, sized to the window */
 	static float bar_seen;   /* (the height of the bar as drawn the frame before: the library takes exactly the rest) */
 	const float bar_h = bar_seen > 0 ? bar_seen : ImGui::GetFrameHeightWithSpacing() + em * 0.8f, drawer_h = g_drawer ? ImGui::GetContentRegionAvail().y * 0.4f : 0;
@@ -2598,22 +2720,39 @@ static void hub_ui(SDL_Window *win) {
 		auto it = g_prefs.find("library_size"); size = it == g_prefs.end() ? 100 : atoi(it->second.c_str());
 		size = size < 60 ? 60 : size > 160 ? 160 : size;
 	}
-	{	const ImGuiStyle &sty = ImGui::GetStyle(); const char *const views[] = {"Grid", "List"};
-		const float segw = ImGui::CalcTextSize("Grid").x + ImGui::CalcTextSize("List").x + sty.FramePadding.x * 4 + sty.ItemSpacing.x * 0.25f;
-		const float slw = em * 7, lbw = ImGui::CalcTextSize("Size").x, vw = ImGui::CalcTextSize("160%").x;   /* (the value beside the slider, not under its grab) */
-		const float x = ImGui::GetWindowContentRegionMax().x - segw - slw - lbw - vw - sty.ItemSpacing.x * 4;
-		const float text_end = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x + ImGui::GetScrollX();
-		if (x > text_end + em) ImGui::SameLine(x);   /* (else on a line of its own, below) */
+	{	/* the bar of controls: Sort by (the same again turns the order round), Size - / + (a controller and a finger can
+		 * press them; a slider was slow with one and fiddly with the other), Grid / List -- a row that wraps */
+		ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("Sort by");
+		static const char *const sorts[][2] = {{"state", "State"}, {"name", "Name"}, {"last", "Last played"}, {"time", "Time played"}, {"size", "Size"}};
+		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x * 0.25f, ImGui::GetStyle().ItemSpacing.y));
+		for (auto &s : sorts) {
+			const bool on = g_lib_sort == s[0];
+			std::string label = s[1]; if (on && strcmp(s[0], "state")) label += g_lib_desc ? "  (reversed)" : "";
+			label += std::string("##sort") + s[0];
+			same_line_fits(button_w(label.c_str()));
+			ImGui::PushStyleColor(ImGuiCol_Button, on ? ui::with_alpha(ui::accent, 0.18f) : ui::card); ImGui::PushStyleColor(ImGuiCol_Text, on ? ui::accent : ui::muted);
+			if (ImGui::Button(label.c_str())) {
+				if (on) g_lib_desc = !g_lib_desc; else { g_lib_sort = s[0]; g_lib_desc = false; }
+				if (g_settings_writable) { prefs_set("library_sort", g_lib_sort); prefs_set("library_desc", g_lib_desc ? "1" : "0"); }
+			}
+			ImGui::PopStyleColor(2);
+		}
+		ImGui::PopStyleVar();
+		const float sizew = ImGui::CalcTextSize("Size").x + button_w("-") * 2 + ImGui::CalcTextSize("160%").x + ImGui::GetStyle().ItemSpacing.x * 4;
+		same_line_fits(sizew + em);
+		ImGui::Dummy(ImVec2(em * 0.5f, 0)); ImGui::SameLine();
 		ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("Size"); ImGui::SameLine();
-		ImGui::SetNextItemWidth(slw);
-		ImGui::SliderInt("##libsize", &size, 60, 160, "", ImGuiSliderFlags_AlwaysClamp);
-		if (ImGui::IsItemHovered()) ImGui::SetTooltip("How large the games are shown");
-		if (ImGui::IsItemDeactivatedAfterEdit() && g_settings_writable) prefs_set("library_size", std::to_string(size));
-		ImGui::SameLine(); ImGui::AlignTextToFramePadding(); ImGui::Text("%d%%", size);
-		ImGui::SameLine();
+		ImGui::BeginDisabled(size <= 60); if (ImGui::Button("-##libsize", ImVec2(std::max(ImGui::GetFrameHeight(), button_w("+")), 0))) { size -= 20; if (g_settings_writable) prefs_set("library_size", std::to_string(size)); } ImGui::EndDisabled();
+		ImGui::SameLine(); ImGui::AlignTextToFramePadding(); ImGui::Text("%d%%", size); ImGui::SameLine();
+		ImGui::BeginDisabled(size >= 160); if (ImGui::Button("+##libsize", ImVec2(std::max(ImGui::GetFrameHeight(), button_w("+")), 0))) { size += 20; if (g_settings_writable) prefs_set("library_size", std::to_string(size)); } ImGui::EndDisabled();
+		size = size < 60 ? 60 : size > 160 ? 160 : size;
+		const char *const views[] = {"Grid", "List"};
+		same_line_fits(button_w("Grid") + button_w("List") + em);
+		ImGui::Dummy(ImVec2(em * 0.5f, 0)); ImGui::SameLine();
 		int v = view;
 		if (ui::segmented(views, 2, &v) && v != view) { view = v; if (g_settings_writable) prefs_set("library_view", view ? "list" : "grid"); }
 	}
+	const float toolbar_end = ImGui::GetCursorScreenPos().y;   /* (below the Sort / Size bar) */
 	const float zoom = size / 100.0f;
 	if (!g_firmware) {
 		ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(ui::warn.x, ui::warn.y, ui::warn.z, 0.10f));
@@ -2649,33 +2788,64 @@ static void hub_ui(SDL_Window *win) {
 		ImGui::Dummy(ImVec2(0, em * 2));
 		ImGui::TextDisabled("No games yet."); ImGui::TextWrapped("Add your own copy of a game — a PKG with its licence file, or a game folder — with + Add game.");
 	}
-	if (view == 1 && !g_games.empty() && ImGui::GetContentRegionAvail().x < em * 36) {   /* the list in a narrow window: each game's lines stacked, nothing squeezed into columns */
-		ImGui::Dummy(ImVec2(0, em * 0.2f));
-		for (const Game &g : g_games) game_row_stacked(g, em * 2.6f * zoom);
-	} else if (view == 1 && !g_games.empty()) {   /* the list: one row a game, its icon at the chosen size */
-		ImGui::Dummy(ImVec2(0, em * 0.2f));
-		if (ImGui::BeginTable("gamelist", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_PadOuterX)) {
-			ImGui::TableSetupColumn("Game", ImGuiTableColumnFlags_WidthStretch, 3.0f);
-			ImGui::TableSetupColumn("State", ImGuiTableColumnFlags_WidthStretch, 2.0f);
-			ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, em * 11.5f);
-			for (const Game &g : g_games) game_row(g, em * 2.6f * zoom);
-			ImGui::EndTable();
+	/* every card the same text heights (all games, so sections line up too) */
+	const float gap = em * 1.0f, min_w = em * 15.5f * zoom, avail_w = ImGui::GetContentRegionAvail().x;
+	int cols = (int)((avail_w + gap) / (min_w + gap)); if (cols < 1) cols = 1;
+	float cw = (avail_w - gap * (cols - 1)) / cols; if (cw > em * 24 * zoom) cw = em * 24 * zoom;   /* (a wide window gets more columns, not giant cards) */
+	float name_h = 0, id_h = 0;
+	ImGui::PushFont(nullptr, em * 1.15f);
+	for (const Game &g : g_games) { float hh = ImGui::CalcTextSize(g.name.c_str(), nullptr, false, cw - em * 1.8f).y; if (hh > name_h) name_h = hh; }
+	ImGui::PopFont();
+	for (const Game &g : g_games) id_h = std::max(id_h, id_line_height(g, cw - em * 1.8f));
+	const bool narrow_list = avail_w < em * 36;
+	g_list_stats = avail_w >= em * 58;   /* (the three columns only where they have room; else the stacked rows show them) */
+	int si = 0;
+	for (const LibSection &sec : sections) {
+		ImGui::PushID(si++);
+		if (sec.title) {   /* the section's heading and its count */
+			ImGui::Dummy(ImVec2(0, em * 0.3f));
+			ImGui::TextUnformatted(sec.title); ImGui::SameLine(); ImGui::TextDisabled("%zu", sec.games.size());
 		}
-	} else {   /* the grid: cards at the chosen size, as many columns as fit */
-		const float gap = em * 1.0f, min_w = em * 15.5f * zoom, avail = ImGui::GetContentRegionAvail().x;
-		int cols = (int)((avail + gap) / (min_w + gap)); if (cols < 1) cols = 1;
-		float cw = (avail - gap * (cols - 1)) / cols; if (cw > em * 24 * zoom) cw = em * 24 * zoom;   /* (a wide window gets more columns, not giant cards) */
-		float name_h = 0;   /* the longest name's height at this width: every card's text block lines up */
-		ImGui::PushFont(nullptr, em * 1.15f);
-		for (const Game &g : g_games) { float hh = ImGui::CalcTextSize(g.name.c_str(), nullptr, false, cw - em * 1.8f).y; if (hh > name_h) name_h = hh; }
-		ImGui::PopFont();
-		float id_h = 0; for (const Game &g : g_games) id_h = std::max(id_h, id_line_height(g, cw - em * 1.8f));
-		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(gap, gap));
-		for (size_t i = 0; i < g_games.size(); i++) {
-			if (i % cols) ImGui::SameLine();
-			ImGui::BeginGroup(); game_card(g_games[i], cw, name_h, id_h); ImGui::EndGroup();
+		if (sec.folded) {
+			char lb[64]; snprintf(lb, sizeof lb, "Show the %zu supported games", sec.games.size());
+			if (ImGui::Button(lb)) { g_lib_show_all = true; if (g_settings_writable) prefs_set("library_show_all", "1"); }
+			ImGui::PopID(); continue;
 		}
-		ImGui::PopStyleVar();
+		if (view == 1 && narrow_list) {   /* the list in a narrow window: each game's lines stacked, nothing squeezed into columns */
+			ImGui::Dummy(ImVec2(0, em * 0.2f));
+			for (const Game *g : sec.games) game_row_stacked(*g, em * 2.6f * zoom);
+		} else if (view == 1) {   /* the list: one row a game, its icon at the chosen size */
+			ImGui::Dummy(ImVec2(0, em * 0.2f));
+			if (ImGui::BeginTable("gamelist", g_list_stats ? 6 : 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_PadOuterX)) {
+				ImGui::TableSetupColumn("Game", ImGuiTableColumnFlags_WidthStretch, 3.0f);
+				ImGui::TableSetupColumn("State", ImGuiTableColumnFlags_WidthStretch, 2.0f);
+				if (g_list_stats) {
+					ImGui::TableSetupColumn("Last played", ImGuiTableColumnFlags_WidthStretch, 1.3f);
+					ImGui::TableSetupColumn("Time played", ImGuiTableColumnFlags_WidthStretch, 1.3f);
+					ImGui::TableSetupColumn("Size on disk", ImGuiTableColumnFlags_WidthStretch, 1.5f);
+				}
+				ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, em * 11.5f);
+				if (g_list_stats) {   /* (the columns' names, the actions' unnamed) */
+					ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
+					for (int c = 0; c < 5; c++) { ImGui::TableSetColumnIndex(c); ImGui::TextDisabled("%s", ImGui::TableGetColumnName(c)); }
+				}
+				for (const Game *g : sec.games) game_row(*g, em * 2.6f * zoom);
+				ImGui::EndTable();
+			}
+		} else {   /* the grid: cards at the chosen size, as many columns as fit */
+			ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(gap, gap));
+			for (size_t i = 0; i < sec.games.size(); i++) {
+				if (i % cols) ImGui::SameLine();
+				ImGui::BeginGroup(); game_card(*sec.games[i], cw, name_h, id_h); ImGui::EndGroup();
+			}
+			ImGui::PopStyleVar();
+		}
+		ImGui::PopID();
+	}
+	{	/* the focus on the Sort / Size bar: the list all the way up (nav scrolls just enough to show the bar; the header is
+		 * reached from the very top) */
+		ImGuiWindow *lw = ImGui::GetCurrentWindow(); ImGuiContext &g = *GImGui;
+		if (g.NavWindow == lw && g.NavId && ImGui::GetScrollY() > 0 && ImGui::WindowRectRelToAbs(lw, lw->NavRectRel[0]).Min.y < toolbar_end) ImGui::SetScrollY(0);
 	}
 	g_lib_scroll = ImGui::GetScrollY(); g_lib_scroll_max = ImGui::GetScrollMaxY();
 	ImGui::EndChild();
@@ -3063,6 +3233,7 @@ static int play_cli(const std::string &id) {   /* nativ --play <title>: the game
 			if (!run_t0) { std::lock_guard<std::mutex> l(g_log_lock); if (g_step == s.say) run_t0 = SDL_GetTicks(); }
 		}
 		g_task.reader.join();
+		if (run_t0) { const long long secs = (long long)((SDL_GetTicks() - run_t0) / 1000); playtime_record(id, (long long)time(nullptr) - secs, secs); }
 		/* (a game that played a while and ended with an error code is not reported: only one that didn't start) */
 		if (!g_task.ok && (!run_t0 || SDL_GetTicks() - run_t0 < 15000))
 			err = name + " couldn't start. Open Project Nativ and press Play on its card to see what happened (Show log).";
@@ -3201,6 +3372,7 @@ int main(int argc, char **argv) {
 	}
 
 	update_check_start(); files_check_start(); steam_refresh();
+	playtime_load(); size_refresh();
 	/* fullscreen (UI-01h): --fullscreen (a Steam entry for the launcher itself), or as last time (hub.ini launcher_fullscreen);
 	 * F11 switches it and keeps the choice */
 	{	bool fs = g_prefs["launcher_fullscreen"] == "1";
@@ -3229,10 +3401,16 @@ int main(int argc, char **argv) {
 				if (!g_lib_folders.empty() && (it == g_prefs.end() || it->second != "0")) task_start("Looking in your library folders", "libscan", "", lib_scan_steps());
 			}
 		}
+		{	std::string step; { std::lock_guard<std::mutex> l(g_log_lock); step = g_step; }   /* (the game's own run began: its play time from here) */
+			if (g_task.running && g_task.kind == "play" && !g_run_started && step.rfind("Running ", 0) == 0) g_run_started = (long long)time(nullptr);
+		}
 		static Uint64 last_scan;
 		if (g_task.running && SDL_GetTicks() - last_scan > 1500) { library_scan(); last_scan = SDL_GetTicks(); }   /* (a long add: its card follows) */
 		if (g_refresh.exchange(false)) {
 			if (g_task.kind == "play") { SDL_RestoreWindow(win); SDL_RaiseWindow(win); }   /* (the game closed: back to the library) */
+			if (g_task.kind == "play" && g_run_started) { playtime_record(g_task.game, g_run_started, (long long)time(nullptr) - g_run_started); }
+			g_run_started = 0;
+			if (g_task.kind != "play") size_refresh();
 			library_scan();
 			if (g_task.kind == "scan" && g_task.ok) scan_load(scan_file());
 			if (g_task.kind == "report" && g_task.ok) open_folder(g_dump + "/reports");
