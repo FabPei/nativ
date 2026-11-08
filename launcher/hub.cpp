@@ -17,7 +17,7 @@
  * ATIV_PREFS=<dir>: the launcher's own files and the shared settings there instead of the user's app folder (a test).
  * ATIV_DUMP=<dir>: the library (games, firmware, licences, builds, saves) there instead of the usual one, library_dir (a
  * fresh library to try setup on; the stages it runs inherit it). ATIV_SHOT=f.ppm (a verification aid, no visible window): renders the hub once into f.ppm and exits;
- * ATIV_SHOT_UI=library|setup:<0-4>|add|settings:<0-2>|game:<title>|sac|sac:again picks what is on screen, ATIV_SHOT_SIZE=WxH the size (1280x800),
+ * ATIV_SHOT_UI=library|setup:<0-4>|add|settings:<0-2>|game:<title>|more:<title>|sac|sac:again picks what is on screen, ATIV_SHOT_SIZE=WxH the size (1280x800),
  * ATIV_SHOT_SCAN=<rows> a folder search's results (vitarecomp scan's output) in the Add dialog,
  * ATIV_SHOT_LIBSCAN=<rows> the library folders' search (vitarecomp folders scan's output: "Found in" on the cards);
  * the library folders themselves are <prefs>/library_folders.tsv (ATIV_PREFS=<dir> for a test's).
@@ -1757,7 +1757,9 @@ static std::string self_exe(void) {   /* this launcher, as Steam is to start it 
 }
 static std::vector<Step> g_steam_steps; static std::string g_steam_name, g_steam_game;   /* the last change, for Try again */
 static bool g_steam_closed_open;   /* the "close Steam first" dialog */
+static bool steam_addable(const Game &g);
 static void steam_task(const Game &g, bool add) {
+	if (add && !steam_addable(g)) return;   /* (never a shortcut to a game that isn't built) */
 	std::vector<std::string> v{python_exe(), g_root + "/pipeline/vitarecomp.py", "steam", add ? "add" : "remove", g.id};
 	if (add) {
 		v.insert(v.end(), {"--exe", self_exe(), "--name", g.name});
@@ -1821,6 +1823,10 @@ static void game_id_line(const Game &g) {   /* the title id and the version: thi
 			                  (g.update_note.empty() ? "Version " + rec + " is recommended" : g.update_note).c_str(), g.version.c_str(), g.id.c_str());
 	}
 }
+static std::string g_shot_more;   /* (ATIV_SHOT_UI=more:<title>: that game's "more" menu open in a screenshot) */
+/* Add to Steam only for a game that is Ready to play (its built program is there, its data reachable): a shortcut to a
+ * game never built would only fail in Steam. Remove from Steam is always offered, so an old shortcut can go. */
+static bool steam_addable(const Game &g) { return g.built && (!g.imported || g.missing.empty()); }
 static void game_actions(const Game &g, const Found *lf, float bw) {   /* the one primary action, the "more" menu beside it */
 	const bool busy = g_task.running;
 	const float em = ImGui::GetFontSize(), more = ImGui::GetFrameHeight();
@@ -1850,6 +1856,7 @@ static void game_actions(const Game &g, const Found *lf, float bw) {   /* the on
 	ImGui::EndDisabled();
 	{	/* the "more" button: three dots, drawn (the font may have no ellipsis glyph) */
 		if (ImGui::Button("##more", ImVec2(more, 0))) ImGui::OpenPopup("more");
+		if (!g_shot_more.empty() && g_shot_more == g.id) { ImGui::OpenPopup("more"); g_shot_more.clear(); }
 		ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax(), m((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
 		for (int k = -1; k <= 1; k++) dl->AddCircleFilled(ImVec2(m.x + k * em * 0.32f, m.y), em * 0.09f, ui::u32(ui::text, 0.8f));
 	}
@@ -1862,12 +1869,15 @@ static void game_actions(const Game &g, const Found *lf, float bw) {   /* the on
 		ImGui::EndDisabled();
 		{	bool have, in; { std::lock_guard<std::mutex> lk(g_steam.m); have = g_steam.have; in = g_steam.in.count(g.id) > 0; }
 			if (have && !self_exe().empty()) {   /* (Steam installed here, and a launcher it can start) */
-				ImGui::BeginDisabled(busy || (!g.imported && !in));
-				if (ImGui::MenuItem(in ? "Remove from Steam" : "Add to Steam")) steam_task(g, !in);
+				const bool ok = steam_addable(g);
+				ImGui::BeginDisabled(busy || (!in && !ok));
+				if (ImGui::MenuItem(in ? "Remove from Steam" : "Add to Steam", in || ok ? nullptr : "build it first")) steam_task(g, !in);
 				ImGui::EndDisabled();
 				if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-					ImGui::SetTooltip(in ? "Takes this game's shortcut out of your Steam library (only this one: your other shortcuts stay).\nSteam needs to be closed for it."
-					                     : "Puts this game into your Steam library: a shortcut that starts the game directly.\nSteam needs to be closed for it; the game shows up the next time Steam starts.");
+					ImGui::SetTooltip("%s", in ? (ok ? "Takes this game's shortcut out of your Steam library (only this one: your other shortcuts stay).\nSteam needs to be closed for it."
+					                                 : "Takes this game's shortcut out of your Steam library (only this one: your other shortcuts stay).\nSteam needs to be closed for it.\nThis game isn't ready to play right now: build it again before starting it from Steam.")
+					                         : ok ? "Puts this game into your Steam library: a shortcut that starts the game directly.\nSteam needs to be closed for it; the game shows up the next time Steam starts."
+					                              : "Build the game first: a game can be added to Steam once it is Ready to play.");
 			}
 		}
 		if (ImGui::MenuItem("Show its folder")) open_folder(g_dump + "/decrypted/" + g.id);
@@ -2415,6 +2425,7 @@ int main(int argc, char **argv) {
 		g_sac_open = ui_sel.rfind("sac", 0) == 0; g_sac_game = "PCSE00640"; g_sac_rebuilt = ui_sel == "sac:again";
 		g_settings_open = ui_sel.rfind("settings", 0) == 0; if (g_settings_open && ui_sel.size() > 9) g_settings_tab = atoi(ui_sel.c_str() + 9);
 		if (ui_sel.rfind("game:", 0) == 0) g_game_settings = ui_sel.substr(5);
+		if (ui_sel.rfind("more:", 0) == 0) g_shot_more = ui_sel.substr(5);
 		if (ui_sel.rfind("name:", 0) == 0) g_name_game = ui_sel.substr(5);
 		if (getenv("ATIV_SHOT_NOFW") && *getenv("ATIV_SHOT_NOFW")) { g_firmware = false; g_firmware_version.clear(); }
 		if (const char *u = getenv("ATIV_SHOT_UPDATE")) { g_update.tag = u; g_update.page = "https://example.invalid/"; }   /* (the notice, without asking anyone) */
