@@ -69,7 +69,17 @@ if [[ ! -f SDL3/lib/libSDL3.so.0 ]]; then
   GEN=; command -v ninja >/dev/null && GEN="-G Ninja"
   INC="-isystem $D/sdl-inc -isystem $D/sdl-inc/dbus-1.0 -isystem $D/sdl-inc/pipewire-0.3 -isystem $D/sdl-inc/spa-0.2 -isystem $D/sdl-inc/libdecor-0 -isystem $D/sdl-inc/libdrm -isystem $D/sdl-inc/libusb-1.0"
   [[ -e sdl-inc/dbus-arch ]] && { mkdir -p sdl-inc/dbus-arch-root/dbus; ln -sf /usr/lib/dbus-1.0/include/dbus/dbus-arch-deps.h sdl-inc/dbus-arch-root/dbus/; INC="$INC -isystem $D/sdl-inc/dbus-arch-root"; }
-  cmake -S sdl-src -B sdl-build $GEN -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$D/SDL3" -DCMAKE_INSTALL_LIBDIR=lib \
+  # (zig cc names no multiarch triple, so CMake leaves CMAKE_LIBRARY_ARCHITECTURE empty and never looks in Debian/Ubuntu's
+  # /usr/lib/x86_64-linux-gnu: every backend's library is "missing" and SDL refuses to configure without X11 or Wayland)
+  MA=; [[ -d /usr/lib/x86_64-linux-gnu ]] && MA="-DCMAKE_LIBRARY_ARCHITECTURE=x86_64-linux-gnu"
+  # (an optional X11 extension's header missing -- libxss-dev, libxtst-dev ... are not on every machine -- and SDL refuses to
+  # configure on Linux: built without that extension then, each one said here; SDL's own list, cmake/sdlchecks.cmake CheckX11)
+  XOFF=
+  for e in XCURSOR:Xcursor/Xcursor.h XDBE:extensions/Xdbe.h XINPUT:extensions/XInput2.h XFIXES:extensions/Xfixes.h XRANDR:extensions/Xrandr.h \
+           XSCRNSAVER:extensions/scrnsaver.h XSHAPE:extensions/shape.h XSYNC:extensions/sync.h XTEST:extensions/XTest.h; do
+    [[ -e /usr/include/X11/${e#*:} ]] || { XOFF="$XOFF -DSDL_X11_${e%%:*}=OFF"; echo "note: no X11/${e#*:}: SDL3 without ${e%%:*}"; }
+  done
+  cmake -S sdl-src -B sdl-build $GEN $MA $XOFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$D/SDL3" -DCMAKE_INSTALL_LIBDIR=lib \
     -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$D/bin/c++" -DCMAKE_AR="$D/bin/ar" -DCMAKE_RANLIB="$D/bin/ranlib" \
     -DCMAKE_C_FLAGS="$INC" -DCMAKE_CXX_FLAGS="$INC" -DPKG_CONFIG_EXECUTABLE=/usr/bin/pkg-config \
     -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_INSTALL_DOCS=OFF \
