@@ -115,7 +115,8 @@ def classify(log, shot):
 class Steps:
     """what the loop does to the game; vitarecomp's runs the real stages, the fixture a synthetic game.
     prepare(): analyze + recompile + build, True when all succeeded; run(): (log text, shot written);
-    seeds(): every seed line known now (the game's analysis/seeds.txt and the shared firmware-module ones)"""
+    seeds(): every seed line known now (the game's analysis/seeds.txt and the shared firmware-module ones);
+    secs (optional): {stage: wall seconds} of the latest prepare + run, copied into that run's summary"""
     def prepare(self): raise NotImplementedError
     def run(self): raise NotImplementedError
     def seeds(self): raise NotImplementedError
@@ -132,6 +133,7 @@ def loop(steps, max_iterations=8, say=print):
         r = classify(log, shot)
         now = set(steps.seeds()); new = sorted(now - seen); seen |= now; found += new
         its.append({"iteration": i, "stop": r["stop"], "addr": r["addr"], "new_seeds": new})
+        if getattr(steps, "secs", None): its[-1]["secs"] = dict(steps.secs)   # (each stage's wall seconds, when the steps time them)
         say(f"bootstrap: run {i}: {r['stop']}" + (f" at {r['addr']}" if r["addr"] else "") + (f", {len(new)} new seed(s): {' '.join(new)}" if new else ""))
         if r["stop"] != "missed_function": break
         if not new:   # (the run stopped at a missed function the seeds already hold: the analysis can't use it)

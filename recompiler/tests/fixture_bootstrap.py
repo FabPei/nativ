@@ -85,6 +85,11 @@ s = bootstrap.loop(Toy(C, {C[0]}, fail_build_at=2), 8, quiet)
 check(s["stop"] == "build_failed" and s["iterations"] == 2, f"loop: failed build -> {s['stop']} after {s['iterations']}")
 s = bootstrap.loop(Toy(C, {C[0]}), 2, quiet)
 check(s["stop"] == "max_iterations" and s["iterations"] == 2 and len(s["seeds_found"]) == 2, f"loop: --max 2 -> {s['stop']}")
+class Timed(Toy):
+    def prepare(self):
+        self.secs = {"build": 10.0 * (self.n + 1)}; return Toy.prepare(self)
+s = bootstrap.loop(Timed(C, {C[0], C[2]}), 8, quiet)
+check([r.get("secs") for r in s["runs"]] == [{"build": 10.0}, {"build": 20.0}, {"build": 30.0}], "loop: each run carries its stages' seconds (steps.secs)")
 
 
 # ---- 3. pack-init on a synthetic library

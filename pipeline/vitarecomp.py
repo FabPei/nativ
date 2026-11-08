@@ -967,17 +967,22 @@ class GameSteps(bootstrap.Steps):
         self.td = os.path.join(g.OUT, g.TD)
 
     def prepare(self):
-        self.n += 1
+        self.n += 1; self.secs = {}
         st = ["analyze", "recompile", "build"]
         if self.n == 1 and not os.path.isfile(os.path.join(self.g.W, "elf", self.g.ELF)): st = ["import"] + st
         for c in st:
             say(f"bootstrap: {c} {self.g.T}")
-            if run(SELF + [c, self.g.T], check=False).returncode: return False
+            t0 = time.time(); rc = run(SELF + [c, self.g.T], check=False).returncode
+            self.secs[c] = round(time.time() - t0, 1)
+            say(f"bootstrap: {c} took {self.secs[c]:.0f} s")
+            if rc: return False
         return True
 
     def run(self):
         say(f"bootstrap: headless run, {self.frames} frames")
+        t0 = time.time()
         run(SELF + ["test", self.g.T], env=env_with({"TEST_FRAMES": str(self.frames)}), check=False)
+        self.secs["test"] = round(time.time() - t0, 1)
         log = os.path.join(self.td, "test.log")
         text = open(log, encoding="utf-8", errors="replace").read() if os.path.isfile(log) else ""
         return text, os.path.isfile(os.path.join(self.td, "shot_%05d.ppm" % int(self.frames)))
