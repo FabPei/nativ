@@ -468,8 +468,7 @@ void recomp_call_external(Cpu *c, uint32_t addr) {
 			while (!hit && (p = strchr(p, ',')) && p[1]) { const char *q = strchr(p + 1, ','); char item[96]; size_t n = q ? (size_t)(q - p - 1) : 0;
 				if (n && n < sizeof item) { memcpy(item, p + 1, n); item[n] = 0; hit = strstr(name, item) != 0; } p = q; }
 			if (hit) { char tn[32] = ""; plat_thread_name(tn, sizeof tn); extern uint64_t display_frames(void); extern uint32_t kernel_current_tid(void);
-				fprintf(stderr, "    imp f%llu [%s %#x] %s(%#x, %#x, %#x, %#x) -> %#x lr %#x t%llu d%llu
-", (unsigned long long)display_frames(), tn, kernel_current_tid(), name, a0, a1, a2, a3, c->r[0], c->r[14], (unsigned long long)imp_t0, (unsigned long long)(imp_t1 - imp_t0)); }
+				fprintf(stderr, "    imp f%llu [%s %#x] %s(%#x, %#x, %#x, %#x) -> %#x lr %#x t%llu d%llu\n", (unsigned long long)display_frames(), tn, kernel_current_tid(), name, a0, a1, a2, a3, c->r[0], c->r[14], (unsigned long long)imp_t0, (unsigned long long)(imp_t1 - imp_t0)); }
 		}
 	}
 	if (recomp_sched_on) sched_yield_if_preempted();
