@@ -37,6 +37,7 @@
 #include "backends/imgui_impl_sdlgpu3.h"
 #include "ui_theme.h"   /* the look shared with the in-game overlay */
 #include "hub_scale.h"   /* (UI-01h) the UI's scale from the window's height or the display's scale */
+#include "file_browse.h"   /* (UI-01f) the own file / folder browser's listing */
 #include "pad_family.h"   /* (UI-01e) the controller in use and its buttons' names, shared with the in-game menu */
 #include <ctime>
 #include <SDL3/SDL.h>
@@ -673,16 +674,18 @@ static void SDLCALL picked(void *, const char *const *files, int) {
 	std::lock_guard<std::mutex> l(g_pick_lock);
 	if (files && files[0]) { g_pick_result = files[0]; g_pick_done = true; }
 }
-static void pick_file(SDL_Window *w, std::string *target, const SDL_DialogFileFilter *f, int nf) { if (g_shot_mode) { g_shot_done.push_back("pick a file"); return; } g_pick_target = target; SDL_ShowOpenFileDialog(picked, nullptr, w, f, nf, nullptr, false); }
-static void pick_folder(SDL_Window *w, std::string *target) { if (g_shot_mode) { g_shot_done.push_back("pick a folder"); return; } g_pick_target = target; SDL_ShowOpenFolderDialog(picked, nullptr, w, nullptr, false); }
+static bool use_in_app_browser(void);
+static void browse_open(std::string *target, int kind);
+static void pick_file(SDL_Window *w, std::string *target, const SDL_DialogFileFilter *f, int nf, int kind) { if (use_in_app_browser()) { browse_open(target, kind); return; } if (g_shot_mode) { g_shot_done.push_back("pick a file"); return; } g_pick_target = target; SDL_ShowOpenFileDialog(picked, nullptr, w, f, nf, nullptr, false); }
+static void pick_folder(SDL_Window *w, std::string *target) { if (use_in_app_browser()) { browse_open(target, BROWSE_FOLDER); return; } if (g_shot_mode) { g_shot_done.push_back("pick a folder"); return; } g_pick_target = target; SDL_ShowOpenFolderDialog(picked, nullptr, w, nullptr, false); }
 /* what each file dialog shows first. A game file is a PKG (vitadecrypt.game reads a file only by a PKG's magic; zip/vpk
  * are not read); a licence is a .rif or a work.bin; the firmware is Sony's .PUP. All files last, for a renamed one */
 static const SDL_DialogFileFilter k_pick_pkg[] = {{"PS Vita game or update (*.pkg)", "pkg"}, {"All files (*.*)", "*"}};
 static const SDL_DialogFileFilter k_pick_licence[] = {{"Licence file (*.rif, work.bin)", "rif;bin"}, {"All files (*.*)", "*"}};
 static const SDL_DialogFileFilter k_pick_pup[] = {{"PS Vita system update (*.PUP)", "pup"}, {"All files (*.*)", "*"}};
-static void pick_pkg(SDL_Window *w, std::string *target) { pick_file(w, target, k_pick_pkg, 2); }
-static void pick_licence(SDL_Window *w, std::string *target) { pick_file(w, target, k_pick_licence, 2); }
-static void pick_pup(SDL_Window *w, std::string *target) { pick_file(w, target, k_pick_pup, 2); }
+static void pick_pkg(SDL_Window *w, std::string *target) { pick_file(w, target, k_pick_pkg, 2, BROWSE_PKG); }
+static void pick_licence(SDL_Window *w, std::string *target) { pick_file(w, target, k_pick_licence, 2, BROWSE_LICENCE); }
+static void pick_pup(SDL_Window *w, std::string *target) { pick_file(w, target, k_pick_pup, 2, BROWSE_PUP); }
 static void pick_poll(void) {
 	std::lock_guard<std::mutex> l(g_pick_lock);
 	if (g_pick_done && g_pick_target) *g_pick_target = g_pick_result;
@@ -849,6 +852,94 @@ static bool dialog_back(void) {
 	return ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false);
 }
 static void dialog_body_end(void) { ImGui::EndChild(); ImGui::Dummy(ImVec2(0, ImGui::GetFontSize() * 0.2f)); }
+/* ---- the launcher's own file and folder browser (UI-01f): a controller or a finger can't use the system's file dialog, so a
+ * pick made with either opens this one instead (a mouse keeps the system's). Places first (drives, home, Downloads,
+ * Vita3K, the library folders, on Linux the drives and SD cards under /run/media), then a folder's subfolders and the
+ * files this pick wants (file_browse.h). A / tap opens a folder or picks a file, B goes up a folder (closes at the
+ * places), "Use this folder" picks the folder shown. It opens inside the dialog that asked for it (a dialog opened
+ * beside it would close that one). The last folder used is where the next pick starts (hub.ini browse_last) */
+static std::string vita3k_default_dir(void);
+static struct { bool open = false, appearing = false, top = false; std::string *target = nullptr; int kind = BROWSE_FOLDER; std::string dir; std::vector<BrowseEntry> items; } g_browse;
+static bool use_in_app_browser(void) {
+	return g_touch || (GImGui->NavCursorVisible && GImGui->NavInputSource == ImGuiInputSource_Gamepad) || (getenv("ATIV_BROWSER") && *getenv("ATIV_BROWSER") == '1');
+}
+static void browse_go(const std::string &dir) { g_browse.dir = dir; g_browse.items = dir.empty() ? std::vector<BrowseEntry>() : browse_list(dir, g_browse.kind); g_browse.appearing = true; }
+static bool is_dir(const std::string &p) { struct stat st; return !p.empty() && stat(p.c_str(), &st) == 0 && S_ISDIR(st.st_mode); }
+static void browse_open(std::string *target, int kind) {
+	g_browse.open = true; g_browse.target = target; g_browse.kind = kind; g_browse.top = GImGui->OpenPopupStack.empty();
+	std::string start = target && !target->empty() ? (kind == BROWSE_FOLDER ? *target : browse_parent(*target)) : g_prefs["browse_last"];
+	browse_go(is_dir(start) ? start : std::string());
+}
+static std::vector<std::pair<std::string, std::string>> browse_places(void) {   /* (label, folder) */
+	std::vector<std::pair<std::string, std::string>> v;
+	auto add = [&](const std::string &label, std::string path) { for (char &c : path) if (c == '\\') c = '/'; if (is_dir(path)) v.push_back({label, path}); };
+	if (!g_prefs["browse_last"].empty()) add("Last used: " + g_prefs["browse_last"], g_prefs["browse_last"]);
+#ifdef _WIN32
+	const DWORD drives = GetLogicalDrives();
+	for (int i = 2; i < 26; i++) if (drives & (1u << i)) { const std::string d = std::string(1, (char)('A' + i)) + ":/"; v.push_back({"Drive " + d.substr(0, 2), d}); }
+	const char *home = getenv("USERPROFILE");
+#else
+	const char *home = getenv("HOME"); const char *user = getenv("USER");
+	if (user) { add("Drives and SD cards", std::string("/run/media/") + user); add("Drives", std::string("/media/") + user); }
+	add("This computer", "/");
+#endif
+	if (home) { const std::string h = home; add("Home", h); for (const char *sub : {"Downloads", "Documents", "Desktop"}) add(sub, h + "/" + sub); }
+	const std::string v3k = vita3k_default_dir(); if (!v3k.empty()) add("Vita3K", v3k);
+	for (const LibFolder &f : g_lib_folders) add("Library folder: " + f.path, f.path);
+	return v;
+}
+static void browser_modal(void) {
+	if (!g_browse.open) return;
+	const ImGuiViewport *vp = ImGui::GetMainViewport(); const float em = ImGui::GetFontSize();
+	if (!ImGui::IsPopupOpen("##browse")) ImGui::OpenPopup("##browse");
+	ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x < 44 * em ? vp->WorkSize.x * 0.94f : 40 * em, 0), ImGuiCond_Always);
+	ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(1.6f * em, 1.3f * em)); ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+	if (!ImGui::BeginPopupModal("##browse", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove)) { ImGui::PopStyleVar(2); return; }
+	ImGui::PopStyleVar(2);
+	static const char *const titles[] = {"Choose a folder", "Choose the game's PKG", "Choose the licence file", "Choose the system update file"};
+	ui::heading(titles[g_browse.kind >= 0 && g_browse.kind <= 3 ? g_browse.kind : 0], em * 1.4f);
+	ImGui::PushTextWrapPos(0); ui::muted_wrapped(g_browse.dir.empty() ? "Places" : g_browse.dir.c_str()); ImGui::PopTextWrapPos();
+	dialog_body_begin();
+	bool close = false, going = false; std::string go, pick;
+	const float rowh = g_touch ? touch_target() : ImGui::GetFrameHeight();
+	int idx = 0;
+	auto row = [&](const std::string &label) {   /* one entry, finger-tall by touch; the first takes the focus when a folder opens */
+		ImGui::PushID(idx);
+		const bool r = ImGui::Selectable(("   " + label).c_str(), false, 0, ImVec2(0, rowh));   /* (a little in from the row's edge) */
+		if (idx == 0 && g_browse.appearing && GImGui->NavCursorVisible) ImGui::SetKeyboardFocusHere(-1);
+		ImGui::PopID(); idx++;
+		return r;
+	};
+	ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0, 0.5f));   /* (a row's name in its middle) */
+	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));   /* (rows exactly the list's size: a Selectable reaches half the spacing past each side; the rows are a button tall instead) */
+	if (g_browse.dir.empty()) {
+		for (auto &pl : browse_places()) if (row(pl.first)) { go = pl.second; going = true; }
+	} else {
+		if (row(".. (up one folder)")) { go = browse_parent(g_browse.dir); going = true; }
+		for (const BrowseEntry &e : g_browse.items)
+			if (row(e.dir ? e.name + "/" : e.name)) { if (e.dir) { go = browse_join(g_browse.dir, e.name); going = true; } else pick = browse_join(g_browse.dir, e.name); }
+		if (g_browse.items.empty()) ui::muted_wrapped(g_browse.kind == BROWSE_FOLDER ? "No folders in here." : "Nothing in here to pick: no folders, and no file of the kind wanted.");
+	}
+	ImGui::PopStyleVar(2);
+	dialog_body_end();
+	if (g_browse.kind == BROWSE_FOLDER && !g_browse.dir.empty()) {
+		if (ui::primary_button("Use this folder") || ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false)) pick = g_browse.dir;   /* (Menu / Options: the screen's main action) */
+		same_line_fits(button_w("Cancel"));
+	}
+	if (ImGui::Button("Cancel")) close = true;
+	if (dialog_back()) { if (g_browse.dir.empty()) close = true; else { go = browse_parent(g_browse.dir); going = true; } }   /* (B: up a folder) */
+	dialog_hints();
+	if (!pick.empty()) {
+		if (g_browse.target) *g_browse.target = pick;
+		prefs_set("browse_last", g_browse.kind == BROWSE_FOLDER ? pick : browse_parent(pick));
+		if (g_shot_mode) g_shot_done.push_back("picked " + pick);
+		close = true;
+	}
+	if (going) browse_go(go); else g_browse.appearing = false;
+	if (close) { g_browse.open = false; ImGui::CloseCurrentPopup(); }
+	ImGui::EndPopup();
+}
 static void tab_hint(void) {   /* (while a controller or the keyboard moves the focus: the buttons that step the tabs) */
 	if (!hints_visible()) return;
 	const PadNames *n = pad_names_of(g_pad_fam);
@@ -1565,6 +1656,7 @@ static void settings_modal(void) {
 	ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize("Done").x - ImGui::GetStyle().FramePadding.x * 2);
 	if (ui::primary_button("Done") || dialog_back()) { g_settings_open = false; ImGui::CloseCurrentPopup(); }
 	dialog_hints();
+	browser_modal();   /* (Library: Add a folder) */
 	ImGui::EndPopup();
 }
 
@@ -1907,6 +1999,7 @@ static void setup_modal(SDL_Window *win) {
 		break;
 	}
 	dialog_hints();
+	browser_modal();   /* (Firmware, Your games) */
 	ImGui::EndPopup();
 }
 
@@ -2262,6 +2355,13 @@ static void log_save(SDL_Window *win) {
 	strftime(name, sizeof name, "nativ-launcher-%Y%m%d-%H%M%S.log", &tm);
 	const char *docs = SDL_GetUserFolder(SDL_FOLDER_DOCUMENTS);
 	std::string where = docs ? std::string(docs) + name : std::string(name);
+	if (use_in_app_browser()) {   /* (a controller or a finger: no save dialog to answer -- into Documents, and the button says so) */
+		if (g_shot_mode) { g_shot_done.push_back("save the log to " + where); return; }
+		FILE *f = fopen(where.c_str(), "wb"); bool ok = f && fwrite(g_log_to_save.data(), 1, g_log_to_save.size(), f) == g_log_to_save.size();
+		if (f && fclose(f) != 0) ok = false;
+		log_note("save", ok ? "Saved to Documents" : "Not saved");
+		return;
+	}
 	if (g_shot_mode) { g_shot_done.push_back("save the log"); return; }
 	SDL_ShowSaveFileDialog(log_saved, nullptr, win, f, 3, where.c_str());
 }
@@ -2521,6 +2621,7 @@ static void hub_ui(SDL_Window *win) {
 		dialog_body_end();
 		if (started || ImGui::Button("Cancel") || dialog_back()) { g_add_open = false; ImGui::CloseCurrentPopup(); }
 		dialog_hints();
+		browser_modal();   /* (Browse..., licences From a folder...) */
 		ImGui::EndPopup();
 	} else ImGui::PopStyleVar(2);
 	sac_modal();
@@ -2529,6 +2630,7 @@ static void hub_ui(SDL_Window *win) {
 	setup_modal(win);
 	settings_modal();
 	game_settings_modal();
+	if (g_browse.top) browser_modal();   /* (one opened with no dialog around it) */
 	{	/* (a press of B this frame that ImGui used to end an edit or close a menu: no dialog takes it next frame either) */
 		ImGuiContext &g = *GImGui; bool menu = false;
 		for (const ImGuiPopupData &p : g.OpenPopupStack) menu |= p.Window && !(p.Window->Flags & ImGuiWindowFlags_Modal);
@@ -2730,6 +2832,7 @@ static int shot(SDL_Window *win, const char *path, int w, int h) {
 				if (!rect.empty()) fprintf(fn, "%s\n", rect.c_str());
 				fprintf(fn, "pointer %d %d %s over %s\n", (int)io.MousePos.x, (int)io.MousePos.y, io.MouseSource == ImGuiMouseSource_TouchScreen ? "touch" : "mouse", g.HoveredWindow ? fit_name(g.HoveredWindow).c_str() : "-");
 				for (const std::string &d : g_shot_done) fprintf(fn, "did %s\n", d.c_str());
+				if (g_browse.open) fprintf(fn, "browse %s (%zu)\n", g_browse.dir.empty() ? "places" : g_browse.dir.c_str(), g_browse.items.size());
 				for (ImGuiWindow *sw : g.Windows) if (sw->WasActive && !sw->Hidden && sw->ScrollMax.y > 0.5f) fprintf(fn, "scroll %s %d/%d\n", fit_name(sw).c_str(), (int)sw->Scroll.y, (int)sw->ScrollMax.y);
 				fclose(fn);
 			}
@@ -2962,6 +3065,13 @@ int main(int argc, char **argv) {
 		if (ui_sel.rfind("game:", 0) == 0) g_game_settings = ui_sel.substr(5);
 		if (ui_sel.rfind("more:", 0) == 0) g_shot_more = ui_sel.substr(5);
 		if (ui_sel.rfind("name:", 0) == 0) g_name_game = ui_sel.substr(5);
+		if (ui_sel.rfind("browse:", 0) == 0) {   /* (browse:<kind>:<dir>: the own browser, opened at <dir>) */
+			static std::string picked_here;
+			const std::string rest = ui_sel.substr(7); const size_t c = rest.find(':');
+			const std::string k = rest.substr(0, c);
+			browse_open(&picked_here, k == "pkg" ? BROWSE_PKG : k == "licence" ? BROWSE_LICENCE : k == "pup" ? BROWSE_PUP : BROWSE_FOLDER);
+			g_browse.top = true; browse_go(c == std::string::npos ? std::string() : rest.substr(c + 1));
+		}
 		if (getenv("ATIV_SHOT_NOFW") && *getenv("ATIV_SHOT_NOFW")) { g_firmware = false; g_firmware_version.clear(); }
 		if (const char *u = getenv("ATIV_SHOT_UPDATE")) { g_update.tag = u; g_update.page = "https://example.invalid/"; }   /* (the notice, without asking anyone) */
 		files_check();   /* (an install's own check, as at start: what a damaged copy shows) */
