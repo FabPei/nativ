@@ -691,7 +691,31 @@ static void pick_poll(void) {
 	if (g_pick_done && g_pick_target) *g_pick_target = g_pick_result;
 	g_pick_done = false;
 }
+static void osk_open(std::string *target, const char *label);
+static const std::string *g_osk_done;   /* (the field the on-screen keyboard just wrote: its caller saves it, input_done) */
+static bool input_done(const std::string &s) {   /* a field's edit finished: typed and left, or the keyboard's Done */
+	if (g_osk_done == &s) { g_osk_done = nullptr; return true; }
+	return ImGui::IsItemDeactivatedAfterEdit();
+}
 static bool input_text(const char *label, std::string &s, float w = -1, const char *hint = nullptr) {   /* ImGui::InputText over a std::string */
+	if (use_in_app_browser()) {   /* (UI-01g: a controller or a finger: the field is a button that opens the on-screen keyboard) */
+		const ImGuiStyle &st = ImGui::GetStyle();
+		const ImVec2 size = ImGui::CalcItemSize(ImVec2(w, 0), ImGui::CalcItemWidth(), ImGui::GetFrameHeight());
+		std::string shown = s.empty() ? std::string(hint ? hint : "") : s;
+		const float room = size.x - st.FramePadding.x * 2;
+		if (room > 0 && ImGui::CalcTextSize(shown.c_str()).x > room) {   /* (a long path: its end, which names the folder) */
+			while (shown.size() > 1 && ImGui::CalcTextSize(("..." + shown).c_str()).x > room) shown.erase(0, 1);
+			shown = "..." + shown;
+		}
+		ImGui::PushStyleVar(ImGuiStyleVar_ButtonTextAlign, ImVec2(0, 0.5f));
+		ImGui::PushStyleColor(ImGuiCol_Button, st.Colors[ImGuiCol_FrameBg]); ImGui::PushStyleColor(ImGuiCol_ButtonHovered, st.Colors[ImGuiCol_FrameBgHovered]);
+		if (s.empty()) ImGui::PushStyleColor(ImGuiCol_Text, st.Colors[ImGuiCol_TextDisabled]);
+		const bool open = ImGui::Button((shown + "###" + label).c_str(), size);
+		if (s.empty()) ImGui::PopStyleColor();
+		ImGui::PopStyleColor(2); ImGui::PopStyleVar();
+		if (open) osk_open(&s, label);
+		return false;
+	}
 	char buf[2048]; snprintf(buf, sizeof buf, "%s", s.c_str());
 	ImGui::SetNextItemWidth(w);
 	bool ch = hint ? ImGui::InputTextWithHint(label, hint, buf, sizeof buf) : ImGui::InputText(label, buf, sizeof buf);
@@ -730,8 +754,9 @@ static void start_play_now(const Game &g) {   /* (ATIV_LAUNCHER: the game's menu
 }
 
 /* ---- a controller's L1 / R1 (or Ctrl+Tab, Ctrl+Shift+Tab) step a row of tabs: -1, +1, or 0 -- not while a control is held */
+static bool g_osk_open_any(void);
 static int tab_step(void) {
-	if (ImGui::IsAnyItemActive()) return 0;
+	if (ImGui::IsAnyItemActive() || g_osk_open_any()) return 0;
 	const bool ctrl = ImGui::GetIO().KeyCtrl, shift = ImGui::GetIO().KeyShift;
 	if (ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || (ctrl && shift && ImGui::IsKeyPressed(ImGuiKey_Tab, false))) return -1;
 	if (ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) || (ctrl && !shift && ImGui::IsKeyPressed(ImGuiKey_Tab, false))) return 1;
@@ -940,6 +965,95 @@ static void browser_modal(void) {
 	if (close) { g_browse.open = false; ImGui::CloseCurrentPopup(); }
 	ImGui::EndPopup();
 }
+/* ---- the on-screen keyboard (UI-01g): a controller or a finger types a path, an address or a name with it. Keys for what
+ * those need -- digits, letters, : / \ . - _ and space; Shift for capitals. A / tap types a key, Y deletes, L1 is Shift,
+ * R1 a space, Menu / Options or Done keeps the text, B or Cancel leaves the field as it was. A keyboard plugged in types
+ * into it too. It opens inside the dialog that asked (like the browser) */
+static struct { bool open = false, top = false, shift = false, appearing = false; std::string *target = nullptr; std::string text, title; } g_osk;
+static const char *osk_title(const char *label) {
+	static const std::pair<const char *, const char *> t[] = {{"##scanpath", "The folder to search"}, {"##addpath", "The game's PKG or folder"}, {"##lic", "The licence file"},
+		{"##pup", "The system update file"}, {"##vaddr", "VitaShell's address"}, {"##oid", "Your online name"}, {"##name_oid", "Your online name"},
+		{"##setup_oid", "Your online name"}, {"##srv", "The private server"}};
+	for (auto &e : t) if (!strcmp(label, e.first)) return e.second;
+	return "Type";
+}
+static void osk_open(std::string *target, const char *label) {
+	g_osk.open = true; g_osk.top = GImGui->OpenPopupStack.empty(); g_osk.shift = false; g_osk.appearing = true;
+	g_osk.target = target; g_osk.text = *target; g_osk.title = osk_title(label);
+}
+static void osk_modal(void) {
+	if (!g_osk.open) return;
+	const ImGuiViewport *vp = ImGui::GetMainViewport(); const float em = ImGui::GetFontSize();
+	if (!ImGui::IsPopupOpen("##osk")) ImGui::OpenPopup("##osk");
+	ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x < 44 * em ? vp->WorkSize.x * 0.96f : 40 * em, 0), ImGuiCond_Always);
+	ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(1.2f * em, 1.1f * em)); ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+	if (!ImGui::BeginPopupModal("##osk", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove)) { ImGui::PopStyleVar(2); return; }
+	ImGui::PopStyleVar(2);
+	ui::heading(g_osk.title.c_str(), em * 1.25f);
+	{	/* the text so far, its end in view, a caret after it */
+		const ImGuiStyle &st = ImGui::GetStyle(); const float fw = ImGui::GetContentRegionAvail().x, room = fw - st.FramePadding.x * 2 - em;
+		std::string shown = g_osk.text;
+		if (ImGui::CalcTextSize(shown.c_str()).x > room) { while (shown.size() > 1 && ImGui::CalcTextSize(("..." + shown).c_str()).x > room) shown.erase(0, 1); shown = "..." + shown; }
+		const ImVec2 p = ImGui::GetCursorScreenPos(), sz(fw, ImGui::GetFrameHeight());
+		ImDrawList *dl = ImGui::GetWindowDrawList();
+		dl->AddRectFilled(p, ImVec2(p.x + sz.x, p.y + sz.y), ui::u32(ui::bg), st.FrameRounding); dl->AddRect(p, ImVec2(p.x + sz.x, p.y + sz.y), ui::u32(ui::border), st.FrameRounding);
+		const ImVec2 tp(p.x + st.FramePadding.x, p.y + st.FramePadding.y);
+		dl->AddText(tp, ui::u32(ui::text), shown.c_str());
+		const float cx = tp.x + ImGui::CalcTextSize(shown.c_str()).x + 1;
+		dl->AddLine(ImVec2(cx, tp.y), ImVec2(cx, tp.y + ImGui::GetTextLineHeight()), ui::u32(ui::accent), 2.0f);
+		ImGui::Dummy(sz);
+	}
+	ImGui::Dummy(ImVec2(0, em * 0.2f));
+	/* the keys: ten to a row, each a tenth of the width (by touch a finger tall: the frame's touch padding) */
+	const float sp = ImGui::GetStyle().ItemSpacing.x * 0.5f, kw = (ImGui::GetContentRegionAvail().x - sp * 9) / 10;
+	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(sp, sp));
+	ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2, ImGui::GetStyle().FramePadding.y));   /* (a key's label centred in it: a narrow window's keys have no room for side padding) */
+	static const char *const rows[] = {"1234567890", "qwertyuiop", "asdfghjkl:", "zxcvbnm.-_"};
+	int typed = -1; bool del = false, space = false, shift = false;
+	for (int r = 0; r < 4; r++)
+		for (int i = 0; i < 10; i++) {
+			if (i) ImGui::SameLine();
+			char k = rows[r][i]; if (g_osk.shift && isalpha((unsigned char)k)) k = (char)toupper((unsigned char)k);
+			char lb[16]; snprintf(lb, sizeof lb, "%c##k%d%d", k, r, i);
+			if (ImGui::Button(lb, ImVec2(kw, 0))) typed = (unsigned char)k;
+			if (r == 0 && i == 0 && g_osk.appearing && GImGui->NavCursorVisible) ImGui::SetKeyboardFocusHere(-1);
+		}
+	if (ImGui::Button(g_osk.shift ? "SHIFT##osk" : "Shift##osk", ImVec2(kw * 2 + sp, 0))) shift = true;
+	ImGui::SameLine(); if (ImGui::Button("/##osk", ImVec2(kw, 0))) typed = '/';
+	ImGui::SameLine(); if (ImGui::Button("\\##osk", ImVec2(kw, 0))) typed = '\\';
+	ImGui::SameLine(); if (ImGui::Button("Space##osk", ImVec2(kw * 4 + sp * 3, 0))) space = true;
+	ImGui::SameLine(); if (ImGui::Button("Delete##osk", ImVec2(kw * 2 + sp, 0))) del = true;
+	ImGui::PopStyleVar(2);
+	ImGui::Dummy(ImVec2(0, em * 0.3f));
+	bool done = ui::primary_button("Done##osk"), cancel = false;
+	same_line_fits(button_w("Cancel")); if (ImGui::Button("Cancel##osk")) cancel = true;
+	/* a controller's shortcuts, and a keyboard plugged in */
+	if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false) || ImGui::IsKeyPressed(ImGuiKey_Backspace)) del = true;
+	if (ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false)) shift = true;
+	if (ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false)) space = true;
+	if (ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false) || ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false)) done = true;
+	for (ImWchar c : GImGui->IO.InputQueueCharacters) if (c >= 32 && c < 127) g_osk.text += (char)c;
+	if (dialog_back()) cancel = true;
+	if (hints_visible()) {
+		dialog_hints();
+		const PadNames *n = pad_names_of(g_pad_fam);
+		if (!hints_keyboard()) { char line[160]; snprintf(line, sizeof line, "%s Delete    %s Shift    %s Space    %s Done", n->north, n->l, n->r, n->menu); ImGui::TextDisabled("%s", line); }
+	}
+	if (typed >= 0) { g_osk.text += (char)typed; if (g_osk.shift && isalpha(typed)) g_osk.shift = false; }
+	if (space) g_osk.text += ' ';
+	if (del && !g_osk.text.empty()) g_osk.text.pop_back();
+	if (shift) g_osk.shift = !g_osk.shift;
+	g_osk.appearing = false;
+	if (done) {
+		if (g_osk.target) { *g_osk.target = g_osk.text; g_osk_done = g_osk.target; }
+		if (g_shot_mode) g_shot_done.push_back("typed " + g_osk.title + "=" + g_osk.text);
+	}
+	if (done || cancel) { g_osk.open = false; ImGui::CloseCurrentPopup(); }
+	ImGui::EndPopup();
+}
+static bool g_osk_open_any(void) { return g_osk.open || g_browse.open; }
+static void child_dialogs(void) { browser_modal(); osk_modal(); }   /* (the browser and the keyboard, inside the dialog that asked) */
 static void tab_hint(void) {   /* (while a controller or the keyboard moves the focus: the buttons that step the tabs) */
 	if (!hints_visible()) return;
 	const PadNames *n = pad_names_of(g_pad_fam);
@@ -1642,7 +1756,7 @@ static void settings_modal(void) {
 				ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("ntv_"); ImGui::SameLine(0, ImGui::GetFontSize() * 0.3f);   /* (room for the field's focus frame: it covered the "_") */
 				input_text("##oid", oid, -FLT_MIN);
 				const bool ok = online_name_ok(oid);
-				if (ImGui::IsItemDeactivatedAfterEdit() && ok) target_write(t, "online_id", oid);
+				if (input_done(oid) && ok) target_write(t, "online_id", oid);
 				if (!ok) ui::muted_wrapped("Not saved: up to 10 letters, digits, '-' or '_'");
 				else if (oid.empty()) ui::muted_wrapped(("Empty: you play as ntv_" + online_tag(*t.x) + ", a tag made for this computer.").c_str());
 			}
@@ -1656,7 +1770,7 @@ static void settings_modal(void) {
 	ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize("Done").x - ImGui::GetStyle().FramePadding.x * 2);
 	if (ui::primary_button("Done") || dialog_back()) { g_settings_open = false; ImGui::CloseCurrentPopup(); }
 	dialog_hints();
-	browser_modal();   /* (Library: Add a folder) */
+	child_dialogs();   /* (Library: Add a folder; the online name) */
 	ImGui::EndPopup();
 }
 
@@ -1725,7 +1839,7 @@ static void game_settings_modal(void) {
 			ui::row("Private server", "The community server that stands in for the game's own (host, or host:port). Empty: the game's own, long offline.");
 			static std::string srv; static std::string for_id; if (for_id != g->id) { srv = tget(t, "private_server", ""); for_id = g->id; }
 			input_text("##srv", srv, -FLT_MIN);
-			if (ImGui::IsItemDeactivatedAfterEdit()) target_write(t, "private_server", srv);
+			if (input_done(srv)) target_write(t, "private_server", srv);
 		}
 		ui::rows_end();
 	}
@@ -1751,6 +1865,7 @@ static void game_settings_modal(void) {
 	dialog_body_end();
 	if (ui::primary_button("Done") || dialog_back()) { g_game_settings.clear(); ImGui::CloseCurrentPopup(); }
 	dialog_hints();
+	child_dialogs();
 	ImGui::EndPopup();
 }
 
@@ -1801,6 +1916,7 @@ static void online_name_modal(void) {
 	ImGui::EndDisabled();
 	same_line_fits(button_w("Not now")); if (ImGui::Button("Not now") || dialog_back()) { g_name_game.clear(); ImGui::CloseCurrentPopup(); }
 	dialog_hints();
+	child_dialogs();
 	ImGui::EndPopup();
 }
 static void sac_modal(void) {
@@ -1999,7 +2115,7 @@ static void setup_modal(SDL_Window *win) {
 		break;
 	}
 	dialog_hints();
-	browser_modal();   /* (Firmware, Your games) */
+	child_dialogs();   /* (Firmware, Your games, the online name) */
 	ImGui::EndPopup();
 }
 
@@ -2621,7 +2737,7 @@ static void hub_ui(SDL_Window *win) {
 		dialog_body_end();
 		if (started || ImGui::Button("Cancel") || dialog_back()) { g_add_open = false; ImGui::CloseCurrentPopup(); }
 		dialog_hints();
-		browser_modal();   /* (Browse..., licences From a folder...) */
+		child_dialogs();   /* (Browse..., licences From a folder..., the paths, the Vita's address) */
 		ImGui::EndPopup();
 	} else ImGui::PopStyleVar(2);
 	sac_modal();
@@ -2631,6 +2747,7 @@ static void hub_ui(SDL_Window *win) {
 	settings_modal();
 	game_settings_modal();
 	if (g_browse.top) browser_modal();   /* (one opened with no dialog around it) */
+	if (g_osk.top) osk_modal();
 	{	/* (a press of B this frame that ImGui used to end an edit or close a menu: no dialog takes it next frame either) */
 		ImGuiContext &g = *GImGui; bool menu = false;
 		for (const ImGuiPopupData &p : g.OpenPopupStack) menu |= p.Window && !(p.Window->Flags & ImGuiWindowFlags_Modal);
@@ -3065,6 +3182,7 @@ int main(int argc, char **argv) {
 		if (ui_sel.rfind("game:", 0) == 0) g_game_settings = ui_sel.substr(5);
 		if (ui_sel.rfind("more:", 0) == 0) g_shot_more = ui_sel.substr(5);
 		if (ui_sel.rfind("name:", 0) == 0) g_name_game = ui_sel.substr(5);
+		if (ui_sel == "osk") { static std::string sample = "D:/Vita backup/ux0"; osk_open(&sample, "##scanpath"); g_osk.top = true; }
 		if (ui_sel.rfind("browse:", 0) == 0) {   /* (browse:<kind>:<dir>: the own browser, opened at <dir>) */
 			static std::string picked_here;
 			const std::string rest = ui_sel.substr(7); const size_t c = rest.find(':');
