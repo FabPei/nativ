@@ -77,6 +77,15 @@ int main(void) {
 		check(near(p[0], quad[k][0], 12) && near(p[1], quad[k][1], 12) && near(p[2], quad[k][2], 12), what);
 	}
 	check(call(h_jpeg_decode_ycbcr, jpg, (uint32_t)n, ycc, 100, 0x23, 0, 0, 0, 0) >= 0x80000000u, "a too-small output buffer fails");
+	/* (HLE-LIB-06) sceJpegGetOutputInfo on the encoded picture promises what the decoders above write */
+	const uint32_t oi = 0x120000;
+	r = call(h_jpeg_output_info, jpg, (uint32_t)n, 0, 1, oi, 0, 0, 0, 0);
+	check(r == 0 && RD32(oi) == 0x20202u && RD16(oi + 4) == 960 && RD16(oi + 6) == 544, "OutputInfo RGBA: YUV420 960x544");
+	check(RD32(oi + 0x14) == 3840 && RD32(oi + 0x18) == 544 && RD32(oi + 8) == 960u * 4 * 544, "OutputInfo RGBA: pitch 3840 x 544, output = the RGBA decode's bytes");
+	r = call(h_jpeg_output_info, jpg, (uint32_t)n, 0xffffffffu, 0x23, oi, 0, 0, 0, 0);
+	check(r == 0 && RD16(oi + 4) == 240 && RD16(oi + 6) == 136 && RD32(oi + 0x14) == 240 && RD32(oi + 0x18) == 136, "OutputInfo YCbCr mode 0x23: 240x136, pitch 240 x 136");
+	check(call(h_jpeg_decode_ycbcr, jpg, (uint32_t)n, ycc, RD32(oi + 8), 0x23, 0, 0, 0, 0) == (240u << 16 | 136u), "the YCbCr decode fits in OutputInfo's output size");
+	check(call(h_jpeg_output_info, jpg, (uint32_t)n, 0, 1, 0, 0, 0, 0, 0) == 0x80650010u, "OutputInfo with no output struct is INVALID_POINTER");
 	printf("%s\n", fails ? "FAILED" : "all passed");
 	return fails != 0;
 }

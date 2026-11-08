@@ -233,6 +233,25 @@ own record: these imports were logged `not implemented -- returns 0`.
 
 It prints `all passed` and exits 0.
 
+## The last offline system functions: `hle_offline_test.c`, `hle_offline_glue_test.c`
+
+HLE-LIB-06: `runtime/core/hle_offline.h` holds the pure contracts -- SceLiveAreaUtil (argument checks, a per-frame
+revision table, GetStatus "no request" 0x80104001), sceAppMgrLoadExec's checks (a missing SELF is
+INVALID_SELF_PATH, an existing one NOEXEC: one recompiled program per pack), sceMotionRotateYaw (the turn multiplied
+on the left of the orientation), sceJpegGetOutputInfo (frame header + the decoders' own pitch layout, moved here from
+jpeg.c unchanged) and the in-game SceIme's state and events (OPEN, then UPDATE_TEXT + PRESS_ENTER or PRESS_CLOSE).
+`hle_offline_glue_test.c` drives apputil.c's handlers by name with arguments in guest memory: the in-game IME
+headless and with the host card (the `guest_call` shim is the game's handler and may close the keyboard from inside
+it), LiveArea, background download, store, BGM port and LoadExec against a temporary `RECOMP_FS`.
+`-DAPPUTIL_UNDER_TEST='"<file>"'` compiles it against an older apputil.c: before HLE-LIB-06, `26 FAILED`, exit 1.
+`jpeg_test.c` checks GetOutputInfo on its encoded picture against what its decoders write.
+
+    cc -O1 -g -Wall -I ../core hle_offline_test.c -o /tmp/hle_offline_test -lm && /tmp/hle_offline_test
+    cc -O1 -g -Wall -D_GNU_SOURCE $INC -I $SDL3_INC hle_offline_glue_test.c -o /tmp/hle_offline_glue_test -lpthread -lm && /tmp/hle_offline_glue_test
+
+Both print `all passed` and exit 0. The other fixtures that include apputil.c (`dlg_term_test.c`, `sysmodule_test.c`,
+`savedlg_pad_test.cpp`, `menu_pad_test.cpp`) carry a `guest_call` stub for it.
+
 ## sceDisplayGetVcount advances: `vcount_test.c`
 
 `DISP-01`: `sceDisplayGetVcount` was unimplemented (the generic stub returned 0 forever), so a game polling
