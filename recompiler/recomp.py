@@ -157,7 +157,7 @@ class Fn:
         if mn == "mov" and ops[0].type == ARM_OP_REG and md.reg_name(ops[0].reg) == "pc":
             # a computed jump (a jump table's target) inside the function, or a tail call
             t = self.r(ops[1].reg, i)
-            return guard([f"{{ uint32_t t = {t} & ~1u; GuestFn f = recomp_lookup(t); if (f) {{ f(c); return; }} JUMP(t); }}"])
+            return guard([f"{{ uint32_t t = {t} & ~1u; GuestFn f = recomp_lookup_here(t); if (f) {{ f(c); return; }} JUMP(t); }}"])
         if mn in ("mov", "movs", "mvn", "mvns"):
             v = self.operand(ops[1], i, setc=S)
             if mn.startswith("mvn"):
@@ -185,7 +185,7 @@ class Fn:
                     return guard([f"JUMP(0x{A + 8:x}u + {self.operand(ops[2], i)});"])
                 if mn == "add" and not self.arm and len(ops) == 2 and ops[1].type == ARM_OP_REG and md.reg_name(ops[1].reg) != "pc":
                     # Thumb's "add pc, rN": a computed jump to (the address + 4) + rN, bit 0 dropped, as mov pc
-                    return guard([f"{{ uint32_t t = (0x{A + 4:x}u + {self.r(ops[1].reg, i)}) & ~1u; GuestFn f = recomp_lookup(t); if (f) {{ f(c); return; }} JUMP(t); }}"])
+                    return guard([f"{{ uint32_t t = (0x{A + 4:x}u + {self.r(ops[1].reg, i)}) & ~1u; GuestFn f = recomp_lookup_here(t); if (f) {{ f(c); return; }} JUMP(t); }}"])
                 raise Unsupported("alu to pc")
             if len(ops) == 2:
                 a, b = self.r(ops[0].reg, i), self.operand(ops[1], i)
@@ -394,7 +394,7 @@ class Fn:
         lo, hi = min(x.address for x in self.insns), max(x.address for x in self.insns)   # this function's own code
         # a function's entry is a tail call; anything else is a case label of this function's own
         # switch (ARM's "ldrls pc, [pc, rN, lsl #2]" table): jump there, as mov pc does
-        return [f"{{ uint32_t t = RD32({self.addr(ops[1], i)}); GuestFn f = recomp_lookup(t & ~1u); if (f) {{ f(c); return; }} "
+        return [f"{{ uint32_t t = RD32({self.addr(ops[1], i)}); GuestFn f = recomp_lookup_here(t & ~1u); if (f) {{ f(c); return; }} "
                 f"if ((t & ~1u) >= 0x{lo:x}u && (t & ~1u) <= 0x{hi:x}u) JUMP(t & ~1u); recomp_call_external(c, t); return; }}"]
 
     def multi(self, i, mn, ops):
@@ -466,7 +466,7 @@ class Fn:
             else:
                 r = self.r(ops[0].reg, i)
                 body = [f"{{ uint32_t t = {r};" + (f" c->r[14] = 0x{nxt | self.tbit:x}u;" if mn == "blx" else "")
-                        + " GuestFn f = recomp_lookup(t & ~1u); if (f) f(c); else recomp_call_external(c, t); }",
+                        + " GuestFn f = recomp_lookup_here(t & ~1u); if (f) f(c); else recomp_call_external(c, t); }",
                         "if (c->stop) return;"] + (["return;"] if mn == "bx" else [])
             return body if cc == 15 else [f"if (COND(c, {cc})) {{"] + body + ["}"]
         if mn in ("tbb", "tbh"):
@@ -484,7 +484,7 @@ class Fn:
             # compile (x86 register coalescer, BUILD-03). An index past the table took JUMP's default before too.
             return ([f"{{ uint32_t t = 0x{tab:x}u + 2 * {ld}; switch (t) {{"]
                     + [f"\tcase 0x{a:x}u: goto L_{a:08x};" for a in sorted(set(targets))]
-                    + ["\tdefault: c->r[15] = t; recomp_unimplemented(c, t); return;", "} }"])
+                    + ["\tdefault: { GuestFn f = recomp_lookup_here(t); if (f) { f(c); return; } } c->r[15] = t; recomp_unimplemented(c, t); return;", "} }"])
         raise Unsupported(mn)
 
     # ------------------------------------------------------------------ VFP / NEON
@@ -1387,7 +1387,9 @@ class Fn:
         lines.append("\tswitch (c->r[15]) {")
         for i in self.insns:
             lines.append(f"\tcase 0x{i.address:x}u: goto L_{i.address:08x};")
-        lines.append("\tdefault: recomp_unimplemented(c, c->r[15]); return;")
+        # a computed jump to another function's entry (a table case that is a split-off entry: libSceFt2's FreeType
+        # interpreter, AUTO-01 GR-11) is a tail call: run it and return, as the branch would; anything else asserts
+        lines.append("\tdefault: { GuestFn f = recomp_lookup_here(c->r[15]); if (f) { f(c); return; } } recomp_unimplemented(c, c->r[15]); return;")
         lines.append("\t}")
         lines.append("}")
         return lines
@@ -1415,6 +1417,13 @@ def main():
     # body ranges: [first, last byte] (Ghidra), or [first, last, owner entry] (analyze.py, which knows)
     bodies = sorted(tuple(b) for b in d["bodies"])
     out = ['#include "rt.h"', "#define JUMP(t) do { c->r[15] = (t); goto jump; } while (0)"]
+    # an indirect branch's / computed jump's target, looked up in this file's own table first: a module's (recomp.py
+    # --module) functions are in recomp_lookup_<module>, not in the main program's recomp_lookup -- a module calling or
+    # jumping to its own code through a register found nothing there (libSceFt2's split FreeType interpreter, AUTO-01)
+    lmod = sys.argv[sys.argv.index("--module") + 1] if "--module" in sys.argv else None
+    out += ([f"GuestFn recomp_lookup_{lmod}(uint32_t a);",
+             f"static inline GuestFn recomp_lookup_here(uint32_t a) {{ GuestFn f = recomp_lookup_{lmod}(a); return f ? f : recomp_lookup(a); }}"]
+            if lmod else ["#define recomp_lookup_here recomp_lookup"])
     fns, total, bad = [], 0, []
     # a function can be several code chunks: each chunk belongs to its owner when the export says,
     # else (Ghidra's ranges) to itself if it's an entry, else the nearest entry before it

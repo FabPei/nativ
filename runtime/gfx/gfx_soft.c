@@ -755,8 +755,8 @@ static void apply_swizzle(uint32_t format, int ncomp, float o[4]) {
 /* which swizzle family a texture base format's components take (1: the SWIZZLE1 modes, 4: the
  * SWIZZLE4 ones), 0 for formats whose components are placed by the decode itself */
 static int swizzle_ncomp(uint32_t base) {
-	return base == 0x00000000u || base == 0x01000000u || base == 0x09000000u || base == 0x0a000000u || base == 0x0b000000u || base == 0x12000000u || base == 0x88000000u ? 1
-	     : base == 0x0c000000u || base == 0x0d000000u || base == 0x1b000000u || base == 0x02000000u || base == 0x04000000u || (base >= 0x85000000u && base <= 0x87000000u)
+	return base == 0x00000000u || base == 0x01000000u || base == 0x09000000u || base == 0x0a000000u || base == 0x0b000000u || base == 0x12000000u || base == 0x13000000u || base == 0x88000000u ? 1
+	     : base == 0x0c000000u || base == 0x0d000000u || base == 0x1b000000u || base == 0x02000000u || base == 0x04000000u || base == 0x0e000000u || (base >= 0x85000000u && base <= 0x87000000u)
 	       || base == 0x94000000u || base == 0x95000000u ? 4   /* P4 / P8: their palette entries are U8U8U8U8 */
 	     : base == 0x98000000u || base == 0x99000000u ? 3 : 0;
 }
@@ -919,7 +919,7 @@ static uint32_t tex_bytes_per_texel(uint32_t base) {
 	switch (base) {
 	case 0x1b000000u: return 8;                                                           /* F16F16F16F16 */
 	case 0x0c000000u: case 0x0d000000u: case 0x15000000u: case 0x9a000000u: case 0x12000000u:
-	case 0x11000000u: case 0x1a000000u: return 4;                                          /* *8U8U8U8/S8S8S8S8/X8U24/U2F10F10F10/F32/F16F16/F11F11F10 */
+	case 0x11000000u: case 0x1a000000u: case 0x13000000u: case 0x0e000000u: return 4;     /* *8U8U8U8/S8S8S8S8/X8U24/U2F10F10F10/F32/F16F16/F11F11F10/F32M/U2U10U10U10 */
 	case 0x05000000u: case 0x09000000u: case 0x0a000000u: case 0x0b000000u: case 0x07000000u:
 	case 0x02000000u: case 0x04000000u: return 2;                                          /* U5U6U5/U16/S16/F16/U8U8/U4U4U4U4/U1U5U5U5 */
 	case 0x98000000u: case 0x99000000u: return 3;                                          /* U8U8U8 / S8S8S8: three bytes, no padding */
@@ -1187,8 +1187,14 @@ static void texel_raw(const GfxTexture *t, float u, float v, float out[4]) {
 		float f = (int16_t)RD16(at + 2 * texel_index(t, x, y)) / 32767.f; out[0] = f < -1 ? -1 : f; out[1] = out[2] = 0; out[3] = 1;
 	} else if (base == 0x0b000000u) {    /* F16 */
 		out[0] = half_to_float_soft(RD16(at + 2 * texel_index(t, x, y))); out[1] = out[2] = 0; out[3] = 1;
-	} else if (base == 0x12000000u) {    /* F32 */
+	} else if (base == 0x12000000u || base == 0x13000000u) {    /* F32, and F32M (the same one 32-bit float component: a depth
+	                                       * value sampled as a texture -- Gravity Rush's, undecoded, sampled as magenta) */
 		uint32_t p = RD32(at + 4 * texel_index(t, x, y)); memcpy(&out[0], &p, 4); out[1] = out[2] = 0; out[3] = 1;
+	} else if (base == 0x0e000000u) {    /* U2U10U10U10, ABGR: R in the low 10 bits, then G, B, and a 2-bit alpha on top (the
+	                                       * SWIZZLE4 modes reorder them). Gravity Rush renders its scene into a U2U10U10U10
+	                                       * colour target and composites it from here: undecoded, its whole frame was magenta */
+		uint32_t p = RD32(at + 4 * texel_index(t, x, y));
+		out[0] = (p & 0x3ff) / 1023.f; out[1] = ((p >> 10) & 0x3ff) / 1023.f; out[2] = ((p >> 20) & 0x3ff) / 1023.f; out[3] = (p >> 30) / 3.f;
 	} else if (base == 0x07000000u) {    /* U8U8: two components, R then G */
 		uint16_t p = RD16(at + 2 * texel_index(t, x, y)); out[0] = (p & 0xff) / 255.f; out[1] = (p >> 8) / 255.f; out[2] = 0; out[3] = 1;
 	} else if (base == 0x11000000u) {    /* F16F16 */
@@ -1241,6 +1247,28 @@ static uint16_t float_to_half_soft(float f) {
 	if (ne >= 31) return (uint16_t)(s | 0x7c00);
 	if (ne <= 0) { if (ne < -10) return (uint16_t)s; m |= 0x800000; return (uint16_t)(s | (m >> (14 - ne))); }
 	return (uint16_t)(s | (uint32_t)ne << 10 | (m >> 13));
+}
+/* U2U10U10U10 (colour format 0x60800000): ABGR = R in bits 0-9, G 10-19, B 20-29, A 30-31; ARGB swaps R and B; RGBA =
+ * A in bits 0-1, then B, G, R upwards; BGRA = A low, then R, G, B -- the 8-bit formats' orders with 10-bit fields */
+static void u10_unpack(uint32_t p, uint32_t order, float c[4]) {
+	float lo = (p & 0x3ff) / 1023.f, mid = ((p >> 10) & 0x3ff) / 1023.f, hi = ((p >> 20) & 0x3ff) / 1023.f, a = (p >> 30) / 3.f;
+	float a2 = (p & 3) / 3.f, f0 = ((p >> 2) & 0x3ff) / 1023.f, f1 = ((p >> 12) & 0x3ff) / 1023.f, f2 = ((p >> 22) & 0x3ff) / 1023.f;
+	switch (order) {
+	case 0: c[0] = lo; c[1] = mid; c[2] = hi; c[3] = a; break;
+	case 1: c[0] = hi; c[1] = mid; c[2] = lo; c[3] = a; break;
+	case 2: c[0] = f2; c[1] = f1; c[2] = f0; c[3] = a2; break;
+	default: c[0] = f0; c[1] = f1; c[2] = f2; c[3] = a2; break;
+	}
+}
+static uint32_t u10_q(float f) { return f <= 0 ? 0 : f >= 1 ? 1023 : (uint32_t)(f * 1023.f + .5f); }
+static uint32_t u10_pack(const float c[4], uint32_t order) {
+	uint32_t r = u10_q(c[0]), g = u10_q(c[1]), b = u10_q(c[2]), a = c[3] <= 0 ? 0 : c[3] >= 1 ? 3 : (uint32_t)(c[3] * 3 + .5f);
+	switch (order) {
+	case 0: return r | g << 10 | b << 20 | a << 30;
+	case 1: return b | g << 10 | r << 20 | a << 30;
+	case 2: return a | b << 2 | g << 12 | r << 22;
+	default: return a | r << 2 | g << 12 | b << 22;
+	}
 }
 static uint32_t target_base_of(const GfxTarget *t) { return t->format & 0xF1800000u; }
 static int target_bpp_of(const GfxTarget *t) {
@@ -1298,6 +1326,9 @@ static void target_read_raw_of(const GfxTarget *t, int x, int y, float c[4]) {
 	case 0x11000000u: { uint32_t r = RD32(a), g = RD32(a + 4); memcpy(&c[0], &r, 4); memcpy(&c[1], &g, 4); c[2] = 0; c[3] = 1; return; }
 	case 0x10800000u: { uint32_t r = RD32(a); memcpy(&c[0], &r, 4); c[1] = c[2] = 0; c[3] = 1; return; }
 	case 0x41000000u: { uint32_t p = RD32(a); c[0] = small_float(p & 0x3ff, 5); c[1] = small_float((p >> 10) & 0x3ff, 5); c[2] = small_float((p >> 20) & 0x3ff, 5); c[3] = (p >> 30) / 3.f; return; }
+	case 0x60800000u: {   /* U2U10U10U10: three 10-bit components and a 2-bit alpha, in the 8-bit formats' orders (u10_unpack) */
+		u10_unpack(RD32(a), (t->format >> 20) & 3, c); return;
+	}
 	case 0x21000000u: { uint32_t p = RD32(a); c[0] = small_float(p & 0x7ff, 6); c[1] = small_float((p >> 11) & 0x7ff, 6); c[2] = small_float(p >> 22, 5); c[3] = 1; return; }
 	/* U8/S8/U8U8/S8S8/U16/S16: 1-2 raw components at their real size -- these used to fall into the
 	 * 4-byte default below (which target_bpp_of already said they weren't), reading/writing 2-4x
@@ -1354,6 +1385,7 @@ static void target_write_raw_of(const GfxTarget *t, int x, int y, const float c[
 		WR32(a, to_small_float(c[0], 5) | to_small_float(c[1], 5) << 10 | to_small_float(c[2], 5) << 20 | al << 30); return;
 	}
 	case 0x21000000u: WR32(a, to_small_float(c[0], 6) | to_small_float(c[1], 6) << 11 | to_small_float(c[2], 5) << 22); return;
+	case 0x60800000u: WR32(a, u10_pack(c, (t->format >> 20) & 3)); return;            /* U2U10U10U10 */
 	case 0x80800000u: WR8(a, (uint8_t)to8(c[0])); return;                              /* U8 */
 	case 0x90800000u: WR8(a, (uint8_t)to8s(c[0])); return;                             /* S8 */
 	case 0xB0800000u: WR8(a, (uint8_t)to8(c[0])); WR8(a + 1, (uint8_t)to8(c[1])); return;    /* U8U8 */
