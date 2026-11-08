@@ -35,6 +35,8 @@
                                             recompile, build again, until nothing new; says where it stopped (frame
                                             reached, missed function, unimplemented instruction, crash, no frame) and
                                             writes it, with the seeds and stub imports, to analysis/bootstrap.json
+  vitarecomp hooks-scan <title>            hook candidates in the game's analysis (constants the generic IHOOKS
+                                           frame_dt / aspect replace) -> analysis/hook_candidates.json; proposals only
   vitarecomp analyze   <title>              functions, code ranges and the memory image of the main
                                             module (analyze.py, seconds; ANALYZER=ghidra: the old
                                             Ghidra export, minutes to hours)
@@ -101,6 +103,7 @@ RECOMPILER, RUNTIME, PACKS, DECRYPT, DEV = (os.path.join(ROOT, d) for d in ("rec
 PACKS = os.environ.get("ATIV_PACKS") or PACKS   # (ATIV_PACKS=<dir>: the packs read from there -- a game run as if it had none, bootstrap's test)
 sys.path.insert(0, R)
 import bootstrap  # noqa: E402
+import hookscan  # noqa: E402
 import packconf  # noqa: E402
 from datadir import library_dir  # noqa: E402
 from winfs import remove_file, remove_tree  # noqa: E402
@@ -988,6 +991,18 @@ class GameSteps(bootstrap.Steps):
         return out
 
 
+def cmd_hooks_scan(g, quiet=False):
+    """finder A1 (pipeline/hookscan.py) over the main program's analysis: analysis/hook_candidates.json; the result"""
+    if not os.path.isfile(g.DATA): die(f"{g.T}: no analysis yet (vitarecomp analyze {g.T})")
+    res = hookscan.scan(json.load(open(g.DATA, encoding="utf-8")))
+    with open(os.path.join(g.W, "analysis", "hook_candidates.json"), "w", encoding="utf-8", newline="\n") as f: json.dump(res, f, indent=1)
+    if not quiet:
+        say(f"{g.T}: {len(res['candidates'])} hook candidate(s) in {res['functions']} functions: " +
+            (", ".join(f"{k} {n}" for k, n in sorted(res["counts"].items())) or "none"))
+        for l in hookscan.ihooks_lines(res)[1:]: say(l)
+    return res
+
+
 def cmd_bootstrap(g, rest):
     def opt(k, d):
         return rest[rest.index(k) + 1] if k in rest and rest.index(k) + 1 < len(rest) else d
@@ -1001,6 +1016,10 @@ def cmd_bootstrap(g, rest):
                 hit = next((l for l in fh if l.startswith(lab)), None)
             if hit: s["detail"] = hit[len(lab):].split("*/")[0].strip(); break
     os.makedirs(os.path.join(g.W, "analysis"), exist_ok=True)
+    if os.path.isfile(g.DATA):   # (finder A1: the auto pack gets the hook candidates as commented lines, once)
+        res = cmd_hooks_scan(g, quiet=True); s["hook_candidates"] = res["counts"]
+        if "AUTO_GENERATED" in g.c and os.path.isfile(g.CONF) and "# hook candidates (vitarecomp hooks-scan" not in open(g.CONF, encoding="utf-8").read():
+            with open(g.CONF, "a", encoding="utf-8", newline="\n") as f: f.write("\n".join(hookscan.ihooks_lines(res)) + "\n")
     with open(os.path.join(g.W, "analysis", "bootstrap.json"), "w", encoding="utf-8", newline="\n") as f: json.dump(s, f, indent=1)
     say(f"bootstrap: stopped: {s['stop']}" + (f" at {s['addr']}" if s["addr"] else "") + (f" ({s['detail']})" if s["detail"] else "") +
         f" after {s['iterations']} run(s); {len(s['seeds_found'])} seed(s) found, {len(s['stub_imports'])} import(s) ran as stubs")
@@ -1026,6 +1045,7 @@ def main(argv):
     if cmd == "bootstrap":
         if not packconf.pack_for(PACKS, T.split("_")[0]): cmd_pack_init(T, False)
         return cmd_bootstrap(Game(T, cmd), argv[2:])
+    if cmd == "hooks-scan": cmd_hooks_scan(Game(T, cmd)); return 0
     if cmd not in ("import", "analyze", "recompile", "build", "ready", "run", "test", "capture", "replay", "accept", "check", "coverage", "verify", "recipes", "versions"):
         usage(); return 1
     g = Game(T, cmd)
