@@ -106,7 +106,10 @@ def run_unicorn(blocks, imports, entry, st, trace=None):
                               [uc.reg_read(UC_ARM_REG_D0 + k) for k in range(32)]))
         uc.hook_add(UC_HOOK_CODE, step)
     # FPSCR: RunFast (flush-to-zero, default NaN) as on the console; enable VFP
-    uc.reg_write(UC_ARM_REG_C1_C0_2, uc.reg_read(UC_ARM_REG_C1_C0_2) | (0xf << 20))
+    try:   # CPACR: VFP/NEON access (Unicorn 2.0); 2.1 rejects the write (UC_ERR_ARG) and enables them by default
+        uc.reg_write(UC_ARM_REG_C1_C0_2, uc.reg_read(UC_ARM_REG_C1_C0_2) | (0xf << 20))
+    except Exception:
+        pass
     uc.reg_write(UC_ARM_REG_FPEXC, 0x40000000)
     uc.reg_write(UC_ARM_REG_FPSCR, 0x03000000)
     for k in range(13):

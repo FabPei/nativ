@@ -378,13 +378,22 @@ void recomp_call_external(Cpu *c, uint32_t addr) {
 			}
 			f(c);
 			if ((fl & RF_GXM) && log_gxm())
-				fprintf(stderr, "gxm %-44s %08x %08x %08x %08x -> %08x (Sony)\n", name, a0, a1, a2, a3, c->r[0]);
+				{ extern uint32_t kernel_current_tid(void);
+				  fprintf(stderr, "gxm %-44s %08x %08x %08x %08x -> %08x (Sony) t%#x lr %#x\n", name, a0, a1, a2, a3, c->r[0], kernel_current_tid(), c->r[14]); }
 			{   /* RECOMP_TRACE_MODULE=<prefix>[,...]: calls to a loaded module's exports by those names, with the first
 			     * four arguments and the result (RECOMP_LOG_IMPORTS sees only the host's) */
 				static const char *tr; static int tr_init; if (!tr_init) { tr = getenv("RECOMP_TRACE_MODULE"); tr_init = 1; }
 				if (tr) for (const char *p = tr; *p; ) {
 					const size_t l = strcspn(p, ",");
-					if (l && !strncmp(name, p, l)) { fprintf(stderr, "    module %s(%#x, %#x, %#x, %#x) -> %#x\n", name, a0, a1, a2, a3, c->r[0]); break; }
+					if (l && !strncmp(name, p, l)) {
+						fprintf(stderr, "    module %s(%#x, %#x, %#x, %#x) -> %#x\n", name, a0, a1, a2, a3, c->r[0]);
+						/* RECOMP_TRACE_MODULE_DUMP=<arg 0-3>:<words>: what that pointer argument holds after the call (an
+						 * out-structure: the values a library handed back, which the four registers can't show) */
+						static int dk = -2, dn; if (dk == -2) { const char *d = getenv("RECOMP_TRACE_MODULE_DUMP"); dk = -1;
+							if (d && d[0] >= '0' && d[0] <= '3' && d[1] == ':') { dk = d[0] - '0'; dn = atoi(d + 2); if (dn > 32) dn = 32; } }
+						const uint32_t pa = dk == 0 ? a0 : dk == 1 ? a1 : dk == 2 ? a2 : a3;
+						if (dk >= 0 && pa >= 0x10000) { fprintf(stderr, "      [%#x]:", pa); for (int w = 0; w < dn; w++) fprintf(stderr, " %08x", RD32(pa + 4u * w)); fprintf(stderr, "\n"); }
+						break; }
 					p += l; if (*p) p++;
 				}
 			}
@@ -458,8 +467,9 @@ void recomp_call_external(Cpu *c, uint32_t addr) {
 			int hit = 0; const char *p = list;
 			while (!hit && (p = strchr(p, ',')) && p[1]) { const char *q = strchr(p + 1, ','); char item[96]; size_t n = q ? (size_t)(q - p - 1) : 0;
 				if (n && n < sizeof item) { memcpy(item, p + 1, n); item[n] = 0; hit = strstr(name, item) != 0; } p = q; }
-			if (hit) { char tn[32] = ""; plat_thread_name(tn, sizeof tn); extern uint64_t display_frames(void);
-				fprintf(stderr, "    imp f%llu [%s] %s(%#x, %#x, %#x, %#x) -> %#x lr %#x t%llu d%llu\n", (unsigned long long)display_frames(), tn, name, a0, a1, a2, a3, c->r[0], c->r[14], (unsigned long long)imp_t0, (unsigned long long)(imp_t1 - imp_t0)); }
+			if (hit) { char tn[32] = ""; plat_thread_name(tn, sizeof tn); extern uint64_t display_frames(void); extern uint32_t kernel_current_tid(void);
+				fprintf(stderr, "    imp f%llu [%s %#x] %s(%#x, %#x, %#x, %#x) -> %#x lr %#x t%llu d%llu
+", (unsigned long long)display_frames(), tn, kernel_current_tid(), name, a0, a1, a2, a3, c->r[0], c->r[14], (unsigned long long)imp_t0, (unsigned long long)(imp_t1 - imp_t0)); }
 		}
 	}
 	if (recomp_sched_on) sched_yield_if_preempted();
@@ -524,6 +534,7 @@ static void load_image(const char *path) {
 /* ---- guest profiler (a build with -DRECOMP_TRACE, see build.sh): every guest instruction
  * reports its address; with RECOMP_PROFILE=<seconds> set, the main thread's instructions are
  * counted per guest function from that time on, and printed when the run ends */
+__thread uint32_t recomp_last_pc;   /* profile builds: the guest instruction this thread ran last (kernel.c's write watch names it) */
 #ifdef RECOMP_TRACE
 #include <time.h>
 static __thread int prof_main;
@@ -532,11 +543,23 @@ static uint32_t *prof_hits;            /* per 2-byte instruction slot in the ima
 #define PROF_BASE 0x81000000u
 #define PROF_SIZE 0x01000000u   /* N01b-11 diagnostic: 4 -> 16 MB, the eboot spans up to 0x81c9xxxx */
 void recomp_trace(Cpu *c, uint32_t addr) {
+	recomp_last_pc = addr;
 #ifdef RECOMP_VERIFY
 	extern void verify_trace(Cpu *c, uint32_t addr);
 	verify_trace(c, addr);
 #endif
 	if (prof_on && addr - PROF_BASE < PROF_SIZE) prof_hits[(addr - PROF_BASE) >> 1]++;   /* N01b-11 diagnostic: count every guest thread (the spinner is not the host main thread) */
+	/* RECOMP_TRACE_TID=<guest thread uid>: every recompiled function that thread enters, with its lr and r0-r1, in
+	 * order (the path a thread took to a failure -- which branch a function skipped needs this, an import log can't
+	 * show it); RECOMP_TRACE_TID_FROM=<frame>: from that presented frame on */
+	static uint32_t trace_tid = 1; static uint64_t trace_from;
+	if (trace_tid == 1) { const char *e = getenv("RECOMP_TRACE_TID"), *f = getenv("RECOMP_TRACE_TID_FROM");
+		trace_tid = e ? (uint32_t)strtoul(e, 0, 0) : 0; trace_from = f ? strtoull(f, 0, 0) : 0; }
+	if (trace_tid) { extern uint32_t kernel_current_tid(void); extern uint64_t display_frames(void);
+		if (kernel_current_tid() == trace_tid && display_frames() >= trace_from && recomp_lookup(addr))
+			fprintf(stderr, "    trace t%#x f%llu: enter %#x lr %#x r0 %#x r1 %#x r2 %#x r3 %#x stk %#x %#x %#x %#x r4 %#x r5 %#x r6 %#x r7 %#x sp %#x\n", trace_tid,
+			        (unsigned long long)display_frames(), addr, c->r[14], c->r[0], c->r[1], c->r[2], c->r[3],
+			        RD32(c->r[13]), RD32(c->r[13] + 4), RD32(c->r[13] + 8), RD32(c->r[13] + 12), c->r[4], c->r[5], c->r[6], c->r[7], c->r[13]); }
 }
 static void *prof_timer(void *arg) {
 	usleep((useconds_t)(atof((char *)arg) * 1e6));
@@ -777,6 +800,7 @@ int main(int argc, char **argv) {
 		char list[4096]; snprintf(list, sizeof list, "%s", getenv("RECOMP_MODULES"));
 		for (char *p = strtok(list, ","); p; p = strtok(0, ",")) load_image(p);
 	}
+	{ extern void recomp_watch_fixed_arm(void); recomp_watch_fixed_arm(); }   /* RECOMP_WATCH_FIXED=<addr>,<len> (kernel.c) */
 	game_entry = strtoul(argv[2], 0, 16);
 	if (!guest_lookup(game_entry & ~1u)) { fprintf(stderr, "%#x is not a recompiled function\n", game_entry); return 1; }
 	window_run(game, 0);   /* window.c: on its own thread with a window, or right here headless */

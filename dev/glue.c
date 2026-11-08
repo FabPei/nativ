@@ -3,6 +3,8 @@
 #include "rt.h"
 
 uint8_t *recomp_mem;
+uint32_t recomp_watch_lo, recomp_watch_hi;   /* rt.h's write watch (WR32 & co.): off here (hi 0) */
+void recomp_watch_write(uint32_t a, uint32_t v, int w) { (void)a; (void)v; (void)w; }
 static void (*external_cb)(Cpu *, uint32_t);
 uint32_t recomp_unimpl_at;
 __thread uint32_t recomp_excl_addr, recomp_excl_val;
@@ -23,6 +25,24 @@ void recomp_runfast(void) {
 	/* MXCSR FTZ | DAZ (x86 has no default-NaN mode) */
 	uint32_t m; __asm__ volatile("stmxcsr %0" : "=m"(m)); m |= 0x8040; __asm__ volatile("ldmxcsr %0" :: "m"(m));
 #endif
+}
+/* a module's recompiled C (recomp.py --module) registers its own lookup from a constructor instead of defining
+ * recomp_lookup: kept here, and recomp_lookup answers from them (weak, so a main program's own definition wins) */
+static GuestFn (*mod_lookups[8])(uint32_t); static const char *(*mod_names[8])(uint32_t); static int (*mod_arm[8])(uint32_t); static int n_mod_lookups;
+void recomp_register_module(const char *name, GuestFn (*lookup)(uint32_t), const char *(*import_name)(uint32_t), int (*is_arm)(uint32_t)) {
+	(void)name; if (n_mod_lookups < 8) { mod_lookups[n_mod_lookups] = lookup; mod_names[n_mod_lookups] = import_name; mod_arm[n_mod_lookups++] = is_arm; }
+}
+__attribute__((weak)) const char *recomp_import_name(uint32_t addr) {
+	for (int i = 0; i < n_mod_lookups; i++) { const char *n = mod_names[i] ? mod_names[i](addr) : 0; if (n) return n; }
+	return 0;
+}
+__attribute__((weak)) int recomp_is_arm(uint32_t addr) {
+	for (int i = 0; i < n_mod_lookups; i++) if (mod_lookups[i](addr)) return mod_arm[i] ? mod_arm[i](addr) : 0;
+	return 0;
+}
+__attribute__((weak)) GuestFn recomp_lookup(uint32_t addr) {
+	for (int i = 0; i < n_mod_lookups; i++) { GuestFn f = mod_lookups[i](addr); if (f) return f; }
+	return 0;
 }
 void recomp_run(Cpu *c, uint32_t entry) {
 	GuestFn f = recomp_lookup(entry & ~1u);

@@ -259,6 +259,13 @@ class Fn:
             y = f"(int32_t)(int16_t)({self.r(ops[2].reg, i)}{' >> 16' if hy == 't' else ''})"
             acc = f" + {self.r(ops[3].reg, i)}" if mn.startswith("smla") else ""
             out = [f"{self.dst(ops[0].reg)} = (uint32_t)({x} * {y}){acc};"]
+        elif re.fullmatch(r"smm(ul|la|ls)r?", mn):
+            # most-significant-word multiplies (ARM ARM A8.8.205-207): bits 63:32 of the signed 64-bit product, with
+            # Ra<<32 added (smmla) or the product subtracted from it (smmls); R rounds (+0x80000000 before the shift).
+            # In uint64_t so a wrap is the hardware's 64-bit wrap, not C's signed overflow
+            p = f"(uint64_t)((int64_t)(int32_t){self.r(ops[1].reg, i)} * (int64_t)(int32_t){self.r(ops[2].reg, i)})"
+            e = p if mn.startswith("smmul") else f"((uint64_t){self.r(ops[3].reg, i)} << 32) {'+' if mn[3:5] == 'la' else '-'} {p}"
+            out = [f"{self.dst(ops[0].reg)} = (uint32_t)(({e}{' + 0x80000000u' if mn.endswith('r') else ''}) >> 32);"]
         elif mn in ("udiv", "sdiv"):
             a, b = self.r(ops[1].reg, i), self.r(ops[2].reg, i)
             e = (f"({b} ? {a} / {b} : 0)" if mn == "udiv"
@@ -825,12 +832,20 @@ class Fn:
             return [f"{{ {tmp} " + " ".join(f"c->vfp.s[{D + k}] = t{k};" for k in range(4)) + " }"]
         # widening shift left: vshll.{u,s}{16,32} qD, dN, #imm -- every element of dN shifted left and
         # widened (zero- or sign-extended) to twice the element width. Medieval Defenders' boot asserts
-        # on vshll.u16 q8, d16, #8 (PCSB00672, 2026-11-07) -- the demonstrated contract; vshll2 (the
-        # high-half source) and vshll.i8 stay unimplemented and assert like any other gap.
-        if mn == "vshll" and re.fullmatch(r"[us](16|32)", dt) and len(ops) == 3 and ops[2].type == ARM_OP_IMM and regs[0][0] == "q" and regs[1][0] == "d":
+        # on vshll.u16 q8, d16, #8 (PCSB00672, 2026-11-07) -- the demonstrated contract. 8-bit elements (.u8/.s8,
+        # 16-bit results) and the maximum-shift form .i8/.i16/.i32 #width (encoding A2: the extension bits are shifted
+        # out, so it is the unsigned form) since a firmware font module's vshll.i8 q13, d16, #8 (AUTO-01, 2026-11-08).
+        if mn == "vshll" and re.fullmatch(r"[usi](8|16|32)", dt) and len(ops) == 3 and ops[2].type == ARM_OP_IMM and regs[0][0] == "q" and regs[1][0] == "d":
             bits, sg, sh = int(dt[1:]), dt[0] == "s", ops[2].imm
             es = bits // 8
             a = regs[1][1]
+            if es == 1:   # eight 16-bit results, two per 32-bit lane of qD
+                def e8(j):
+                    raw = f"((c->vfp.s[{2 * a + j // 4}] >> {8 * (j % 4)}) & 0xffu)"
+                    return f"(({'(uint32_t)(int32_t)(int8_t)' if sg else ''}{raw}) << {sh})"
+                D = 4 * regs[0][1]
+                tmp = " ".join(f"uint32_t t{k} = PACK16({e8(2 * k)}, {e8(2 * k + 1)});" for k in range(4))
+                return [f"{{ {tmp} " + " ".join(f"c->vfp.s[{D + k}] = t{k};" for k in range(4)) + " }"]
             def nx(j):   # element j of dN widened to 32 (sign- or zero-extended), as vaddl's narrow
                 w = f"c->vfp.s[{2 * a + j // (4 // es)}]"
                 raw = {2: f"LANE16({w}, {j % 2})", 4: w}[es]
@@ -1165,6 +1180,16 @@ class Fn:
                 return [f"c->vfp.s[{regs[0][1]}] = (c->vfp.s[{regs[0][1]}] & ~(0xffffu << {sh})) | ((uint32_t)F2H(c->vfp.s[{regs[1][1]}]) << {sh});"]
         if mn == "vcvt":
             parts = i.mnemonic.split(".")[1:]
+            if len(ops) == 3 and ops[2].type == ARM_OP_IMM and regs[0][0] == "s" and regs[1][0] == "s":
+                # VFP fixed point, 32-bit fixed (A8.8.307): to fixed = x * 2^fbits toward zero, saturating; from fixed =
+                # n / 2^fbits (exact in double, then one rounding to float). A firmware font module (AUTO-01, 2026-11-08)
+                to, frm, fb = parts[0], parts[1], ops[2].imm
+                dd, ss = regs[0][1], regs[1][1]
+                if frm == "f32" and to in ("s32", "u32"):
+                    return [f"c->vfp.s[{dd}] = {'(uint32_t)F2S' if to == 's32' else 'F2U'}((double)c->vfp.f[{ss}] * {float(1 << fb)!r});"]
+                if to == "f32" and frm in ("s32", "u32"):
+                    return [f"c->vfp.f[{dd}] = (float)((double){'(int32_t)' if frm == 's32' else ''}c->vfp.s[{ss}] / {float(1 << fb)!r});"]
+                raise Unsupported(f"vcvt fixed-point {to}.{frm}")
             if len(ops) != 2:
                 raise Unsupported("vcvt fixed-point")
             to, frm = parts[0], parts[1]

@@ -817,11 +817,11 @@ static int play_motion(float a[3], float g[3], float q[4]) {   /* the latest rec
 static void ctrl_peek(Cpu *c, int pad2) {   /* (port, SceCtrlData *, count): timestamp, buttons, sticks centred */
 	input_rec_init();
 	for (uint32_t i = 0; i < A2; i++) {
-		uint32_t p = A1 + 64 * i;
+		uint32_t p = hle_ctrl_data_addr(A1, i);
 		/* the fields written here are all in the first 16 bytes: clear 32, never 64 -- Persona 4: Dancing All Night reads
 		 * into a 32-byte SceCtrlData on its stack, and the 64-byte clear zeroed the saved registers above it (its pad loop's
 		 * counter: the loop then walked a pointer through 140 KiB of its data, writing its key-repeat timer over CRI's) */
-		memset(G(p), 0, 32);
+		memset(G(p), 0, HLE_CTRL_DATA_SIZE);
 		WR64(p, guest_time_us());
 		extern void window_input(uint32_t *b, uint8_t s[4]); extern void window_input_pad2(uint32_t *b, uint8_t s[4]);
 		uint32_t b; uint8_t st[4];
