@@ -81,6 +81,9 @@ void widen_aspect_reg(Cpu *c, int reg) {   /* a register holding the 960/544 con
 	if (k <= 1.0) return;
 	float a = (float)(960.0 / 544.0 * k); memcpy(&c->r[reg], &a, 4);
 }
+/* any game's: IHOOKS="addr:aspect" right after the movt that builds 960/544 in a camera's setup -- widen_aspect_reg as a
+ * hook, for a pack with no code of its own (needs RECOMP_ASPECT_HOOK=1 in its RUN_ENV, as every aspect hook) */
+void recomp_ihook_aspect(Cpu *c, int reg) { widen_aspect_reg(c, reg); }
 
 /* the callbacks a game's diagnostics plug into (a pack's hooks.c sets them from a constructor): a call-sequence capture
  * to arm (verify.c), a call to address 0 (main.c), a stall of the presented frames (stallprof.c) */
