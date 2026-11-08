@@ -12,6 +12,10 @@ static void check(const char *what, int ok) { printf("%-60s %s\n", what, ok ? "o
 
 int main(void) {
 	check("model: handheld is SCE_KERNEL_MODEL_VITA 0x10000", hle_kernel_model(0) == 0x10000u);
+	/* SceCtrlData: 32-byte records, n samples back to back (an 8-sample read fills exactly 0x100 bytes) */
+	check("ctrl: SceCtrlData is 32 bytes", HLE_CTRL_DATA_SIZE == 32);
+	check("ctrl: sample 1 follows sample 0 at +0x20", hle_ctrl_data_addr(0x1000, 1) == 0x1020);
+	check("ctrl: 8 samples end at +0x100 (no write past an 8-record buffer)", hle_ctrl_data_addr(0x1000, 7) + HLE_CTRL_DATA_SIZE == 0x1100);
 	check("model: PS TV is SCE_KERNEL_MODEL_VITATV 0x20000", hle_kernel_model(1) == 0x20000u);
 
 	uint32_t len[HLE_AUDIO_PORTS] = {0};

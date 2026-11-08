@@ -21,6 +21,12 @@
 #define HLE_KERNEL_MODEL_VITATV 0x20000u
 static inline uint32_t hle_kernel_model(int pstv) { return pstv ? HLE_KERNEL_MODEL_VITATV : HLE_KERNEL_MODEL_VITA; }
 
+/* SceCtrlData (sceCtrlPeek/ReadBufferPositive[2], ...Negative): timeStamp u64, buttons u32, lx ly rx ry, 12 analog-button
+ * bytes, 4 reserved = 32 bytes; a read of n samples fills n consecutive records. A 64-byte stride wrote samples 4.. of an
+ * 8-sample read past the game's buffer (Gravity Rush: over its saved registers, AUTO-01 2026-11-08) */
+#define HLE_CTRL_DATA_SIZE 32u
+static inline uint32_t hle_ctrl_data_addr(uint32_t buf, uint32_t i) { return buf + HLE_CTRL_DATA_SIZE * i; }
+
 #define HLE_AUDIO_PORTS 8
 #define HLE_AUDIO_ERR_INVALID_PORT 0x80260003u
 #define HLE_AUDIO_ERR_PORT_FULL    0x80260005u
