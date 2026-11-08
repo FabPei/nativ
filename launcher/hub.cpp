@@ -376,41 +376,81 @@ static std::string g_failed;                  /* the last task that failed, for 
 static bool g_drawer;                         /* the activity drawer open (the whole log) */
 static std::string g_log_file;                /* <prefs>/launcher.log: the log as each task ends, for a bug report (the launcher
                                                * before this one: launcher.prev.log) */
+static bool g_log_bol = true;                 /* the log ends at a line's start: the next text gets its time */
+static std::string g_step;                    /* the running task's latest "@@ step" (the status) */
 
+/* every line of the log starts with the local time it arrived ("14:03:27 "), the steps' own output included (when the
+ * launcher read it); an empty line gets none. A step's end says how long it took, and the task's end its whole time */
+static std::string log_time(void) {
+	time_t t = time(nullptr); struct tm tm;
+#ifdef _WIN32
+	localtime_s(&tm, &t);
+#else
+	localtime_r(&t, &tm);
+#endif
+	char b[16]; strftime(b, sizeof b, "%H:%M:%S ", &tm);
+	return b;
+}
+static std::string duration(Uint64 ms) {   /* 0:07, 16:43, 1:02:09 */
+	unsigned long long s = ms / 1000; char b[32];
+	if (s >= 3600) snprintf(b, sizeof b, "%llu:%02llu:%02llu", s / 3600, s / 60 % 60, s % 60);
+	else snprintf(b, sizeof b, "%llu:%02llu", s / 60, s % 60);
+	return b;
+}
+static size_t log_stamp_len(const std::string &line) {   /* the "HH:MM:SS " its start carries (0: none) */
+	return line.size() >= 9 && line[2] == ':' && line[5] == ':' && line[8] == ' ' && isdigit((unsigned char)line[0]) ? 9 : 0;
+}
 static void log_append(const char *s, size_t n) {
 	std::lock_guard<std::mutex> l(g_log_lock);
-	g_log.append(s, n);
+	std::string now;
+	for (size_t a = 0; a < n; ) {
+		if (g_log_bol && s[a] != '\n' && s[a] != '\r') { if (now.empty()) now = log_time(); g_log += now; }
+		const char *nl = (const char *)memchr(s + a, '\n', n - a);
+		size_t e = nl ? (size_t)(nl - s) + 1 : n;
+		g_log.append(s + a, e - a);
+		g_log_bol = nl != nullptr;
+		a = e;
+	}
 	if (g_log.size() > (1u << 20)) { size_t cut = g_log.size() - (1u << 19); g_log.erase(0, cut); g_task.log_from = g_task.log_from > cut ? g_task.log_from - cut : 0; }
 }
 static void log_append(const std::string &s) { log_append(s.data(), s.size()); }
+static void log_line(const std::string &s) {   /* a line of the launcher's own, on a line of its own */
+	bool bol; { std::lock_guard<std::mutex> l(g_log_lock); bol = g_log_bol; }
+	log_append((bol ? "" : "\n") + s + "\n");
+}
 static void task_start(const std::string &name, const std::string &kind, const std::string &game, std::vector<Step> steps) {
 	if (g_task.running) return;
 	if (g_task.reader.joinable()) g_task.reader.join();
 	g_failed.clear();
-	{ std::lock_guard<std::mutex> l(g_log_lock); g_log += "\n== " + name + "\n"; g_task.log_from = g_log.size(); }
+	{ std::lock_guard<std::mutex> l(g_log_lock); g_step.clear(); }
+	log_line("\n== " + name);
+	{ std::lock_guard<std::mutex> l(g_log_lock); g_task.log_from = g_log.size(); }
 	g_task.name = name; g_task.kind = kind; g_task.game = game; g_task.ok = false; g_task.cancelled = false; g_task.running = true;
 	g_task.games.clear(); if (!game.empty()) g_task.games.push_back(game);
 	g_task.reader = std::thread([steps = std::move(steps), name]() {
 		std::vector<int> failed;   /* the groups that failed */
 		int last = 0;
+		const Uint64 task_t0 = SDL_GetTicks();
 		for (const Step &s : steps) {
 			if (g_task.cancelled) break;
 			if (std::find(failed.begin(), failed.end(), s.group) != failed.end()) continue;
-			if (!s.say.empty()) log_append("@@ " + s.say + "\n");
+			if (!s.say.empty()) { { std::lock_guard<std::mutex> l(g_log_lock); g_step = s.say; } log_line("@@ " + s.say); }
 			if (s.argv.empty()) continue;
-			log_append("$ " + shown_args(s.argv) + "\n");
+			log_line("$ " + shown_args(s.argv));
+			const Uint64 t0 = SDL_GetTicks();
 			Proc p;
 			{ std::lock_guard<std::mutex> l(g_task.proc_lock); if (g_task.cancelled || !proc_start(p, s.argv, s.env)) { if (!g_task.cancelled) log_append("can't start " + s.argv[0] + "\n"); last = 127; failed.push_back(s.group); if (s.group == 0) break; continue; } g_task.proc = p; }
 			char buf[4096]; long n;
 			while ((n = proc_read(p, buf, sizeof buf)) > 0) log_append(buf, (size_t)n);
 			int code = proc_wait(p);
 			{ std::lock_guard<std::mutex> l(g_task.proc_lock); proc_done(g_task.proc); }
+			log_line("-- " + (s.say.empty() ? std::string() : s.say + ": ") + (g_task.cancelled ? "stopped after " : code ? "failed after " : "done in ") + duration(SDL_GetTicks() - t0));
 			if (code != 0) { last = code; failed.push_back(s.group); if (s.group == 0) break; }
 		}
 		bool stopped = g_task.cancelled;
 		g_task.ok = failed.empty() && !stopped;
-		char end[96]; int m = snprintf(end, sizeof end, "== %s (exit %d)\n", stopped ? "stopped" : "done", stopped ? -1 : last);
-		log_append(end, (size_t)m);
+		char end[96]; snprintf(end, sizeof end, "== %s (exit %d) in ", stopped ? "stopped" : "done", stopped ? -1 : last);
+		log_line(end + duration(SDL_GetTicks() - task_t0));
 		if (!g_task.ok && !stopped) g_failed = name;
 		if (!g_log_file.empty()) {
 			std::string copy; { std::lock_guard<std::mutex> l(g_log_lock); copy = g_log; }
@@ -426,14 +466,14 @@ static void task_cancel(void) {
 	g_task.cancelled = true;
 	proc_kill(g_task.proc);
 }
-static std::string task_status(void) {   /* the latest "@@ step" of the running task, else its last line of output */
+static std::string task_status(void) {   /* the latest "@@ step" of the running task, else its last line of output (no time) */
 	std::lock_guard<std::mutex> l(g_log_lock);
+	if (!g_step.empty()) return g_step;
 	size_t from = g_task.log_from < g_log.size() ? g_task.log_from : g_log.size();
-	size_t at = g_log.rfind("\n@@ ");
-	if (at != std::string::npos && at + 1 >= from) { size_t e = g_log.find('\n', at + 4); return g_log.substr(at + 4, e == std::string::npos ? std::string::npos : e - at - 4); }
-	size_t e = g_log.size(); while (e > from && (g_log[e - 1] == '\n' || g_log[e - 1] == ' ')) e--;
+	size_t e = g_log.size(); while (e > from && (g_log[e - 1] == '\n' || g_log[e - 1] == '\r' || g_log[e - 1] == ' ')) e--;
 	size_t b = g_log.rfind('\n', e ? e - 1 : 0); b = b == std::string::npos || b < from ? from : b + 1;
 	std::string s = e > b ? g_log.substr(b, e - b) : "";
+	s.erase(0, log_stamp_len(s));
 	if (s.size() > 90) s = s.substr(0, 87) + "...";
 	return s;
 }
@@ -619,6 +659,14 @@ static void SDLCALL picked(void *, const char *const *files, int) {
 }
 static void pick_file(SDL_Window *w, std::string *target, const SDL_DialogFileFilter *f, int nf) { g_pick_target = target; SDL_ShowOpenFileDialog(picked, nullptr, w, f, nf, nullptr, false); }
 static void pick_folder(SDL_Window *w, std::string *target) { g_pick_target = target; SDL_ShowOpenFolderDialog(picked, nullptr, w, nullptr, false); }
+/* what each file dialog shows first. A game file is a PKG (vitadecrypt.game reads a file only by a PKG's magic; zip/vpk
+ * are not read); a licence is a .rif or a work.bin; the firmware is Sony's .PUP. All files last, for a renamed one */
+static const SDL_DialogFileFilter k_pick_pkg[] = {{"PS Vita game or update (*.pkg)", "pkg"}, {"All files (*.*)", "*"}};
+static const SDL_DialogFileFilter k_pick_licence[] = {{"Licence file (*.rif, work.bin)", "rif;bin"}, {"All files (*.*)", "*"}};
+static const SDL_DialogFileFilter k_pick_pup[] = {{"PS Vita system update (*.PUP)", "pup"}, {"All files (*.*)", "*"}};
+static void pick_pkg(SDL_Window *w, std::string *target) { pick_file(w, target, k_pick_pkg, 2); }
+static void pick_licence(SDL_Window *w, std::string *target) { pick_file(w, target, k_pick_licence, 2); }
+static void pick_pup(SDL_Window *w, std::string *target) { pick_file(w, target, k_pick_pup, 2); }
 static void pick_poll(void) {
 	std::lock_guard<std::mutex> l(g_pick_lock);
 	if (g_pick_done && g_pick_target) *g_pick_target = g_pick_result;
@@ -880,7 +928,7 @@ static void found_list(void) {
 		if (x.pick && (x.licence == "rif" || (x.kind == "game" && x.licence == "no")) && kept_licence(x.content_id).empty()) {
 			ui::dot(ui::warn); ImGui::TextDisabled("Needs its licence file (.rif or work.bin).");
 			licence_help_link();
-			if (path_row("##licfile", x.licence_file, "Its licence file (.rif or work.bin)")) pick_file(nullptr, &x.licence_file, nullptr, 0);
+			if (path_row("##licfile", x.licence_file, "Its licence file (.rif or work.bin)")) pick_licence(nullptr, &x.licence_file);
 		} else if (x.pick && x.kind == "update" && x.licence == "no" && !found_ready(x)) {
 			ui::dot(ui::warn); ImGui::TextDisabled("Add its game too: an update decrypts with its game's licence");
 		}
@@ -995,10 +1043,9 @@ static bool add_form(SDL_Window *win) {   /* a player's own copy -> decrypted, i
 	licence_help_link();
 	ImGui::Spacing();
 	if (path_row("##addpath", g_add_path, pkg_kind ? "Choose the .pkg file" : "Choose the game folder")) {
-		static const SDL_DialogFileFilter pkg[] = {{"PS Vita package", "pkg"}};
-		if (pkg_kind) pick_file(win, &g_add_path, pkg, 1); else pick_folder(win, &g_add_path);
+		if (pkg_kind) pick_pkg(win, &g_add_path); else pick_folder(win, &g_add_path);
 	}
-	if (path_row("##lic", g_add_license, pkg_kind ? "Its licence file (.rif or work.bin)" : "Its licence file, if the folder has none (.rif or work.bin)")) pick_file(win, &g_add_license, nullptr, 0);
+	if (path_row("##lic", g_add_license, pkg_kind ? "Its licence file (.rif or work.bin)" : "Its licence file, if the folder has none (.rif or work.bin)")) pick_licence(win, &g_add_license);
 	ImGui::Spacing();
 	bool started = false;
 	ImGui::BeginDisabled(g_add_path.empty() || g_task.running);
@@ -1599,7 +1646,7 @@ static void setup_modal(SDL_Window *win) {
 			ImGui::SameLine(); ImGui::TextLinkOpenURL("playstation.com/.../psvita/system-software", SONY_FIRMWARE_PAGE);
 			ui::muted_wrapped("On that page, download the update file (PSVUPDAT.PUP or PSP2UPDAT.PUP, version 3.74). Any recent version works.");
 			ImGui::Dummy(ImVec2(0, em * 0.2f));
-			if (path_row("##pup", g_fw_path, "Choose the update file (.PUP)")) { static const SDL_DialogFileFilter pup[] = {{"PS Vita update file", "PUP;pup"}}; pick_file(win, &g_fw_path, pup, 1); }
+			if (path_row("##pup", g_fw_path, "Choose the update file (.PUP)")) pick_pup(win, &g_fw_path);
 			ImGui::BeginDisabled(g_fw_path.empty() || g_task.running);
 			if (ui::primary_button("Install firmware")) task_start("Installing the firmware", "firmware", "", {step("Decrypting the system update", vitarecomp({"firmware", g_fw_path})), step("Installed")});
 			ImGui::EndDisabled();
