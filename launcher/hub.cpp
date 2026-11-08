@@ -968,6 +968,7 @@ static bool game_key(const std::string &k) {   /* (settings.c's game_key: kept i
 /* the shared keys' defaults where a game reads no value (runtime/core/settings.h; the consumers' own) --
  * one table now in runtime/ui/setting_defaults.h (UI QUEUE U7), shared with the in-game menu's "default" marks */
 #include "setting_defaults.h"
+#include "frame_rates.h"   /* the frame-rate rules: a game's allowed rates (its pack's RECOMP_FRAME_RATES) */
 /* keys only some games read (an online one, a camera one, one with ambient occlusion): a game without the key never chose */
 static bool some_games_key(const std::string &k) { return k == "online_id" || k == "online" || k == "np_account_id" || k == "np_age" || k == "camera" || k == "ssao" || k == "ssao_strength"; }
 static std::string shared_path(void) { std::string d = pref_dir(); return d.empty() ? "" : d + "settings.ini"; }
@@ -1149,7 +1150,7 @@ static void settings_modal(void) {
 			seg_row(t, "Widescreen", "Shows more of the game at the sides, in games that support it.", "aspect_ratio", "native", {{"native", "Off"}, {"16:10", "16:10"}, {"3:2", "3:2"}, {"21:9", "21:9"}, {"32:9", "32:9"}, {"window", "Window"}});
 			seg_row(t, "HUD", "With widescreen on: the HUD at the screen's edges, in a 16:9 frame in the middle, or stretched.", "hud_layout", "edges", {{"edges", "Edges"}, {"16:9", "16:9"}, {"stretch", "Stretched"}});
 			seg_row(t, "Picture fit", "How the picture fills the window.", "aspect", "fit", {{"fit", "Fit"}, {"stretch", "Stretch"}, {"fill", "Fill"}});
-			seg_row(t, "Frame rate", "60 is experimental: parts of a game timed in fixed 1/30 s steps can run fast.", "frame_rate", "30", {{"30", "30"}, {"60", "60"}});
+			seg_row(t, "Frame rate", "Above 30 is experimental: parts of a game timed in fixed 1/30 s steps can run fast. A game runs at the highest rate it allows up to this one (its Game settings show which).", "frame_rate", "30", {{"30", "30"}, {"60", "60"}, {"120", "120"}});
 			toggle_row(t, "Anti-aliasing", "Smooths jagged edges (FXAA).", "post_aa", true);
 			slider_row(t, "Sharpening", "Brings back detail lost to scaling and anti-aliasing.", "sharpen", 0.35, 0.0f, 100.0f, "%.0f%%", 100.0f);
 			seg_row(t, "Texture filtering", "Keeps textures crisp when seen at an angle.", "anisotropy", "16", {{"1", "Off"}, {"2", "2×"}, {"4", "4×"}, {"8", "8×"}, {"16", "16×"}});
@@ -1203,6 +1204,12 @@ static bool game_option(const Game &g, const char *name) {
 	std::string list = "," + env.substr(a + 20, env.find(' ', a) - a - 20) + ",";
 	return list.find(std::string(",") + name + ",") != std::string::npos;
 }
+/* the frame rates a game allows (its pack's RUN_ENV RECOMP_FRAME_RATES, as the game itself reads it: frame_rates.h) */
+static int game_frame_rates(const Game &g) {
+	std::string env = pack_value(pack_read(g_root + "/packs/" + g.id + "/pack.toml"), "RUN_ENV") + " ";
+	size_t a = env.find("RECOMP_FRAME_RATES="); if (a == std::string::npos) return fr_allowed(nullptr);
+	return fr_allowed(env.substr(a + 19, env.find(' ', a) - a - 19).c_str());
+}
 static const char *setting_name(const std::string &k) {
 	static const std::pair<const char *, const char *> names[] = {{"render_scale", "Resolution"}, {"fullscreen", "Fullscreen"}, {"aspect_ratio", "Widescreen"},
 		{"hud_layout", "HUD"}, {"aspect", "Picture fit"}, {"frame_rate", "Frame rate"}, {"post_aa", "Anti-aliasing"}, {"sharpen", "Sharpening"},
@@ -1228,6 +1235,20 @@ static void game_settings_modal(void) {
 	SetTarget t{&g_game_ini, game_settings_path(g->id), GAME_HEADER};
 	bool any = false;
 	if (ui::rows_begin("game_own")) {
+		{	/* the frame rate, among only the rates this game allows; kept for this game (its own file wins over the shared one) */
+			any = true;
+			const int allowed = game_frame_rates(*g); int l[3], n = fr_list(allowed, l);
+			Ini sh = ini_load(shared_path()); const std::string *shv = ini_find(sh, "frame_rate");
+			const int cur = fr_effective(atoi(tget(t, "frame_rate", shv ? shv->c_str() : "30").c_str()), allowed);
+			std::string rates; for (int i = 0; i < n; i++) rates += (i ? ", " : "") + std::to_string(l[i]);
+			std::string expl = "This game allows " + rates + " fps. Above 30 is experimental.";
+			ui::row("Frame rate", expl.c_str());
+			ImGui::PushID("frame_rate_game");
+			static const char *const all[3] = {"30", "60", "120"}; const char *names[3]; int v = 0;
+			for (int i = 0; i < n; i++) { names[i] = all[l[i] >= 120 ? 2 : l[i] >= 60 ? 1 : 0]; if (l[i] == cur) v = i; }
+			if (ui::segmented(names, n, &v)) target_write(t, "frame_rate", std::to_string(l[v]));
+			ImGui::PopID();
+		}
 		if (game_option(*g, "fov")) { any = true; slider_row(t, "Field of view", "A wider view. 1.00× is the game's own.", "fov", 1.0, 0.75f, 1.5f, "%.2f×"); }
 		if (game_option(*g, "view_distance")) { any = true; slider_row(t, "View distance", "How far fading scenery reaches. 1.00× is the game's own.", "view_distance", 1.0, 1.0f, 3.0f, "%.2f×"); }
 		if (game_option(*g, "scenery_detail")) { any = true; slider_row(t, "Scenery detail", "How far small scenery details stay visible. 1.00× is the game's own.", "scenery_detail", 1.0, 1.0f, 8.0f, "%.1f×"); }

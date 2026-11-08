@@ -441,11 +441,12 @@ void recomp_call_external(Cpu *c, uint32_t addr) {
 		}
 	}
 	uint32_t wv[4]; watch_snap(wv);
+	uint64_t imp_t0 = 0, imp_t1 = 0;   /* FEAT-ALL-01 diag: RECOMP_LOG_IMPORTS lines carry the host time (us) and how long the call took */
 	if (fn) {
 		extern void kernel_hle_in(const char *);
 		recomp_excl_valid = 0;   /* the import is an exception: on its return the firmware's exclusive monitor is cleared -- a strex across a call must fail and retry with fresh data */
 		recomp_excl_drop_reason = 1;   /* P0b diag: this drop site's tag for rt.h's spurious-failure log */
-		kernel_hle_in(name); fn(c); kernel_hle_in(0);
+		imp_t0 = plat_now_us(); kernel_hle_in(name); fn(c); kernel_hle_in(0); imp_t1 = plat_now_us();
 	}
 	else c->r[0] = stub_ret;
 	watch_check(wv, name, c);
@@ -458,7 +459,7 @@ void recomp_call_external(Cpu *c, uint32_t addr) {
 			while (!hit && (p = strchr(p, ',')) && p[1]) { const char *q = strchr(p + 1, ','); char item[96]; size_t n = q ? (size_t)(q - p - 1) : 0;
 				if (n && n < sizeof item) { memcpy(item, p + 1, n); item[n] = 0; hit = strstr(name, item) != 0; } p = q; }
 			if (hit) { char tn[32] = ""; plat_thread_name(tn, sizeof tn); extern uint64_t display_frames(void);
-				fprintf(stderr, "    imp f%llu [%s] %s(%#x, %#x, %#x, %#x) -> %#x lr %#x\n", (unsigned long long)display_frames(), tn, name, a0, a1, a2, a3, c->r[0], c->r[14]); }
+				fprintf(stderr, "    imp f%llu [%s] %s(%#x, %#x, %#x, %#x) -> %#x lr %#x t%llu d%llu\n", (unsigned long long)display_frames(), tn, name, a0, a1, a2, a3, c->r[0], c->r[14], (unsigned long long)imp_t0, (unsigned long long)(imp_t1 - imp_t0)); }
 		}
 	}
 	if (recomp_sched_on) sched_yield_if_preempted();

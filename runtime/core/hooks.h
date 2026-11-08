@@ -18,6 +18,7 @@ void widen_aspect_reg(Cpu *c, int reg); /* a register holding 960/544, widened b
 void recomp_ihook_frame_dt(Cpu *c, int reg);
 uint64_t display_frames(void);
 int display_frame_rate_60(void);
+int display_frame_rate(void);   /* display.c: 30 | 60 | 120 */
 float display_frame_dt(void);
 int window_mouse_delta(float *dx, float *dy); float window_mouse_sens(void); int window_mouse_invert(void); int window_raw_look(void);   /* the mouse look (window.c) */
 

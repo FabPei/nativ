@@ -374,3 +374,15 @@ clamps, and an unknown (0) display scale. No SDL:
     cc -O1 -g -Wall -I ../ui overlay_scale_test.c -o /tmp/overlay_scale_test -lm && /tmp/overlay_scale_test
 
 It prints `all passed (11 ok)` and exits 0.
+
+## Frame rates: `frame_rates_test.c`
+
+Checks `runtime/ui/frame_rates.h`, the frame-rate rules the display, the in-game menu and the launcher share: a pack's
+allowed rates (`RECOMP_FRAME_RATES` in its RUN_ENV; absent = 30 and 60, 30 always allowed), the rate a `frame_rate`
+setting gives (the highest allowed one at or below it), the 120 Hz vblank grid (8333 us) at 120, the swap interval
+cap and a frame's time for the frame-time hooks (1/120 .. 1/30 s at 120). `-DFRAME_RATES_LEGACY` runs the same checks
+against the rules display.c had before (a 30/60 switch on a fixed 60 Hz grid): 16 of them fail.
+
+    cc -O1 -Wall -I ../ui frame_rates_test.c -o /tmp/frame_rates_test -lm && /tmp/frame_rates_test
+
+It prints `28 checks, 0 failed` and exits 0.

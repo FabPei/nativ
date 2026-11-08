@@ -51,6 +51,7 @@ static const Str catalog[] = {
 	{"bar.match_window", "Match window (%dx)", "Fenster anpassen (%dx)"},
 	{"bar.cycle", "Cycle", "Umschalten"},
 	{"bar.fps60", "60 (experimental)", "60 (experimentell)"},
+	{"bar.fps120", "120 (experimental)", "120 (experimentell)"},
 	{"bar.touch_speed", "Touch cursor speed (hold L1/R1, either stick)", "Touch-Cursor-Tempo (L1/R1 halten, irgendein Stick)"},
 	{"bar.gyro_toggle", "Gyro as the Vita's motion sensor", "Gyro als Bewegungssensor der Vita"},
 	{"bar.gyro_pose", "A level pad is a Vita held", "Ein waagerechtes Pad ist eine gehaltene Vita"},
@@ -160,7 +161,7 @@ static const Str catalog[] = {
 	{"ctrl.shortcuts", "Shortcuts", "Kürzel"},
 	/* the Game page */
 	{"game.fps", "Frame rate", "Bildrate"},
-	{"game.fps_help", "60 is experimental: parts of a game timed in fixed 1/30 s steps can run fast.", "60 ist experimentell: Teile eines Spiels in festen 1/30-s-Schritten können zu schnell laufen."},
+	{"game.fps_help", "Above 30 is experimental: parts of a game timed in fixed 1/30 s steps can run fast. Only the rates this game allows are shown.", "Über 30 ist experimentell: Teile eines Spiels in festen 1/30-s-Schritten können zu schnell laufen. Nur die Raten, die dieses Spiel erlaubt, werden gezeigt."},
 	{"game.fov", "Field of view", "Sichtfeld"},
 	{"game.fov_help", "A wider view. 1.00× is the game's own.", "Ein weiterer Blick. 1,00× ist der eigene des Spiels."},
 	{"game.view", "View distance", "Sichtweite"},

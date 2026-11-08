@@ -18,7 +18,7 @@ typedef struct SysInfo {
 	int win_w, win_h;          /* the window's pixel size (window_pixel_size) */
 	int render_scale;          /* the settings' render_scale: 1..6 */
 	const char *present_mode;  /* window_present_mode(): vsync, mailbox or immediate */
-	int frame_rate;            /* the settings' frame_rate: 30 | 60 */
+	int frame_rate;            /* the settings' frame_rate: 30 | 60 | 120 */
 	const char *log_dir;       /* the game's working directory: where session.log is written */
 	const char *home;          /* the user's home path; replaced with ~ wherever it appears in a value */
 } SysInfo;

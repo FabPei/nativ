@@ -110,6 +110,7 @@ static int depth_pass(uint32_t f, float z, float d) {
 	}
 }
 static uint64_t frame;
+static long shot_ms_every, shot_ms_last = -1, shot_ms_next, shot_ms_latched = -1;   /* RECOMP_SHOT_MS (below, with shot()) */
 static long dump_frame = -1, shot_every, shot_last = -1, shot_from = 0, shot_to = -1;   /* RECOMP_SHOT_LAST=n: exit once frame n's shot is written (a test needs nothing after its frame) */
 static int inited;
 static int shaders_interp;
@@ -133,6 +134,8 @@ static void init(void) {
 	if (getenv("RECOMP_SHOT_FROM")) shot_from = atol(getenv("RECOMP_SHOT_FROM"));   /* RECOMP_SHOT_FROM/_TO=n: shots only in that frame window (every frame of a flicker, without a run's worth of them) */
 	if (getenv("RECOMP_SHOT_TO")) shot_to = atol(getenv("RECOMP_SHOT_TO"));
 	if (getenv("RECOMP_SHOT_LAST")) shot_last = atol(getenv("RECOMP_SHOT_LAST"));
+	if (getenv("RECOMP_SHOT_MS")) shot_ms_every = atol(getenv("RECOMP_SHOT_MS"));   /* RECOMP_SHOT_MS=n: a shot every n ms of wall time (tshot_<step>.ppm) */
+	if (getenv("RECOMP_SHOT_LAST_MS")) shot_ms_last = atol(getenv("RECOMP_SHOT_LAST_MS"));
 	if (!shaders_interp) shaders_interp = getenv("RECOMP_SHADERS") && !strcmp(getenv("RECOMP_SHADERS"), "interp");
 }
 /* the shader interpreter regardless of RECOMP_SHADERS: gfx_gpu.c's CPU fallback and its check
@@ -2451,8 +2454,17 @@ void gfx_soft_end_scene(void) {
 	if (scene_depth && scene_target.ds_data && scene_target.ds_force_store) depth_store_to_guest(scene_depth, &scene_target);
 }
 
+/* RECOMP_SHOT_MS=n (RECOMP_SHOT_LAST_MS=m: exit after the shot at m ms): shots keyed by wall time since the first
+ * present instead of by frame -- runs at different frame rates (30/60/120) then shoot the same instants, for
+ * comparing how fast a game animates at each (the ledger's tools/anim_sync.py). tshot_<k>.ppm is the shot at k*n ms. */
+static long run_ms(void) { static uint64_t t0; struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); uint64_t us = (uint64_t)t.tv_sec * 1000000 + t.tv_nsec / 1000; if (!t0) t0 = us; return (long)((us - t0) / 1000); }
+static int shot_ms_due(void) { return shot_ms_every > 0 && run_ms() >= shot_ms_next; }
+static void shot_named(const char *name, uint32_t base, uint32_t w, uint32_t h, uint32_t pitch);
 static void shot(uint32_t base, uint32_t w, uint32_t h, uint32_t pitch) {
 	char name[64]; snprintf(name, sizeof name, "shot_%05llu.ppm", (unsigned long long)frame);
+	shot_named(name, base, w, h, pitch);
+}
+static void shot_named(const char *name, uint32_t base, uint32_t w, uint32_t h, uint32_t pitch) {
 	FILE *f = fopen(name, "wb");
 	if (!f) return;
 	fprintf(f, "P6\n%u %u\n255\n", w, h);
@@ -2461,12 +2473,17 @@ static void shot(uint32_t base, uint32_t w, uint32_t h, uint32_t pitch) {
 	fclose(f);
 }
 static int shot_window(void) { return (long)frame >= shot_from && (shot_to < 0 || (long)frame <= shot_to); }
-int gfx_soft_shot_due(void) { init(); return shot_every && frame % shot_every == 0 && shot_window(); }   /* will this present write a RECOMP_SHOT? (gfx_gpu.c syncs guest memory only then) */
+int gfx_soft_shot_due(void) { init(); if (shot_ms_due()) { shot_ms_latched = (long)frame; return 1; } return shot_every && frame % shot_every == 0 && shot_window(); }   /* will this present write a RECOMP_SHOT? (gfx_gpu.c syncs guest memory only then) */
 int gfx_soft_skip_window;   /* set by gfx_gpu.c when it has shown the frame itself */
 void gfx_soft_present(uint32_t base, uint32_t width, uint32_t height, uint32_t pitch, uint32_t format) {
 	init();
 	if ((long)frame == dump_frame) fprintf(stderr, " present frame %llu: %u draws\n", (unsigned long long)frame, ndraw);
 	if (shot_every && frame % shot_every == 0 && shot_window()) shot(base, width, height, pitch);
+	if (shot_ms_every > 0 && (shot_ms_latched == (long)frame || shot_ms_due())) {
+		char name[64]; snprintf(name, sizeof name, "tshot_%05ld.ppm", shot_ms_next / shot_ms_every); shot_named(name, base, width, height, pitch);
+		long now = run_ms(); while (shot_ms_next <= now) shot_ms_next += shot_ms_every;   /* (a long frame skips the instants it passed) */
+		if (shot_ms_last >= 0 && now >= shot_ms_last) { fprintf(stderr, "frame %llu at %ld ms: the last timed shot (RECOMP_SHOT_LAST_MS), exiting\n", (unsigned long long)frame, now); fflush(stderr); gfx_gpu_builds_stop(); exit(0); }
+	}
 	if (shot_last >= 0 && (long)frame >= shot_last) { fprintf(stderr, "frame %llu shot: the last one asked for (RECOMP_SHOT_LAST), exiting\n", (unsigned long long)frame); fflush(stderr); gfx_gpu_builds_stop(); exit(0); }   /* a scripted test used to run to its timeout: minutes for a frame that takes seconds */
 	usse_profile_report();
 	extern void window_present(uint32_t base, uint32_t w, uint32_t h, uint32_t pitch);
