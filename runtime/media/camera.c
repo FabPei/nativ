@@ -54,6 +54,9 @@ enum { BUF_SETBYOPEN = 0, BUF_SETBYREAD = 1 };
 #define CR_TIMESTAMP 0x18
 #define CR_SIZE_I 0x20
 #define CR_P_I 0x2c
+#define CR_SIZE_NEW 0x48   /* the newer SDK's SceCameraRead: 16 bytes more before the plane sizes */
+#define CR_SIZE_I_NEW 0x30
+#define CR_P_I_NEW 0x3c
 
 typedef struct { int open, started; uint32_t format, width, height, pitch, buffer, range; uint32_t base[3], size[3]; uint64_t frame; } Cam;
 static Cam cams[2];   /* SCE_CAMERA_DEVICE_FRONT 0, BACK 1 */
@@ -214,13 +217,16 @@ static void h_stop(Cpu *c) { Cam *k = dev(c); if (!k) { RET(CAM_ERR_PARAM); retu
 static void h_read(Cpu *c) {   /* (devnum, SceCameraRead *) */
 	Cam *k = dev(c); uint32_t rd = A1;
 	if (!k || !rd) { RET(CAM_ERR_PARAM); return; }
-	uint32_t sz = RD32(rd + CR_SIZE); if (sz <= 24 || sz > 0x40) { RET(CAM_ERR_PARAM); return; }
+	uint32_t sz = RD32(rd + CR_SIZE); if (sz <= 24 || sz > CR_SIZE_NEW) { RET(CAM_ERR_PARAM); return; }
 	if (!k->open) { RET(CAM_ERR_NOT_OPEN); return; }
 	if (!k->started) { RET(CAM_ERR_NOT_START); return; }
+	/* two layouts: the 0x38 one (vita-headers) and the newer SDK's 0x48 one with 16 more bytes before the plane
+	 * sizes -- Soul Sacrifice Delta's AR mode passes 0x48 with sizes at +0x30 and bases at +0x3c; up to 0x40 the old */
+	uint32_t o_size = sz > 0x40 ? CR_SIZE_I_NEW : CR_SIZE_I, o_base = sz > 0x40 ? CR_P_I_NEW : CR_P_I;
 	uint32_t base[3], size[3];
 	for (int i = 0; i < 3; i++) {
-		int have = k->buffer == BUF_SETBYREAD && sz >= CR_P_I + 4u * (uint32_t)i + 4u;
-		base[i] = have ? RD32(rd + CR_P_I + 4 * i) : k->base[i]; size[i] = have ? RD32(rd + CR_SIZE_I + 4 * i) : k->size[i];
+		int have = k->buffer == BUF_SETBYREAD && sz >= o_base + 4u * (uint32_t)i + 4u;
+		base[i] = have ? RD32(rd + o_base + 4 * i) : k->base[i]; size[i] = have ? RD32(rd + o_size + 4 * i) : k->size[i];
 	}
 	if (!base[0] || !size[0]) { RET(CAM_ERR_PARAM); return; }
 	write_frame(k, base, size);
@@ -232,10 +238,17 @@ static void h_read(Cpu *c) {   /* (devnum, SceCameraRead *) */
 }
 static void h_is_active(Cpu *c) { Cam *k = dev(c); if (!k) { RET(CAM_ERR_PARAM); return; } if (!k->open) { RET(CAM_ERR_NOT_OPEN); return; } if (!k->started) { RET(CAM_ERR_NOT_START); return; } RET(1); }
 static void h_setting(Cpu *c) { Cam *k = dev(c); if (!k) { RET(CAM_ERR_PARAM); return; } if (!k->open) { RET(CAM_ERR_NOT_OPEN); return; } RET(0); }   /* EV, white balance, auto control hold: the picture is ours */
+/* (devnum, SceFVector3 *): where the camera sits on the device. The firmware's values are not public; a zero vector
+ * (as Vita3K writes). Soul Sacrifice Delta opens the camera only when this answers 0 */
+static void h_location(Cpu *c) {
+	if (A0 >= 2 || !A1) { RET(CAM_ERR_PARAM); return; }
+	WR32(A1, 0); WR32(A1 + 4, 0); WR32(A1 + 8, 0);
+	RET(0);
+}
 
 const HleEntry hle_camera[] = {
 	{"sceCameraOpen", h_open}, {"sceCameraClose", h_close}, {"sceCameraStart", h_start}, {"sceCameraStop", h_stop},
-	{"sceCameraRead", h_read}, {"sceCameraIsActive", h_is_active},
+	{"sceCameraRead", h_read}, {"sceCameraIsActive", h_is_active}, {"sceCameraGetDeviceLocation", h_location},
 	{"sceCameraSetEV", h_setting}, {"sceCameraSetISO", h_setting}, {"sceCameraSetWhiteBalance", h_setting}, {"sceCameraSetAutoControlHold", h_setting},
 	{0, 0},
 };

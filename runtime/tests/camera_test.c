@@ -12,6 +12,8 @@
 #include "../media/camera.c"
 
 uint8_t *recomp_mem;
+uint32_t recomp_watch_lo = 0, recomp_watch_hi = 0;
+void recomp_watch_write(uint32_t a, uint32_t v, int width) { (void)a; (void)v; (void)width; }
 void gfx_guest_writing(uint32_t addr, uint32_t len) { (void)addr; (void)len; }
 void gfx_guest_written(uint32_t addr, uint32_t len) { (void)addr; (void)len; }
 uint64_t guest_time_us(void) { static uint64_t t; return t += 33333; }
@@ -62,6 +64,33 @@ int main(void) {
 	check((px >> 24) == 0xFF && (px & 0xFF) > 200, "an opaque bright centre (R in the low byte)");
 	WR32(rd + CR_P_I, 0);
 	check(call(h_read, 1, rd) == CAM_ERR_PARAM, "a per-read camera with no buffer fails");
+	check(call(h_stop, 1, 0) == 0 && call(h_close, 1, 0) == 0, "stop and close");
+
+	/* the newer SDK's 0x48-byte SceCameraRead (Soul Sacrifice Delta's AR mode): YUV420 planes, buffers per read,
+	 * sizes at +0x30, bases at +0x3c; bytes +0x20..+0x2f belong to fields the old layout lacks and stay untouched */
+	WR16(info + CI_FORMAT, FMT_YUV420_PLANE); WR16(info + CI_RESOLUTION, 1);
+	check(call(h_open, 1, info) == 0 && call(h_start, 1, 0) == 0, "reopen as YUV420 640x480, buffers per read");
+	const uint32_t rd2 = 0x200200, Y2 = 0x700000;
+	for (uint32_t i = 0; i < 0x48; i += 4) WR32(rd2 + i, 0xA5A5A5A5u);
+	WR32(rd2 + 0x00, 0x48); WR32(rd2 + 0x04, 0); WR32(rd2 + 0x08, 1);
+	WR32(rd2 + 0x30, W * H); WR32(rd2 + 0x34, W * H / 4); WR32(rd2 + 0x38, W * H / 4);
+	WR32(rd2 + 0x3c, Y2); WR32(rd2 + 0x40, Y2 + W * H); WR32(rd2 + 0x44, Y2 + W * H + W * H / 4);
+	uint32_t r48 = call(h_read, 1, rd2);
+	printf("     0x48 read -> %08x, Y %.1f, status %u, frame %u\n", r48, mean(Y2, W * H), RD32(rd2 + CR_STATUS), RD32(rd2 + CR_FRAME));
+	check(r48 == 0, "a 0x48-byte SceCameraRead is accepted");
+	check(mean(Y2, W * H) > 180, "its frame lands in the planes named at +0x3c (lamp on: bright)");
+	check(RD32(rd2 + 0x20) == 0xA5A5A5A5u && RD32(rd2 + 0x2c) == 0xA5A5A5A5u, "bytes +0x20..+0x2f are left alone");
+	WR32(rd2 + 0x00, 0x4c);
+	check(call(h_read, 1, rd2) == CAM_ERR_PARAM, "a read larger than 0x48 fails");
+	check(call(h_stop, 1, 0) == 0 && call(h_close, 1, 0) == 0, "stop and close");
+
+#ifndef CAMERA_TEST_BEFORE
+	/* sceCameraGetDeviceLocation: Soul Sacrifice Delta opens the camera only when it answers 0 */
+	const uint32_t loc = 0x200300;
+	WR32(loc, 0xFFFFFFFFu); WR32(loc + 4, 0xFFFFFFFFu); WR32(loc + 8, 0xFFFFFFFFu);
+	check(call(h_location, 1, loc) == 0 && RD32(loc) == 0 && RD32(loc + 4) == 0 && RD32(loc + 8) == 0, "device location: 0 and a written vector");
+	check(call(h_location, 2, loc) == CAM_ERR_PARAM && call(h_location, 0, 0) == CAM_ERR_PARAM, "device location: bad device or null pointer fails");
+#endif
 	printf("%s\n", fails ? "FAILED" : "all passed");
 	return fails != 0;
 }
