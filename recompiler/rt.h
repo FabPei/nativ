@@ -31,7 +31,15 @@ typedef void (*GuestFn)(Cpu *);
  * frame to return to (main.c's recomp_longjmp) */
 typedef struct RecompJmp { uint32_t guest, r[16], fpscr; uint64_t d[8]; jmp_buf host; } RecompJmp;
 extern RecompJmp *recomp_setjmp_begin(Cpu *c);
+/* the guest arena: set once by the host (main.c, plat_reserve) before any guest code runs. Generated code
+ * (RECOMP_GUEST_CODE, defined by build.py for the game and module parts only) sees it as const: else every
+ * guest call and every WR* watch slow path makes the compiler reload it and merge the copies with a phi at each
+ * join (a 46k-line function: 4,472 loads of it and 63,596 such phis; const: 3 loads, -40 % compile time, BUILD-03) */
+#ifdef RECOMP_GUEST_CODE
+extern uint8_t *const recomp_mem;
+#else
 extern uint8_t *recomp_mem;
+#endif
 /* provided by the host: a call to a guest address that isn't recompiled code (an import) */
 extern void recomp_call_external(Cpu *c, uint32_t addr);
 extern void recomp_unimplemented(Cpu *c, uint32_t addr);

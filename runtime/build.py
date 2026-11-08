@@ -29,6 +29,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 
 RT = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.dirname(RT); RECOMPILER = os.path.join(ROOT, "recompiler")
 SUBDIRS = ("core", "gfx", "audio", "media", "input", "net", "ui", "platform", "debug")   # the runtime's parts (docs/architecture.md)
@@ -200,7 +201,10 @@ def main(argv):
     work = []
     for s in srcs:
         o = os.path.join(OBJ, os.path.splitext(os.path.basename(s))[0] + ".o")
-        ins = (rt, header[s]) if s in header else (rt,); now = digest(*ins)
+        # RECOMP_GUEST_CODE: generated code, where rt.h declares the arena base const (see there; BUILD-03); in the
+        # stamp, so an object compiled without it is rebuilt
+        guest = ["-DRECOMP_GUEST_CODE"] if s in header else []
+        ins = (rt, header[s]) if s in header else (rt,); now = " ".join([digest(*ins)] + guest)
         try: was = open(o + ".in").read().strip()
         except OSError: was = None
         if not os.path.isfile(o) or newer(s, o): stale = True
@@ -208,7 +212,7 @@ def main(argv):
             stale = any(newer(f, o) for f in ins)
             if not stale: write_stamp(o, now)
         else: stale = was != now
-        if stale: work.append(([CC, "-c"] + FLAGS + [s, "-o", o], s, o, CC, lambda o=o, now=now: write_stamp(o, now)))
+        if stale: work.append(([CC, "-c"] + FLAGS + guest + [s, "-o", o], s, o, CC, lambda o=o, now=now: write_stamp(o, now)))
     # the in-game overlay (runtime/ui/overlay.cpp, this project's one C++ file) and Dear ImGui itself
     # (third_party/imgui/, MIT: see its own README for the pinned release): built once into their own
     # cached objects -- nothing here depends on which game is being linked -- and reused by that game's later builds
@@ -312,12 +316,13 @@ def main(argv):
 
     def compile_one(w):
         argv, s, o, cc, done = w
+        t0 = time.monotonic()
         r = subprocess.run(argv)
         if r.returncode:
             if done: _rm(argv[-1]); _rm(o + f".d.{os.getpid()}")
             return s
         if done: done()
-        say(f"  {cc} {os.path.basename(s)}")
+        say(f"  {cc} {os.path.basename(s)} ({time.monotonic() - t0:.1f} s)")   # seconds: which file is a clean build's long pole
         return None
     # the biggest first: a game's largest part (Soul Sacrifice's game_part15.c, 24 MB) is the build's longest compile and
     # starts at once instead of when the alphabet reaches it
