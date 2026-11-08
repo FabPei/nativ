@@ -168,7 +168,8 @@ static int gxm_boundary(const char *n) {
 		"sceGxmBeginSceneEx", "sceGxmEndScene", "sceGxmMidSceneFlush", "sceGxmDisplayQueueAddEntry", "sceGxmDisplayQueueFinish",
 		"sceGxmFinish", "sceGxmNotificationWait", "sceGxmWaitEvent", "sceGxmTransferCopy", "sceGxmTransferDownscale",
 		"sceGxmTransferFill", "sceGxmTransferFinish", "sceGxmSetRegionClip", "sceGxmSetVisibilityBuffer", "sceGxmSetFrontVisibilityTestEnable",
-		"sceGxmSetFrontVisibilityTestIndex", "sceGxmSetFrontVisibilityTestOp", "sceGxmSetFrontDepthBias", 0};
+		"sceGxmSetFrontVisibilityTestIndex", "sceGxmSetFrontVisibilityTestOp", "sceGxmSetFrontDepthBias",
+		"sceGxmBeginCommandList", "sceGxmEndCommandList", "sceGxmExecuteCommandList", 0};
 	for (int i = 0; b[i]; i++) if (!strcmp(b[i], n)) return 1;
 	return 0;
 }
