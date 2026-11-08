@@ -259,6 +259,13 @@ class Fn:
             y = f"(int32_t)(int16_t)({self.r(ops[2].reg, i)}{' >> 16' if hy == 't' else ''})"
             acc = f" + {self.r(ops[3].reg, i)}" if mn.startswith("smla") else ""
             out = [f"{self.dst(ops[0].reg)} = (uint32_t)({x} * {y}){acc};"]
+        elif re.fullmatch(r"smm(ul|la|ls)r?", mn):
+            # most-significant-word multiplies (ARM ARM A8.8.205-207): bits 63:32 of the signed 64-bit product, with
+            # Ra<<32 added (smmla) or the product subtracted from it (smmls); R rounds (+0x80000000 before the shift).
+            # In uint64_t so a wrap is the hardware's 64-bit wrap, not C's signed overflow
+            p = f"(uint64_t)((int64_t)(int32_t){self.r(ops[1].reg, i)} * (int64_t)(int32_t){self.r(ops[2].reg, i)})"
+            e = p if mn.startswith("smmul") else f"((uint64_t){self.r(ops[3].reg, i)} << 32) {'+' if mn[3:5] == 'la' else '-'} {p}"
+            out = [f"{self.dst(ops[0].reg)} = (uint32_t)(({e}{' + 0x80000000u' if mn.endswith('r') else ''}) >> 32);"]
         elif mn in ("udiv", "sdiv"):
             a, b = self.r(ops[1].reg, i), self.r(ops[2].reg, i)
             e = (f"({b} ? {a} / {b} : 0)" if mn == "udiv"
