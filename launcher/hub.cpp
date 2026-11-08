@@ -78,6 +78,11 @@
 static std::string g_root = REPO_ROOT;   /* the repository (ATIV_ROOT overrides; else found from where the launcher is) */
 static std::string g_dump;               /* the player's library: games, firmware, licences, builds, saves (library_dir) */
 static const char *const SONY_FIRMWARE_PAGE = "https://www.playstation.com/en-us/support/hardware/psvita/system-software/";
+/* a screenshot run (ATIV_SHOT) does nothing for real: a task, a file dialog or a page a button would start is only noted
+ * here (ATIV_SHOT_NAV's report: what ATIV_SHOT_KEYS pressed into) */
+static bool g_shot_mode;
+static std::vector<std::string> g_shot_done;
+static void open_url(const std::string &u) { if (g_shot_mode) { g_shot_done.push_back("open " + u); return; } SDL_OpenURL(u.c_str()); }
 
 static bool exists(const std::string &p) { struct stat st; return stat(p.c_str(), &st) == 0; }
 #ifdef _WIN32   /* (paths are UTF-8 throughout: the launcher's manifest sets the process code page, launcher/nativ.manifest) */
@@ -115,9 +120,9 @@ static std::vector<std::string> vitarecomp(std::initializer_list<std::string> ar
 }
 static void open_folder(const std::string &p) {
 #ifdef _WIN32
-	std::string u = p; std::replace(u.begin(), u.end(), '\\', '/'); SDL_OpenURL(("file:///" + u).c_str());
+	std::string u = p; std::replace(u.begin(), u.end(), '\\', '/'); open_url("file:///" + u);
 #else
-	SDL_OpenURL(("file://" + p).c_str());
+	open_url("file://" + p);
 #endif
 }
 
@@ -427,6 +432,7 @@ static void log_line(const std::string &s) {   /* a line of the launcher's own, 
 	log_append((bol ? "" : "\n") + s + "\n");
 }
 static void task_start(const std::string &name, const std::string &kind, const std::string &game, std::vector<Step> steps) {
+	if (g_shot_mode) { g_shot_done.push_back("task " + name); return; }   /* (a screenshot run starts nothing) */
 	if (g_task.running) return;
 	if (g_task.reader.joinable()) g_task.reader.join();
 	g_failed.clear();
@@ -665,8 +671,8 @@ static void SDLCALL picked(void *, const char *const *files, int) {
 	std::lock_guard<std::mutex> l(g_pick_lock);
 	if (files && files[0]) { g_pick_result = files[0]; g_pick_done = true; }
 }
-static void pick_file(SDL_Window *w, std::string *target, const SDL_DialogFileFilter *f, int nf) { g_pick_target = target; SDL_ShowOpenFileDialog(picked, nullptr, w, f, nf, nullptr, false); }
-static void pick_folder(SDL_Window *w, std::string *target) { g_pick_target = target; SDL_ShowOpenFolderDialog(picked, nullptr, w, nullptr, false); }
+static void pick_file(SDL_Window *w, std::string *target, const SDL_DialogFileFilter *f, int nf) { if (g_shot_mode) { g_shot_done.push_back("pick a file"); return; } g_pick_target = target; SDL_ShowOpenFileDialog(picked, nullptr, w, f, nf, nullptr, false); }
+static void pick_folder(SDL_Window *w, std::string *target) { if (g_shot_mode) { g_shot_done.push_back("pick a folder"); return; } g_pick_target = target; SDL_ShowOpenFolderDialog(picked, nullptr, w, nullptr, false); }
 /* what each file dialog shows first. A game file is a PKG (vitadecrypt.game reads a file only by a PKG's magic; zip/vpk
  * are not read); a licence is a .rif or a work.bin; the firmware is Sony's .PUP. All files last, for a renamed one */
 static const SDL_DialogFileFilter k_pick_pkg[] = {{"PS Vita game or update (*.pkg)", "pkg"}, {"All files (*.*)", "*"}};
@@ -749,6 +755,13 @@ static void dialog_body_begin(void) {
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad, 0));
 	ImGui::BeginChild("##body", ImVec2(ImGui::GetContentRegionAvail().x + pad, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding | ImGuiChildFlags_NavFlattened);
 	ImGui::PopStyleVar();
+}
+/* B on a controller, or Esc: the open dialog's Back / Cancel / Close / Not now. Not when that press was taken by ImGui to
+ * end an edit (a field typed in, a slider held) or to close a menu over the dialog: those were busy the frame before */
+static bool g_ui_busy_prev;
+static bool dialog_back(void) {
+	if (g_ui_busy_prev || !ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) return false;
+	return ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false);
 }
 static void dialog_body_end(void) { ImGui::EndChild(); ImGui::Dummy(ImVec2(0, ImGui::GetFontSize() * 0.2f)); }
 static void tab_hint(void) {   /* (shown with a controller connected) */
@@ -1380,7 +1393,7 @@ static void settings_modal(void) {
 	g_settings_tab = (g_settings_tab + tab_step() + 4) % 4;
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
 	SetTarget t{&g_shared, shared_path(), SHARED_HEADER};
-	ImGui::BeginChild("settings_rows", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() - em * 0.4f), 0);
+	ImGui::BeginChild("settings_rows", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() - em * 0.4f), ImGuiChildFlags_NavFlattened);
 	if (g_settings_tab == 3) library_tab();
 	else if (ui::rows_begin("shared")) {
 		if (g_settings_tab == 0) {
@@ -1434,7 +1447,7 @@ static void settings_modal(void) {
 	if (ImGui::Button("Use the recommended set")) { Ini r; recommended_into(r); for (auto &e : r.kv) target_write(t, e.first, e.second); }
 	if (ImGui::IsItemHovered()) ImGui::SetTooltip("Fullscreen, %d× resolution, widescreen to the window, 60 fps, direct mouse aim, softer shadows", recommended_scale());
 	ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize("Done").x - ImGui::GetStyle().FramePadding.x * 2);
-	if (ui::primary_button("Done")) { g_settings_open = false; ImGui::CloseCurrentPopup(); }
+	if (ui::primary_button("Done") || dialog_back()) { g_settings_open = false; ImGui::CloseCurrentPopup(); }
 	ImGui::EndPopup();
 }
 
@@ -1527,7 +1540,7 @@ static void game_settings_modal(void) {
 		}
 	}
 	dialog_body_end();
-	if (ui::primary_button("Done")) { g_game_settings.clear(); ImGui::CloseCurrentPopup(); }
+	if (ui::primary_button("Done") || dialog_back()) { g_game_settings.clear(); ImGui::CloseCurrentPopup(); }
 	ImGui::EndPopup();
 }
 
@@ -1576,7 +1589,7 @@ static void online_name_modal(void) {
 		return;
 	}
 	ImGui::EndDisabled();
-	same_line_fits(button_w("Not now")); if (ImGui::Button("Not now") || ImGui::IsKeyPressed(ImGuiKey_Escape)) { g_name_game.clear(); ImGui::CloseCurrentPopup(); }
+	same_line_fits(button_w("Not now")); if (ImGui::Button("Not now") || dialog_back()) { g_name_game.clear(); ImGui::CloseCurrentPopup(); }
 	ImGui::EndPopup();
 }
 static void sac_modal(void) {
@@ -1610,13 +1623,13 @@ static void sac_modal(void) {
 		task_start("Playing " + g->name, "play", g->id, {b, r});
 		g_sac_rebuilt = true; g_sac_open = false; ImGui::CloseCurrentPopup();
 	};
-	auto settings = [&]() { SDL_OpenURL("windowsdefender://smartapp"); };
+	auto settings = [&]() { open_url("windowsdefender://smartapp"); };
 	ImGui::BeginDisabled(!g || g_task.running);
 	if (g_sac_rebuilt ? ImGui::Button("Rebuild and try again") : ui::primary_button("Rebuild and try again")) rebuild();
 	ImGui::EndDisabled();
 	same_line_fits(button_w("Open Smart App Control settings"));
 	if (g_sac_rebuilt ? ui::primary_button("Open Smart App Control settings") : ImGui::Button("Open Smart App Control settings")) settings();
-	same_line_fits(button_w("Close")); if (ImGui::Button("Close")) { g_sac_open = g_sac_rebuilt = false; ImGui::CloseCurrentPopup(); }
+	same_line_fits(button_w("Close")); if (ImGui::Button("Close") || dialog_back()) { g_sac_open = g_sac_rebuilt = false; ImGui::CloseCurrentPopup(); }
 	ImGui::EndPopup();
 }
 
@@ -1687,7 +1700,7 @@ static void setup_modal(SDL_Window *win) {
 		} else {
 			ImGui::TextWrapped("Download the PS Vita system software update file from Sony's official page, then choose it below. Its system libraries are decrypted once and every game builds against them.");
 			ImGui::Dummy(ImVec2(0, em * 0.2f));
-			if (ImGui::Button("Open Sony's download page")) SDL_OpenURL(SONY_FIRMWARE_PAGE);
+			if (ImGui::Button("Open Sony's download page")) open_url(SONY_FIRMWARE_PAGE);
 			same_line_fits(ImGui::CalcTextSize("playstation.com/.../psvita/system-software").x); ImGui::TextLinkOpenURL("playstation.com/.../psvita/system-software", SONY_FIRMWARE_PAGE);
 			ui::muted_wrapped("On that page, download the update file (PSVUPDAT.PUP or PSP2UPDAT.PUP, version 3.74). Any recent version works.");
 			ImGui::Dummy(ImVec2(0, em * 0.2f));
@@ -1748,16 +1761,16 @@ static void setup_modal(SDL_Window *win) {
 	switch (g_setup_step) {
 	case 0:
 		if (ui::primary_button("Get started")) g_setup_step = 1;
-		same_line_fits(button_w("Set up later")); if (ImGui::Button("Set up later")) finish();
+		same_line_fits(button_w("Set up later")); if (ImGui::Button("Set up later") || dialog_back()) finish();
 		break;
 	case 1:
 		if (g_firmware || g_task.running) { if (ui::primary_button("Continue")) g_setup_step = 2; }
 		else if (ImGui::Button("Skip for now")) g_setup_step = 2;
-		same_line_fits(button_w("Back")); if (ImGui::Button("Back")) g_setup_step = 0;
+		same_line_fits(button_w("Back")); if (ImGui::Button("Back") || dialog_back()) g_setup_step = 0;
 		break;
 	case 2:
 		if (have || g_task.running ? ui::primary_button("Continue") : ImGui::Button("Skip for now")) g_setup_step = 3;   /* (never waits on a running task: the bar at the bottom shows it) */
-		same_line_fits(button_w("Back")); if (ImGui::Button("Back")) g_setup_step = 1;
+		same_line_fits(button_w("Back")); if (ImGui::Button("Back") || dialog_back()) g_setup_step = 1;
 		break;
 	case 3:
 		ImGui::BeginDisabled(!online_name_ok(s3_name));
@@ -1766,11 +1779,11 @@ static void setup_modal(SDL_Window *win) {
 			g_setup_step = 4;
 		}
 		ImGui::EndDisabled();
-		same_line_fits(button_w("Back")); if (ImGui::Button("Back")) g_setup_step = 2;
+		same_line_fits(button_w("Back")); if (ImGui::Button("Back") || dialog_back()) g_setup_step = 2;
 		break;
 	default:
 		if (ui::primary_button("Go to my library")) finish();
-		same_line_fits(button_w("Back")); if (ImGui::Button("Back")) g_setup_step = 3;
+		same_line_fits(button_w("Back")); if (ImGui::Button("Back") || dialog_back()) g_setup_step = 3;
 		break;
 	}
 	ImGui::EndPopup();
@@ -1860,7 +1873,7 @@ static void steam_closed_modal(void) {
 	ImGui::BeginDisabled(g_task.running);
 	if (ui::primary_button("Try again")) { g_steam_closed_open = false; ImGui::CloseCurrentPopup(); task_start(g_steam_name, "steam", g_steam_game, g_steam_steps); }
 	ImGui::EndDisabled();
-	same_line_fits(button_w("Not now")); if (ImGui::Button("Not now")) { g_steam_closed_open = false; ImGui::CloseCurrentPopup(); }
+	same_line_fits(button_w("Not now")); if (ImGui::Button("Not now") || dialog_back()) { g_steam_closed_open = false; ImGui::CloseCurrentPopup(); }
 	ImGui::EndPopup();
 }
 
@@ -1879,14 +1892,24 @@ static void game_state(const Game &g, const Found *lf, bool mine) {
 	}
 	else { ui::dot(ui::border); ImGui::TextDisabled("Not added yet"); }
 }
-static void game_id_line(const Game &g) {   /* the title id and the version: this copy's, else what the pack plays; In Steam; a chip when the pack recommends another */
+static std::string id_line_text(const Game &g, std::string *update) {   /* the id line's text, and the update it names ("": none) */
 	std::string line = g.id, rec = recommended_version(g), vs = played_versions(g);
 	if (!g.pack) line += "  -  experimental (no game pack)";
 	else if (g.imported && !g.version.empty() && g.version != "-") line += "  ·  " + (g.region.empty() ? "" : g.region + " ") + g.version;
 	else if (!g.imported && !vs.empty()) line += "  ·  plays " + (g.region.empty() ? "" : g.region + " ") + vs;
 	{ std::lock_guard<std::mutex> lk(g_steam.m); if (g_steam.in.count(g.id)) line += "  ·  In Steam"; }
+	if (update) *update = g.imported && !rec.empty() && g.version != rec ? rec : "";
+	return line;
+}
+static float id_line_height(const Game &g, float wrap) {   /* (its height at this width: the cards of a row reserve the tallest, so their buttons line up) */
+	std::string upd, line = id_line_text(g, &upd);
+	if (!upd.empty()) line += "  Update " + upd + " available";
+	return ImGui::CalcTextSize(line.c_str(), nullptr, false, wrap).y;
+}
+static void game_id_line(const Game &g) {   /* the title id and the version: this copy's, else what the pack plays; In Steam; a chip when the pack recommends another */
+	std::string rec, line = id_line_text(g, &rec);
 	ImGui::TextDisabled("%s", line.c_str());
-	if (g.imported && !rec.empty() && g.version != rec) {
+	if (!rec.empty()) {
 		ImGui::SameLine();   /* (one unwrapped line of text, not a chip: every card's lines keep one height) */
 		ImGui::PushTextWrapPos(-1.0f); ImGui::TextColored(ui::warn, "Update %s available", rec.c_str()); ImGui::PopTextWrapPos();   /* ("Update 1.12" beside the version read as the copy's own: a 1.00 copy was taken for 1.12) */
 		if (ImGui::IsItemHovered())
@@ -1898,13 +1921,30 @@ static std::string g_shot_more;   /* (ATIV_SHOT_UI=more:<title>: that game's "mo
 /* Add to Steam only for a game that is Ready to play (its built program is there, its data reachable): a shortcut to a
  * game never built would only fail in Steam. Remove from Steam is always offered, so an old shortcut can go. */
 static bool steam_addable(const Game &g) { return g.built && (!g.imported || g.missing.empty()); }
+/* the first press of a direction lands on the first game ready to play (else the first game): its main button is the
+ * library's default focus (hub_ui picks the game each frame) */
+static std::string g_focus_game;
+static bool g_focus_placed;   /* (once a launcher run: then ImGui keeps the focus where the player moves it, across dialogs too) */
+/* the library scrolls between a pinned header and a pinned bar: the D-pad reaches the header only from the top of the list
+ * and the bar only from its end, so up / down in between move through the games (and scroll), not out to them */
+static float g_lib_scroll, g_lib_scroll_max;   /* (the library's scroll, the frame before) */
+static std::map<ImGuiID, std::string> g_nav_game;   /* (ATIV_SHOT_NAV: which game a focused button belongs to) */
+static void first_game_focus(const Game &g) {
+	if (g_shot_mode) g_nav_game[ImGui::GetItemID()] = g.id;
+	if (g.id != g_focus_game) return;
+	ImGui::SetItemDefaultFocus();
+	if (g_focus_placed || ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) || GImGui->NavId) return;
+	g_focus_placed = true;   /* as a click would: this button has the focus, its frame shows with the first press of a direction */
+	ImGui::FocusWindow(ImGui::GetCurrentWindow()); ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
+	ImGui::SetNavCursorVisible((ImGui::GetIO().BackendFlags & ImGuiBackendFlags_HasGamepad) != 0);   /* (a controller connected: its frame shows at once, so A plays; with a mouse it shows with the first arrow key) */
+}
 static void game_actions(const Game &g, const Found *lf, float bw) {   /* the one primary action, the "more" menu beside it */
 	const bool busy = g_task.running;
 	const float em = ImGui::GetFontSize(), more = ImGui::GetFrameHeight();
 	ImDrawList *dl = ImGui::GetWindowDrawList();
 	ImGui::BeginDisabled(busy);
-	if (g.built) { if (ui::primary_button("Play", ImVec2(bw - more - ImGui::GetStyle().ItemSpacing.x, 0))) start_play(g); ImGui::SameLine(); }
-	else if (g.imported) { if (ui::primary_button("Build", ImVec2(bw - more - ImGui::GetStyle().ItemSpacing.x, 0))) start_build(g); ImGui::SameLine(); }
+	if (g.built) { if (ui::primary_button("Play", ImVec2(bw - more - ImGui::GetStyle().ItemSpacing.x, 0))) start_play(g); first_game_focus(g); ImGui::SameLine(); }
+	else if (g.imported) { if (ui::primary_button("Build", ImVec2(bw - more - ImGui::GetStyle().ItemSpacing.x, 0))) start_build(g); first_game_focus(g); ImGui::SameLine(); }
 	else if (lf) {   /* from its library folder, as a search's Add does; a licence still missing: the search's list, to give it */
 		if (ui::primary_button("Add", ImVec2(bw - more - ImGui::GetStyle().ItemSpacing.x, 0))) {
 			if (found_ready(*lf, g_lib_found)) {
@@ -1916,17 +1956,20 @@ static void game_actions(const Game &g, const Found *lf, float bw) {   /* the on
 				g_found_ready = true; g_add_kind = 0; g_scan_path = lf->source; g_add_open = true;
 			}
 		}
+		first_game_focus(g);
 		ImGui::SameLine();
 	}
 	else {   /* (a small card: the short label) */
 		const float lw = bw - more - ImGui::GetStyle().ItemSpacing.x;
 		const char *label = button_w("Add your copy…") <= lw ? "Add your copy…" : button_w("Add copy") <= lw ? "Add copy" : "Add";
 		if (ImGui::Button(label, ImVec2(lw, 0))) g_add_open = true;
+		first_game_focus(g);
 		ImGui::SameLine();
 	}
 	ImGui::EndDisabled();
 	{	/* the "more" button: three dots, drawn (the font may have no ellipsis glyph) */
 		if (ImGui::Button("##more", ImVec2(more, 0))) ImGui::OpenPopup("more");
+		if (g_shot_mode) g_nav_game[ImGui::GetItemID()] = g.id;
 		if (!g_shot_more.empty() && g_shot_more == g.id) { ImGui::OpenPopup("more"); g_shot_more.clear(); }
 		ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax(), m((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
 		for (int k = -1; k <= 1; k++) dl->AddCircleFilled(ImVec2(m.x + k * em * 0.32f, m.y), em * 0.09f, ui::u32(ui::text, 0.8f));
@@ -2009,14 +2052,14 @@ static void game_row_stacked(const Game &g, float ic) {
 }
 
 /* ---- a game's card: its cover (pic0), icon, name, state, one primary action */
-static void game_card(const Game &g, float w, float name_h) {
+static void game_card(const Game &g, float w, float name_h, float id_h) {
 	const float em = ImGui::GetFontSize(), pad = em * 0.9f;
 	const float img_h = w * 544.0f / 960.0f;
 	const bool mine = g_task.running && std::find(g_task.games.begin(), g_task.games.end(), g.id) != g_task.games.end();
 	ImGui::PushID(g.id.c_str());
 	ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::card); ImGui::PushStyleColor(ImGuiCol_Border, ui::border);
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-	ImGui::BeginChild("card", ImVec2(w, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY, ImGuiWindowFlags_NoScrollbar);
+	ImGui::BeginChild("card", ImVec2(w, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_NavFlattened, ImGuiWindowFlags_NoScrollbar);
 	ImDrawList *dl = ImGui::GetWindowDrawList();
 	ImVec2 p = ImGui::GetCursorScreenPos();
 	float rounding = ImGui::GetStyle().ChildRounding;
@@ -2050,7 +2093,9 @@ static void game_card(const Game &g, float w, float name_h) {
 	const Found *lf = g.imported ? nullptr : lib_find(g);
 	game_state(g, lf, mine);
 	ImGui::SetCursorPosX(pad);
+	const float y_id = ImGui::GetCursorPosY();
 	game_id_line(g);
+	ImGui::SetCursorPosY(y_id + id_h + ImGui::GetStyle().ItemSpacing.y);   /* (every card's id line one height: the buttons of a row line up) */
 	ImGui::PopTextWrapPos();
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
 	ImGui::SetCursorPosX(pad);
@@ -2089,6 +2134,7 @@ static void log_save(SDL_Window *win) {
 	strftime(name, sizeof name, "nativ-launcher-%Y%m%d-%H%M%S.log", &tm);
 	const char *docs = SDL_GetUserFolder(SDL_FOLDER_DOCUMENTS);
 	std::string where = docs ? std::string(docs) + name : std::string(name);
+	if (g_shot_mode) { g_shot_done.push_back("save the log"); return; }
 	SDL_ShowSaveFileDialog(log_saved, nullptr, win, f, 3, where.c_str());
 }
 static bool log_button(const char *label, const char *id) {   /* its label, or the note for a moment after it was used */
@@ -2107,6 +2153,7 @@ static void hub_ui(SDL_Window *win) {
 	ImGui::PopStyleVar(2);
 	const bool busy = g_task.running, narrow = vp->WorkSize.x < 44 * em;
 
+	ImGui::PushItemFlag(ImGuiItemFlags_NoNav, g_lib_scroll > 0.5f);   /* (the header: from the top of the list) */
 	/* header: the logo (the Vita, its screen lit as the app icon's, and the wordmark), the setup state, Add game, the setup gear */
 	{	ImDrawList *dl = ImGui::GetWindowDrawList(); const ImVec2 p = ImGui::GetCursorScreenPos(); const float h = em * 1.6f, vh = h * 0.9f, vw = vh * 600 / 280;
 		ui::vita(dl, ImVec2(p.x, p.y + (h - vh) * 0.5f), vw, ui::u32(ui::text), ui::u32(ui::accent), 30, 1);
@@ -2136,9 +2183,13 @@ static void hub_ui(SDL_Window *win) {
 	ImGui::SameLine(); if (ImGui::Button("Setup")) { g_setup_step = 0; g_setup_open = true; }
 	ImGui::Dummy(ImVec2(0, em * 0.3f));
 
+	ImGui::PopItemFlag();
+	g_focus_game.clear();
+	for (const Game &g : g_games) if (g.built) { g_focus_game = g.id; break; }
+	if (g_focus_game.empty() && !g_games.empty()) g_focus_game = g_games[0].id;
 	/* the library: a grid of cards, sized to the window */
 	const float bar_h = ImGui::GetFrameHeightWithSpacing() + em * 0.8f, drawer_h = g_drawer ? ImGui::GetContentRegionAvail().y * 0.4f : 0;
-	ImGui::BeginChild("library", ImVec2(0, ImGui::GetContentRegionAvail().y - bar_h - drawer_h), 0);
+	ImGui::BeginChild("library", ImVec2(0, ImGui::GetContentRegionAvail().y - bar_h - drawer_h), ImGuiChildFlags_NavFlattened);   /* (the D-pad goes straight to the games: no "enter the list" first) */
 	int nimp = 0; for (const Game &g : g_games) nimp += g.imported;
 	ImGui::PushFont(nullptr, em * 1.15f); ImGui::TextUnformatted("Library"); ImGui::PopFont();
 	ImGui::SameLine(); ImGui::TextDisabled("%d of %zu added", nimp, g_games.size());
@@ -2190,7 +2241,7 @@ static void hub_ui(SDL_Window *win) {
 #else
 			ui::dot(ui::accent); ImGui::TextWrapped("Project Nativ %s is out. Download it and replace this folder with it: your games, saves and settings stay as they are.", tag.c_str());
 #endif
-			if (ui::primary_button("Download")) SDL_OpenURL(page.c_str());
+			if (ui::primary_button("Download")) open_url(page);
 			ImGui::SameLine(); if (ImGui::Button("Not now")) { std::lock_guard<std::mutex> l(g_update.m); g_update.dismissed = true; }
 			ImGui::EndChild(); ImGui::PopStyleColor();
 		}
@@ -2219,17 +2270,20 @@ static void hub_ui(SDL_Window *win) {
 		ImGui::PushFont(nullptr, em * 1.15f);
 		for (const Game &g : g_games) { float hh = ImGui::CalcTextSize(g.name.c_str(), nullptr, false, cw - em * 1.8f).y; if (hh > name_h) name_h = hh; }
 		ImGui::PopFont();
+		float id_h = 0; for (const Game &g : g_games) id_h = std::max(id_h, id_line_height(g, cw - em * 1.8f));
 		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(gap, gap));
 		for (size_t i = 0; i < g_games.size(); i++) {
 			if (i % cols) ImGui::SameLine();
-			ImGui::BeginGroup(); game_card(g_games[i], cw, name_h); ImGui::EndGroup();
+			ImGui::BeginGroup(); game_card(g_games[i], cw, name_h, id_h); ImGui::EndGroup();
 		}
 		ImGui::PopStyleVar();
 	}
+	g_lib_scroll = ImGui::GetScrollY(); g_lib_scroll_max = ImGui::GetScrollMaxY();
 	ImGui::EndChild();
 
 	/* the activity bar: what's running (its step), the last failure, the log on demand */
 	ImGui::Separator();
+	ImGui::PushItemFlag(ImGuiItemFlags_NoNav, g_lib_scroll < g_lib_scroll_max - 0.5f);   /* (the bar: from the end of the list) */
 	ImGui::Dummy(ImVec2(0, em * 0.1f));
 	if (busy || !g_failed.empty()) task_line(); else { ui::dot(ui::border); ImGui::TextDisabled("Nothing running"); }
 	{
@@ -2250,6 +2304,7 @@ static void hub_ui(SDL_Window *win) {
 	}
 	if (busy) { if (ImGui::Button("Cancel")) task_cancel(); ImGui::SameLine(); }
 	if (ImGui::Button(g_drawer ? "Hide log" : "Show log")) g_drawer = !g_drawer;
+	ImGui::PopItemFlag();
 	if (g_drawer) {
 		ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::surface);
 		ImGui::BeginChild("log", ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding);
@@ -2273,7 +2328,7 @@ static void hub_ui(SDL_Window *win) {
 		ImGui::Dummy(ImVec2(0, em * 0.3f)); ImGui::Separator(); ImGui::Dummy(ImVec2(0, em * 0.1f)); licences_row(win);
 		ImGui::PopTextWrapPos();
 		dialog_body_end();
-		if (started || ImGui::Button("Cancel")) { g_add_open = false; ImGui::CloseCurrentPopup(); }
+		if (started || ImGui::Button("Cancel") || dialog_back()) { g_add_open = false; ImGui::CloseCurrentPopup(); }
 		ImGui::EndPopup();
 	} else ImGui::PopStyleVar(2);
 	sac_modal();
@@ -2282,6 +2337,11 @@ static void hub_ui(SDL_Window *win) {
 	setup_modal(win);
 	settings_modal();
 	game_settings_modal();
+	{	/* (a press of B this frame that ImGui used to end an edit or close a menu: no dialog takes it next frame either) */
+		ImGuiContext &g = *GImGui; bool menu = false;
+		for (const ImGuiPopupData &p : g.OpenPopupStack) menu |= p.Window && !(p.Window->Flags & ImGuiWindowFlags_Modal);
+		g_ui_busy_prev = ImGui::IsAnyItemActive() || menu;
+	}
 	ImGui::End();
 }
 
@@ -2310,7 +2370,10 @@ static std::string fit_name(const ImGuiWindow *w) {   /* "##hub/library_1A2B3C4D
 }
 static void fit_add(const std::string &line) { if (std::find(g_fit.begin(), g_fit.end(), line) == g_fit.end()) g_fit.push_back(line); }
 static bool fit_scrolls_y(const ImGuiWindow *w) { for (; w; w = w->ParentWindow) if (w->ScrollMax.y > 0.5f) return true; return false; }
+static bool g_nav_on;                          /* (ATIV_SHOT_KEYS / ATIV_SHOT_NAV: the items' labels, to name the one with the focus) */
+static std::map<ImGuiID, std::string> g_nav_labels;
 void ImGuiTestEngineHook_ItemInfo(ImGuiContext *ctx, ImGuiID id, const char *label, ImGuiItemStatusFlags) {
+	if (g_nav_on && label) g_nav_labels[id] = label;
 	if (!g_fit_on || !label || g_fit_items.empty() || g_fit_items.back().id != id) return;
 	const char *end = strstr(label, "##"); std::string vis(label, end ? (size_t)(end - label) : strlen(label));
 	if (vis.empty()) return;
@@ -2381,13 +2444,42 @@ static int shot(SDL_Window *win, const char *path, int w, int h) {
 	SDL_GPUTransferBufferCreateInfo dc = {}; dc.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD; dc.size = (Uint32)(w * h * 4);
 	SDL_GPUTransferBuffer *down = SDL_CreateGPUTransferBuffer(g_gpu, &dc);
 	if (!t || !down) { fprintf(stderr, "ATIV_SHOT: out of GPU memory\n"); return 1; }
-	const int frames = 40;
+	/* ATIV_SHOT_KEYS=down,right*6,a,b: controller buttons (up down left right a b x y l1 r1 start; esc is the Escape key),
+	 * each pressed for a frame once the screen has settled, then a few frames to act; ATIV_SHOT_NAV=<file>: what came of
+	 * them -- the item with the focus, the dialogs and menus open, and what a button would have done (g_shot_done) */
+	struct Press { ImGuiKey key; };
+	std::vector<Press> keys;
+	if (const char *ks = getenv("ATIV_SHOT_KEYS")) {
+		static const std::pair<const char *, ImGuiKey> names[] = {{"up", ImGuiKey_GamepadDpadUp}, {"down", ImGuiKey_GamepadDpadDown}, {"left", ImGuiKey_GamepadDpadLeft},
+			{"right", ImGuiKey_GamepadDpadRight}, {"a", ImGuiKey_GamepadFaceDown}, {"b", ImGuiKey_GamepadFaceRight}, {"x", ImGuiKey_GamepadFaceLeft}, {"y", ImGuiKey_GamepadFaceUp},
+			{"l1", ImGuiKey_GamepadL1}, {"r1", ImGuiKey_GamepadR1}, {"start", ImGuiKey_GamepadStart}, {"esc", ImGuiKey_Escape}};
+		std::string s = ks;
+		for (size_t a = 0; a <= s.size(); ) {
+			size_t e = s.find(',', a); if (e == std::string::npos) e = s.size();
+			std::string tok = s.substr(a, e - a); int n = 1; size_t st = tok.find('*');
+			if (st != std::string::npos) { n = atoi(tok.c_str() + st + 1); tok = tok.substr(0, st); }
+			bool known = false;
+			for (auto &kv : names) if (tok == kv.first) { known = true; for (int i = 0; i < n; i++) keys.push_back({kv.second}); }
+			if (!known && !tok.empty()) { fprintf(stderr, "ATIV_SHOT_KEYS: no button \"%s\"\n", tok.c_str()); return 1; }
+			a = e + 1;
+		}
+	}
+	const int settle = 40, per_key = 6, frames = settle + (int)keys.size() * per_key + (keys.empty() ? 0 : 4);
+	const char *nav_path = getenv("ATIV_SHOT_NAV");
 	for (int f = 0; f < frames; f++) {   /* ImGui sizes auto-sized windows on the first frames; a modal's dim fades in */
 		ImGui_ImplSDLGPU3_NewFrame(); ImGui_ImplSDL3_NewFrame();
-		ImGui::GetIO().DisplaySize = ImVec2((float)w, (float)h); ImGui::GetIO().DisplayFramebufferScale = ImVec2(1, 1); ImGui::GetIO().DeltaTime = 1.0f / 60;
+		ImGuiIO &io = ImGui::GetIO();
+		io.DisplaySize = ImVec2((float)w, (float)h); io.DisplayFramebufferScale = ImVec2(1, 1); io.DeltaTime = 1.0f / 60;
+		if (!keys.empty()) {   /* (a controller "connected": the SDL backend clears this when it finds none) */
+			io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+			const int k = (f - settle) / per_key, at = (f - settle) % per_key;
+			if (f >= settle && k < (int)keys.size() && at < 2) io.AddKeyEvent(keys[k].key, at == 0);
+		}
 #ifdef IMGUI_ENABLE_TEST_ENGINE
 		const char *fit_path = getenv("ATIV_SHOT_FIT");
-		g_fit_on = fit_path && *fit_path && f == frames - 1; GImGui->TestEngineHookItems = g_fit_on;
+		g_fit_on = fit_path && *fit_path && f == frames - 1;
+		g_nav_on = nav_path && *nav_path;
+		GImGui->TestEngineHookItems = g_fit_on || g_nav_on;
 #endif
 		ImGui::NewFrame(); hub_ui(win); ImGui::Render();
 #ifdef IMGUI_ENABLE_TEST_ENGINE
@@ -2395,6 +2487,23 @@ static int shot(SDL_Window *win, const char *path, int w, int h) {
 			fit_check(); g_fit_on = false; GImGui->TestEngineHookItems = false;
 			if (FILE *fr = fopen(fit_path, "wb")) { for (const std::string &l : g_fit) fprintf(fr, "%s\n", l.c_str()); fclose(fr); }
 			fprintf(stderr, "ATIV_SHOT_FIT: %zu\n", g_fit.size());
+		}
+		if (g_nav_on && f == frames - 1) {
+			ImGuiContext &g = *GImGui;
+			std::string focus = "focus ", open = "open";
+			if (g.NavWindow && g.NavId) {
+				auto it = g_nav_labels.find(g.NavId);
+				focus += fit_name(g.NavWindow) + " | " + (it != g_nav_labels.end() ? it->second : std::string("?"));
+				auto gm = g_nav_game.find(g.NavId); if (gm != g_nav_game.end()) focus += " | " + gm->second;
+			} else focus += "none";
+			for (const ImGuiPopupData &p : g.OpenPopupStack) open += " " + (p.Window ? fit_name(p.Window) : std::string("?"));
+			if (g.OpenPopupStack.empty()) open += " none";
+			if (FILE *fn = fopen(nav_path, "wb")) {
+				fprintf(fn, "%s\n%s\n", focus.c_str(), open.c_str());
+				for (const std::string &d : g_shot_done) fprintf(fn, "did %s\n", d.c_str());
+				fclose(fn);
+			}
+			fprintf(stderr, "ATIV_SHOT_NAV: %s; %s\n", focus.c_str(), open.c_str());
 		}
 #endif
 		ImDrawData *dd = ImGui::GetDrawData();
@@ -2551,6 +2660,7 @@ int main(int argc, char **argv) {
 	g_dump = library_dir();
 	set_env("ATIV_DUMP", g_dump);   /* (the stages it runs: the same library whatever their own rule finds) */
 	const char *shot_path = getenv("ATIV_SHOT");
+	g_shot_mode = shot_path != nullptr;
 #ifdef SIGPIPE
 	signal(SIGPIPE, SIG_IGN);
 #endif
