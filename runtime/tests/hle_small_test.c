@@ -12,6 +12,14 @@ static void check(const char *what, int ok) { printf("%-60s %s\n", what, ok ? "o
 
 int main(void) {
 	check("model: handheld is SCE_KERNEL_MODEL_VITA 0x10000", hle_kernel_model(0) == 0x10000u);
+	/* SceMotionSensorState: 64 bytes, accelerometer +0, gyro +12, timestamp +36, counter +40, hostTimestamp +48 */
+	{ uint8_t r[64]; memset(r, 0xee, sizeof r); float acc[3] = {0, 0, -1.0f}, gy[3] = {0.5f, 0, 0}, f;
+	  hle_motion_sensor_record(r, acc, gy, 1234u, 7u, 0x123456789ull);
+	  uint32_t u; uint64_t q; int ok = HLE_MOTION_SENSOR_SIZE == 64;
+	  memcpy(&f, r + 8, 4); ok &= f == -1.0f; memcpy(&f, r + 12, 4); ok &= f == 0.5f;
+	  memcpy(&u, r + 36, 4); ok &= u == 1234u; memcpy(&u, r + 40, 4); ok &= u == 7u; memcpy(&q, r + 48, 8); ok &= q == 0x123456789ull;
+	  ok &= r[24] == 0 && r[44] == 0 && r[63] == 0;
+	  check("motion: SceMotionSensorState record (accel z -1 g, gyro, timestamps, counter; reserved 0)", ok); }
 	/* SceCtrlData: 32-byte records, n samples back to back (an 8-sample read fills exactly 0x100 bytes) */
 	check("ctrl: SceCtrlData is 32 bytes", HLE_CTRL_DATA_SIZE == 32);
 	check("ctrl: sample 1 follows sample 0 at +0x20", hle_ctrl_data_addr(0x1000, 1) == 0x1020);

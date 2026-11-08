@@ -27,6 +27,17 @@ static inline uint32_t hle_kernel_model(int pstv) { return pstv ? HLE_KERNEL_MOD
 #define HLE_CTRL_DATA_SIZE 32u
 static inline uint32_t hle_ctrl_data_addr(uint32_t buf, uint32_t i) { return buf + HLE_CTRL_DATA_SIZE * i; }
 
+/* SceMotionSensorState (sceMotionGetSensorState fills numRecords of them): accelerometer xyz (g) +0, gyro xyz (rad/s) +12,
+ * reserved +24, timestamp (us, 32 bits) +36, counter +40, reserved +44, hostTimestamp (us) +48, reserved +56: 64 bytes.
+ * Left unfilled (the import was a stub), Tearaway read an accelerometer of 0 -- no gravity direction -- and oriented its
+ * world from it: its whole picture degenerated into contour rings (AUTO-01 TW-6) */
+#define HLE_MOTION_SENSOR_SIZE 64u
+static inline void hle_motion_sensor_record(uint8_t out[64], const float acc[3], const float gyro[3], uint32_t ts, uint32_t counter, uint64_t host_ts) {
+	memset(out, 0, 64);
+	memcpy(out, acc, 12); memcpy(out + 12, gyro, 12);
+	memcpy(out + 36, &ts, 4); memcpy(out + 40, &counter, 4); memcpy(out + 48, &host_ts, 8);
+}
+
 #define HLE_AUDIO_PORTS 8
 #define HLE_AUDIO_ERR_INVALID_PORT 0x80260003u
 #define HLE_AUDIO_ERR_PORT_FULL    0x80260005u
