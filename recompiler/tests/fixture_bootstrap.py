@@ -85,6 +85,11 @@ s = bootstrap.loop(Toy(C, {C[0]}, fail_build_at=2), 8, quiet)
 check(s["stop"] == "build_failed" and s["iterations"] == 2, f"loop: failed build -> {s['stop']} after {s['iterations']}")
 s = bootstrap.loop(Toy(C, {C[0]}), 2, quiet)
 check(s["stop"] == "max_iterations" and s["iterations"] == 2 and len(s["seeds_found"]) == 2, f"loop: --max 2 -> {s['stop']}")
+class Timed(Toy):
+    def prepare(self):
+        self.secs = {"build": 10.0 * (self.n + 1)}; return Toy.prepare(self)
+s = bootstrap.loop(Timed(C, {C[0], C[2]}), 8, quiet)
+check([r.get("secs") for r in s["runs"]] == [{"build": 10.0}, {"build": 20.0}, {"build": 30.0}], "loop: each run carries its stages' seconds (steps.secs)")
 
 
 # ---- 3. pack-init on a synthetic library
@@ -145,6 +150,20 @@ with tempfile.TemporaryDirectory() as tmp:
               "pack-init: notes (shipped libult not loaded, missing libsceavplayer); no hooks")
     r2 = subprocess.run(vr + ["pack-init", "PCSZ99999"], env=env, capture_output=True, text=True)
     check(r2.returncode != 0 and "plays with packs/PCSZ99999/pack.toml already" in r2.stdout, "pack-init: an existing pack is kept (no --force)")
+
+# ---- exit code line (cmd_test writes it): a silent no_frame says how the host ended
+r = bootstrap.classify("frame 2700: 960x544\n    import sceFoo: call #100 (repeat-call diagnostic)\n\n== host exit code 0 (0x0)\n", False)
+check(r["stop"] == "no_frame" and r["detail"].startswith("host exit code 0x0; ") and "sceFoo" in r["detail"], f"classify: exit code in no_frame detail ({r['detail']})")
+r = bootstrap.classify("x\n\n== host exit code 3221225620 (0xc0000094)\n", False)
+check(r["detail"].startswith("host exit code 0xc0000094; x"), "classify: a fault's NTSTATUS kept")
+
+# ---- 4. MODULES follow module dependencies: a game importing ScePvf gets libpvf, and libpvf's own SceFt2 import libSceFt2
+import tempfile as _tf
+_d = _tf.mkdtemp()
+m, _ = bootstrap.modules(_d, {"ScePvf", "SceGxm"}, lambda m: True, lambda m: {"libpvf": ["SceFt2", "SceLibKernel"]}.get(m, []))
+check(m == ["libc", "libgxm_es4", "libgpu_es4", "libfios2", "libpvf", "libSceFt2"], f"modules: ScePvf -> libpvf -> libSceFt2 ({' '.join(m)})")
+m, _ = bootstrap.modules(_d, {"ScePvf"}, lambda m: m != "libSceFt2", lambda m: {"libpvf": ["SceFt2"]}.get(m, []))
+check(m[-1] == "libpvf" and "libSceFt2" not in m, "modules: a dependency this machine lacks is left out")
 
 print(f"all passed ({ok} ok)" if not bad else f"{bad} FAILED, {ok} ok")
 sys.exit(1 if bad else 0)

@@ -35,6 +35,8 @@
                                             recompile, build again, until nothing new; says where it stopped (frame
                                             reached, missed function, unimplemented instruction, crash, no frame) and
                                             writes it, with the seeds and stub imports, to analysis/bootstrap.json
+  vitarecomp hooks-scan <title>            hook candidates in the game's analysis (constants the generic IHOOKS
+                                           frame_dt / aspect replace) -> analysis/hook_candidates.json; proposals only
   vitarecomp analyze   <title>              functions, code ranges and the memory image of the main
                                             module (analyze.py, seconds; ANALYZER=ghidra: the old
                                             Ghidra export, minutes to hours)
@@ -101,6 +103,7 @@ RECOMPILER, RUNTIME, PACKS, DECRYPT, DEV = (os.path.join(ROOT, d) for d in ("rec
 PACKS = os.environ.get("ATIV_PACKS") or PACKS   # (ATIV_PACKS=<dir>: the packs read from there -- a game run as if it had none, bootstrap's test)
 sys.path.insert(0, R)
 import bootstrap  # noqa: E402
+import hookscan  # noqa: E402
 import packconf  # noqa: E402
 from datadir import library_dir  # noqa: E402
 from winfs import remove_file, remove_tree  # noqa: E402
@@ -673,8 +676,13 @@ def cmd_test(g):
         ("RECOMP_TOUCH", g.TEST_TOUCH), ("RECOMP_HEADLESS", "1"), ("RECOMP_FS", "fs"), ("RECOMP_LOG", "0"), ("RECOMP_SHOT", every or frames),
         ("RECOMP_SHOT_LAST", frames)])   # (a series too ends at the test frame: it ran on to the timeout, 15 minutes for shots it had long since taken)
     with open(os.path.join(td, "test.log"), "wb") as log:
-        timed(g.exe_argv(os.path.join(OUT, g.EXE)) + [os.path.join("..", g.BASE + ".img"), g.entry(), "100000000000"], e, td, subprocess.DEVNULL, log,
-              test_timeout(g))
+        t0 = time.time()
+        rc = timed(g.exe_argv(os.path.join(OUT, g.EXE)) + [os.path.join("..", g.BASE + ".img"), g.entry(), "100000000000"], e, td, subprocess.DEVNULL, log,
+                   test_timeout(g))
+        # how the host ended, for whoever reads the log (bootstrap's classify): a run that stops without a word of its own
+        # was a game- or runtime-requested exit (0), a host fault (an NTSTATUS such as 0xc0000094) or the time limit
+        late = " at the time limit" if time.time() - t0 >= test_timeout(g) - 1 else ""
+        log.write(f"\n== host exit code {rc} ({(rc or 0) & 0xffffffff:#x}){late}\n".encode())
     missed = os.path.join(td, "missed_functions.txt")
     if os.path.isfile(missed) and os.path.getsize(missed):
         # each address to its module: a firmware module's as an offset into $SEEDS/<module>.txt, the rest the game's
@@ -945,7 +953,10 @@ def cmd_pack_init(T, force):
     if elf != "eboot.bin.elf":   # (the program it launches: its imports decide the modules)
         libs = {lib for lib, *_ in imp.imports(os.path.join(edir, elf))[1]}
     g = Game(T, "import")
-    mods, left = bootstrap.modules(app0, libs, lambda m: os.path.isfile(g.modelf(m)))
+    def mod_libs(m):   # (the libraries a chosen firmware module imports; one that isn't a readable ELF adds none)
+        try: return {lib for lib, *_ in imp.imports(g.modelf(m))[1]}
+        except Exception: return set()
+    mods, left = bootstrap.modules(app0, libs, lambda m: os.path.isfile(g.modelf(m)), mod_libs)
     name, version = bootstrap.identity(app0, sfo.read_sfo_file)
     notes = ([note] if note else []) + ([f"shipped in sce_module/ but not loaded: {' '.join(left)} (add to MODULES if the run stubs their imports)"] if left else [])
     notes += [f"imports {lib}: {m} is not on this machine (vitarecomp firmware)" for lib, m in bootstrap.IMPORT_MODULES.items() if lib in libs and m not in mods]
@@ -964,17 +975,22 @@ class GameSteps(bootstrap.Steps):
         self.td = os.path.join(g.OUT, g.TD)
 
     def prepare(self):
-        self.n += 1
+        self.n += 1; self.secs = {}
         st = ["analyze", "recompile", "build"]
         if self.n == 1 and not os.path.isfile(os.path.join(self.g.W, "elf", self.g.ELF)): st = ["import"] + st
         for c in st:
             say(f"bootstrap: {c} {self.g.T}")
-            if run(SELF + [c, self.g.T], check=False).returncode: return False
+            t0 = time.time(); rc = run(SELF + [c, self.g.T], check=False).returncode
+            self.secs[c] = round(time.time() - t0, 1)
+            say(f"bootstrap: {c} took {self.secs[c]:.0f} s")
+            if rc: return False
         return True
 
     def run(self):
         say(f"bootstrap: headless run, {self.frames} frames")
+        t0 = time.time()
         run(SELF + ["test", self.g.T], env=env_with({"TEST_FRAMES": str(self.frames)}), check=False)
+        self.secs["test"] = round(time.time() - t0, 1)
         log = os.path.join(self.td, "test.log")
         text = open(log, encoding="utf-8", errors="replace").read() if os.path.isfile(log) else ""
         return text, os.path.isfile(os.path.join(self.td, "shot_%05d.ppm" % int(self.frames)))
@@ -986,6 +1002,25 @@ class GameSteps(bootstrap.Steps):
         for f in sorted(glob.glob(os.path.join(glob.escape(self.g.SEEDS), "*.txt"))):
             out += [os.path.basename(f)[:-4] + "+" + l.strip() for l in open(f) if l.strip()]
         return out
+
+
+def scan_data(g):
+    """the main program's analysis now (Game fixes g.DATA when it is made: before bootstrap's first analyze it names the
+    old Ghidra export, the file analyze then writes is the analysis one)"""
+    return next((p for p in (os.path.join(g.W, "analysis", "eboot.data.json"), g.DATA) if os.path.isfile(p)), "")
+
+
+def cmd_hooks_scan(g, quiet=False):
+    """finder A1 (pipeline/hookscan.py) over the main program's analysis: analysis/hook_candidates.json; the result"""
+    data = scan_data(g)
+    if not data: die(f"{g.T}: no analysis yet (vitarecomp analyze {g.T})")
+    res = hookscan.scan(json.load(open(data, encoding="utf-8")))
+    with open(os.path.join(g.W, "analysis", "hook_candidates.json"), "w", encoding="utf-8", newline="\n") as f: json.dump(res, f, indent=1)
+    if not quiet:
+        say(f"{g.T}: {len(res['candidates'])} hook candidate(s) in {res['functions']} functions: " +
+            (", ".join(f"{k} {n}" for k, n in sorted(res["counts"].items())) or "none"))
+        for l in hookscan.ihooks_lines(res)[1:]: say(l)
+    return res
 
 
 def cmd_bootstrap(g, rest):
@@ -1001,6 +1036,10 @@ def cmd_bootstrap(g, rest):
                 hit = next((l for l in fh if l.startswith(lab)), None)
             if hit: s["detail"] = hit[len(lab):].split("*/")[0].strip(); break
     os.makedirs(os.path.join(g.W, "analysis"), exist_ok=True)
+    if scan_data(g):   # (finder A1: the auto pack gets the hook candidates as commented lines, once)
+        res = cmd_hooks_scan(g, quiet=True); s["hook_candidates"] = res["counts"]
+        if "AUTO_GENERATED" in g.c and os.path.isfile(g.CONF) and "# hook candidates (vitarecomp hooks-scan" not in open(g.CONF, encoding="utf-8").read():
+            with open(g.CONF, "a", encoding="utf-8", newline="\n") as f: f.write("\n".join(hookscan.ihooks_lines(res)) + "\n")
     with open(os.path.join(g.W, "analysis", "bootstrap.json"), "w", encoding="utf-8", newline="\n") as f: json.dump(s, f, indent=1)
     say(f"bootstrap: stopped: {s['stop']}" + (f" at {s['addr']}" if s["addr"] else "") + (f" ({s['detail']})" if s["detail"] else "") +
         f" after {s['iterations']} run(s); {len(s['seeds_found'])} seed(s) found, {len(s['stub_imports'])} import(s) ran as stubs")
@@ -1026,6 +1065,7 @@ def main(argv):
     if cmd == "bootstrap":
         if not packconf.pack_for(PACKS, T.split("_")[0]): cmd_pack_init(T, False)
         return cmd_bootstrap(Game(T, cmd), argv[2:])
+    if cmd == "hooks-scan": cmd_hooks_scan(Game(T, cmd)); return 0
     if cmd not in ("import", "analyze", "recompile", "build", "ready", "run", "test", "capture", "replay", "accept", "check", "coverage", "verify", "recipes", "versions"):
         usage(); return 1
     g = Game(T, cmd)
