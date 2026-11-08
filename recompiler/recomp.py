@@ -708,15 +708,17 @@ class Fn:
         if mn == "vmovn" and dt == "i64" and regs[0][0] == "d" and regs[1][0] == "q":
             d, q0 = regs[0][1], 2 * regs[1][1]
             return [f"c->vfp.d[{d}] = (uint64_t)(uint32_t)c->vfp.d[{q0 + 1}] << 32 | (uint32_t)c->vfp.d[{q0}];"]
-        if mn == "vpaddl" and dt in ("u8", "u16", "s8", "s16"):
+        # (u32/s32: pairs of words into 64-bit lanes -- a shipped image-tracking module's vpaddl.u32 q1, q1)
+        if mn == "vpaddl" and dt in ("u8", "u16", "u32", "s8", "s16", "s32"):
             (dn, cnt), (an, _) = dbytes(regs[0]), dbytes(regs[1])
             es = int(dt[1:]) // 8
             ty, oty = {("u", 1): ("uint8_t", "uint16_t"), ("s", 1): ("int8_t", "int16_t"),
-                       ("u", 2): ("uint16_t", "uint32_t"), ("s", 2): ("int16_t", "int32_t")}[(dt[0], es)]
+                       ("u", 2): ("uint16_t", "uint32_t"), ("s", 2): ("int16_t", "int32_t"),
+                       ("u", 4): ("uint32_t", "uint64_t"), ("s", 4): ("int32_t", "uint64_t")}[(dt[0], es)]
             n = 8 * cnt // es
             return [f"{{ {ty} a[16]; {oty} o[8]; memcpy(a, &c->vfp.d[{an}], {8 * cnt}); for (int k = 0; k < {n // 2}; k++) o[k] = ({oty})a[2 * k] + ({oty})a[2 * k + 1];"
                     f" memcpy(&c->vfp.d[{dn}], o, {8 * cnt}); }}"]
-        if mn == "vpadal" and dt in ("u8", "u16", "s8", "s16"):
+        if mn == "vpadal" and dt in ("u8", "u16", "u32", "s8", "s16", "s32"):
             # pairwise add of the source's adjacent elements, accumulated into the dest's elements at
             # twice the source's width (VPADAL.U8 d10, d0: each halfword of d10 += the sum of a byte
             # pair, wrapping at the dest width; pairs never cross a 64-bit half). Measured on Unicorn
@@ -725,7 +727,8 @@ class Fn:
             (dn, cnt), (an, _) = dbytes(regs[0]), dbytes(regs[1])
             es = int(dt[1:]) // 8
             ty, oty = {("u", 1): ("uint8_t", "uint16_t"), ("s", 1): ("int8_t", "int16_t"),
-                       ("u", 2): ("uint16_t", "uint32_t"), ("s", 2): ("int16_t", "int32_t")}[(dt[0], es)]
+                       ("u", 2): ("uint16_t", "uint32_t"), ("s", 2): ("int16_t", "int32_t"),
+                       ("u", 4): ("uint32_t", "uint64_t"), ("s", 4): ("int32_t", "uint64_t")}[(dt[0], es)]
             n = 8 * cnt // es
             return [f"{{ {ty} a[16]; {oty} o[8]; memcpy(a, &c->vfp.d[{an}], {8 * cnt}); memcpy(o, &c->vfp.d[{dn}], {8 * cnt});"
                     f" for (int k = 0; k < {n // 2}; k++) o[k] = ({oty})(o[k] + ({oty})a[2 * k] + ({oty})a[2 * k + 1]);"
