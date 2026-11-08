@@ -128,6 +128,7 @@ static Thread main_thread = { .uid = 0x40010003, .name = "main", .init_prio = 16
 static pthread_mutex_t klock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t kcond = PTHREAD_COND_INITIALIZER;   /* thread ends */
 static __thread uint32_t cur_tid = 0x40010003;              /* the main thread's */
+uint32_t kernel_current_tid(void) { return cur_tid; }   /* the guest thread running here (main.c's import log) */
 /* how far through the lwmutex handler the thread is; plain stores (no I/O, no allocation, no extra
  * locks) read only by the bounded stall dump (kernel_report_pcs). The quiet hot path has no other
  * observability -- the per-call fprintf phase traces exist only in the opt-in verbose mode
@@ -1900,9 +1901,9 @@ static void fiber_attach_context(Fiber *g, uint32_t a, uint32_t sz) {
 /* P0b store-trace window (rt.h's WR accessors log into it): the worker's CAS state word. */
 uint32_t recomp_watch_lo, recomp_watch_hi;
 void recomp_watch_write(uint32_t a, uint32_t v, int width) {
-	extern const char *recomp_cur_tname(void);
-	fprintf(stderr, "    watch write ea=%#x val=%#x w=%d pc=%#x thread=%s fib=%#x hf=%p ret=%p\n",
-		a, v, width, cur_fiber ? cur_fiber->cpu.r[15] : (SELF() && SELF()->cpu ? SELF()->cpu->r[15] : 0), recomp_cur_tname(),
+	extern const char *recomp_cur_tname(void); extern __thread uint32_t recomp_last_pc;
+	fprintf(stderr, "    watch write ea=%#x val=%#x w=%d pc=%#x last=%#x tid=%#x thread=%s fib=%#x hf=%p ret=%p\n",
+		a, v, width, cur_fiber ? cur_fiber->cpu.r[15] : (SELF() && SELF()->cpu ? SELF()->cpu->r[15] : 0), recomp_last_pc, cur_tid, recomp_cur_tname(),
 		cur_fiber ? cur_fiber->addr : 0, (void *)cur_fiber, __builtin_return_address(0));
 }
 
@@ -1927,6 +1928,7 @@ static void ult_tr_arm_watch(void) {  /* RECOMP_WATCH_FIXED=<addr>,<len>: write-
 		fprintf(stderr, "watch-fixed lo=%#x hi=%#x\n", recomp_watch_lo, recomp_watch_hi);
 	}
 }
+void recomp_watch_fixed_arm(void) { ult_tr_arm_watch(); }   /* main.c, at start: the window watched from the first instruction */
 #define ULT_TR_MAX 96
 static struct { uint32_t obj, parent; unsigned seq; const char *writer; } ult_tr_objs[ULT_TR_MAX];
 static unsigned ult_tr_seq;
