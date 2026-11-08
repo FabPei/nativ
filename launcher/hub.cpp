@@ -24,12 +24,15 @@
  * ATIV_TASK=play:<title>|build:<title>|scan:<folder>|licences:<folder>|firmware:<file> (a verification aid, no window): that
  * task run as its button runs it, its log printed, the exit status its outcome; ATIV_TASK_CANCEL=<seconds>: Cancel then.
  * ATIV_SHOT_STEAM=<file> what Steam has from us (vitarecomp steam list's output) in a screenshot run.
+ * ATIV_SHOT_FIT=<file> (with ATIV_SHOT): the fit check -- every item or text cut off or pushed off-screen in that frame, one line
+ * each, into the file (empty: nothing cut off); ledger tools/ui_fitcheck.py runs it over every screen and size (UI-01b).
  * nativ --play <title>: that game started as Play starts it (its build brought up to date first), no launcher window --
  * what a Steam shortcut made by "Add to Steam" runs; its log in <prefs>/launcher.play.log, an error in a message box
  * (ATIV_PLAY_QUIET=1: on stderr instead, for a test).
  * The library's view (hub.ini): library_view = grid | list, library_size = 60..160 (percent, the cards' and icons' size).
  */
 #include "imgui.h"
+#include "imgui_internal.h"   /* (ATIV_SHOT_FIT: the item hooks and window state the fit check reads; build.sh builds ImGui with IMGUI_ENABLE_TEST_ENGINE for the launcher) */
 #include "backends/imgui_impl_sdl3.h"
 #include "backends/imgui_impl_sdlgpu3.h"
 #include "ui_theme.h"   /* the look shared with the in-game overlay */
@@ -723,8 +726,33 @@ static int tab_step(void) {
 	if (ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) || (ctrl && !shift && ImGui::IsKeyPressed(ImGuiKey_Tab, false))) return 1;
 	return 0;
 }
+/* ---- nothing cut off (UI-01b): rows of buttons wrap, dialogs fit the window */
+static float button_w(const char *label) { return ImGui::CalcTextSize(label, nullptr, true).x + ImGui::GetStyle().FramePadding.x * 2; }
+static void same_line_fits(float next_w) {   /* SameLine only when the next item, next_w wide, still fits on this line; else it starts the next one */
+	const ImVec2 at = ImGui::GetCursorScreenPos();   /* (after an item: the next line's start, so this plus the room left is the row's right edge) */
+	const float right = at.x + ImGui::GetContentRegionAvail().x;
+	if (ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + next_w <= right + 0.5f) ImGui::SameLine();
+}
+/* a dialog (BeginPopupModal) at most 90 % of the window's height: the content between dialog_body_begin() and
+ * dialog_body_end() scrolls when it's taller than the room left, and what follows (the dialog's buttons) stays in view
+ * below it. (Its width already is at most 94 % of the window: each dialog's SetNextWindowSize. A size constraint on the
+ * dialog itself as well gave every dialog a needless scrollbar, 2026-11-08.) */
+static void dialog_body_begin(void) {
+	const ImGuiViewport *vp = ImGui::GetMainViewport(); const ImGuiStyle &s = ImGui::GetStyle(); const float em = ImGui::GetFontSize();
+	const float foot = ImGui::GetFrameHeightWithSpacing() * (vp->WorkSize.x < 44 * em ? 2 : 1) + em * 0.4f;   /* (a narrow window: room for the buttons on two lines) */
+	float maxh = vp->WorkSize.y * 0.90f - s.WindowPadding.y * 2 - (ImGui::GetCursorPosY() - s.WindowPadding.y) - foot;
+	if (maxh < ImGui::GetFrameHeight() * 2) maxh = ImGui::GetFrameHeight() * 2;
+	ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(FLT_MAX, maxh));
+	/* (a little room each side, the text where it was: a glyph that reaches past its line's start -- a j's hook -- isn't cut) */
+	const float pad = em * 0.25f;
+	ImGui::SetCursorPosX(ImGui::GetCursorPosX() - pad);
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad, 0));
+	ImGui::BeginChild("##body", ImVec2(ImGui::GetContentRegionAvail().x + pad, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding | ImGuiChildFlags_NavFlattened);
+	ImGui::PopStyleVar();
+}
+static void dialog_body_end(void) { ImGui::EndChild(); ImGui::Dummy(ImVec2(0, ImGui::GetFontSize() * 0.2f)); }
 static void tab_hint(void) {   /* (shown with a controller connected) */
-	if (SDL_HasGamepad()) { ImGui::SameLine(); ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("L1 / R1"); }
+	if (SDL_HasGamepad()) { same_line_fits(ImGui::CalcTextSize("L1 / R1").x); ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("L1 / R1"); }
 }
 
 /* ---- shared pieces of the setup and the dialogs */
@@ -736,11 +764,15 @@ static std::string g_add_path, g_add_license, g_fw_path, g_scan_path;
  * and installed the usual way gets one written by the NoNpDrm plugin when started, ux0:nonpdrm/license/app/.
  * Searching a folder that holds the licence file finds it by its content id. */
 static void center_next_popup(void);
+static float popup_wrap(float ems) {   /* a popup's text width: ems wide, or what a narrow window leaves (its padding off both sides) */
+	const float room = ImGui::GetMainViewport()->WorkSize.x * 0.94f - ImGui::GetStyle().WindowPadding.x * 2;
+	return std::min(ImGui::GetFontSize() * ems, room);
+}
 static void licence_help_popup(void) {
 	center_next_popup();
 	if (!ImGui::BeginPopup("licence_help")) return;
 	const float em = ImGui::GetFontSize();
-	ImGui::PushTextWrapPos(em * 30);
+	ImGui::PushTextWrapPos(popup_wrap(30));
 	ImGui::TextUnformatted("Where's my licence?");
 	ui::muted_wrapped("A PKG never carries one: PSN keeps a licence for each owner, and the PKG is the same file for everyone. Your Vita has yours:");
 	ImGui::Bullet(); ImGui::TextWrapped("A game installed from its PKG: its folder holds the licence, ux0:app/<title>/sce_sys/package/work.bin. Copy the whole game folder and nothing else is needed.");
@@ -776,14 +808,14 @@ static void vita_licences_popup(void) {
 	center_next_popup();
 	if (!ImGui::BeginPopup("vita_licences")) return;
 	const float em = ImGui::GetFontSize();
-	ImGui::PushTextWrapPos(em * 28);
+	ImGui::PushTextWrapPos(popup_wrap(28));
 	ImGui::TextUnformatted("Get your licences from your Vita");
 	ui::muted_wrapped("Your Vita and this computer on the same network. Nativ reads only licence files, nothing else.");
 	ImGui::TextWrapped("1. On the Vita, open VitaShell and press SELECT. It shows an address like ftp://192.168.0.50:1337.");
 	ImGui::TextWrapped("2. Type that address here:");
 	if (g_vita_addr.empty()) g_vita_addr = g_prefs["vita_address"];
-	input_text("##vaddr", g_vita_addr, em * 16, "192.168.0.50:1337");
-	ImGui::SameLine();
+	input_text("##vaddr", g_vita_addr, std::min(em * 16, popup_wrap(28)), "192.168.0.50:1337");
+	same_line_fits(button_w("Get licences"));
 	ImGui::BeginDisabled(g_vita_addr.empty() || g_task.running);
 	if (ui::primary_button("Get licences")) {
 		std::string a = g_vita_addr; if (a.rfind("ftp://", 0) == 0) a = a.substr(6); while (!a.empty() && a.back() == '/') a.pop_back();
@@ -799,12 +831,12 @@ static void vita_licences_popup(void) {
 static void licences_row(SDL_Window *win) {
 	ImGui::PushID("licences");
 	ui::dot(g_licences ? ui::ready : ui::border);
-	ImGui::Text("Licences: %d kept", g_licences); ImGui::SameLine();
+	ImGui::Text("Licences: %d kept", g_licences); same_line_fits(button_w("From my Vita…"));
 	ImGui::BeginDisabled(g_task.running);
 	if (ImGui::SmallButton("From my Vita…") || g_open_vita_popup) { ImGui::OpenPopup("vita_licences"); g_open_vita_popup = false; }
-	ImGui::SameLine(); if (ImGui::SmallButton("From a folder…")) { g_lic_folder.clear(); pick_folder(win, &g_lic_folder); }
+	same_line_fits(button_w("From a folder…")); if (ImGui::SmallButton("From a folder…")) { g_lic_folder.clear(); pick_folder(win, &g_lic_folder); }
 	std::string v3k = vita3k_licences();
-	if (!v3k.empty()) { ImGui::SameLine(); if (ImGui::SmallButton("From Vita3K")) task_start("Importing Vita3K's licences", "licences", "", {step("", vitarecomp({"licenses", "vita3k", v3k}))}); }
+	if (!v3k.empty()) { same_line_fits(button_w("From Vita3K")); if (ImGui::SmallButton("From Vita3K")) task_start("Importing Vita3K's licences", "licences", "", {step("", vitarecomp({"licenses", "vita3k", v3k}))}); }
 	ImGui::EndDisabled();
 	if (!g_lic_folder.empty() && !g_task.running) {   /* (a folder picked: its licences in) */
 		task_start("Importing licences", "licences", "", {step("", vitarecomp({"licenses", "import", g_lic_folder}))});
@@ -1009,7 +1041,7 @@ static bool search_form(SDL_Window *win) {   /* a folder searched for games, upd
 	ImGui::BeginDisabled(g_scan_path.empty() || g_task.running);
 	bool go = g_found_ready ? ImGui::Button("Search again") : ui::primary_button("Search");
 	ImGui::EndDisabled();
-	ImGui::SameLine(); ImGui::Checkbox("Keep this folder", &g_search_keep);
+	same_line_fits(ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x + ImGui::CalcTextSize("Keep this folder").x); ImGui::Checkbox("Keep this folder", &g_search_keep);
 	if (ImGui::IsItemHovered()) ImGui::SetTooltip("Kept as a library folder (Settings, Library): Nativ looks in it again each time it starts,\nand shows what it finds there on the game's card. Nothing in the folder is changed.");
 	if (go) {
 		g_found.clear(); g_found_ready = false;
@@ -1308,9 +1340,9 @@ static void library_tab(void) {
 	const bool looking = g_task.running && g_task.kind == "libscan";
 	ImGui::BeginDisabled(g_task.running);
 	if (ImGui::Button("Add a folder…")) pick_folder(nullptr, &g_lib_pick);
-	ImGui::SameLine(); if (ImGui::Button("Add a Vita3K folder…")) pick_folder(nullptr, &g_lib_pick_v3k);
+	same_line_fits(button_w("Add a Vita3K folder…")); if (ImGui::Button("Add a Vita3K folder…")) pick_folder(nullptr, &g_lib_pick_v3k);
 	if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Vita3K's own folder (where Vita3K.exe and config.yml are, a portable install too),\nits data folder, or its ux0: its games, updates, add-ons and licences are found.");
-	ImGui::SameLine(); ImGui::BeginDisabled(g_lib_folders.empty());
+	same_line_fits(button_w("Look now")); ImGui::BeginDisabled(g_lib_folders.empty());
 	if (ImGui::Button("Look now")) task_start("Looking in your library folders", "libscan", "", lib_scan_steps());
 	ImGui::EndDisabled();
 	ImGui::EndDisabled();
@@ -1388,7 +1420,7 @@ static void settings_modal(void) {
 			{ const std::string st = online_status_line(); if (!st.empty()) ui::muted_wrapped(st.c_str()); }
 			ui::row("Online name", "Others see ntv_ and your name, so players know you're on PC: up to 10 letters, digits, '-' or '_'.");
 			{	static std::string oid; static bool init; if (!init || !ImGui::IsPopupOpen("Settings")) { oid = online_name(*t.x); init = true; }
-				ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("ntv_"); ImGui::SameLine(0, 0);
+				ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("ntv_"); ImGui::SameLine(0, ImGui::GetFontSize() * 0.3f);   /* (room for the field's focus frame: it covered the "_") */
 				input_text("##oid", oid, -FLT_MIN);
 				const bool ok = online_name_ok(oid);
 				if (ImGui::IsItemDeactivatedAfterEdit() && ok) target_write(t, "online_id", oid);
@@ -1444,6 +1476,7 @@ static void game_settings_modal(void) {
 	ImGui::PopStyleVar(2);
 	if (!g) { g_game_settings.clear(); ImGui::CloseCurrentPopup(); ImGui::EndPopup(); return; }
 	ui::heading((g->name + " settings").c_str(), em * 1.4f);
+	dialog_body_begin();
 	SetTarget t{&g_game_ini, game_settings_path(g->id), GAME_HEADER};
 	bool any = false;
 	if (ui::rows_begin("game_own")) {
@@ -1493,7 +1526,7 @@ static void game_settings_modal(void) {
 			ImGui::PopID();
 		}
 	}
-	ImGui::Dummy(ImVec2(0, em * 0.4f));
+	dialog_body_end();
 	if (ui::primary_button("Done")) { g_game_settings.clear(); ImGui::CloseCurrentPopup(); }
 	ImGui::EndPopup();
 }
@@ -1521,10 +1554,11 @@ static void online_name_modal(void) {
 	const Game *g = nullptr; for (const Game &x : g_games) if (x.id == g_name_game) g = &x;
 	if (!g) { g_name_game.clear(); ImGui::CloseCurrentPopup(); ImGui::EndPopup(); return; }
 	ui::heading("Your online name", em * 1.4f);
+	dialog_body_begin();
 	ImGui::PushTextWrapPos(0);
 	ImGui::TextUnformatted((g->name + " plays online with other Project Nativ players. Choose the name they'll see: it shows as ntv_ and your name.").c_str());
 	ImGui::Dummy(ImVec2(0, em * 0.3f));
-	ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("ntv_"); ImGui::SameLine(0, 0);
+	ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("ntv_"); ImGui::SameLine(0, ImGui::GetFontSize() * 0.3f);   /* (room for the field's focus frame: it covered the "_") */
 	if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
 	input_text("##name_oid", name, em * 12, "your name");
 	const bool ok = online_name_ok(name);
@@ -1532,7 +1566,7 @@ static void online_name_modal(void) {
 	else if (name.empty()) ui::muted_wrapped(("Left empty, you play as ntv_" + online_tag(g_shared) + ", a tag made for this computer.").c_str());
 	ui::muted_wrapped("You can change it any time in Settings.");
 	ImGui::PopTextWrapPos();
-	ImGui::Dummy(ImVec2(0, em * 0.4f));
+	dialog_body_end();
 	ImGui::BeginDisabled(!ok);
 	if (ui::primary_button("Play") || (ok && ImGui::IsKeyPressed(ImGuiKey_Enter))) {
 		if (!name.empty() && g_settings_writable) target_write(SetTarget{&g_shared, shared_path(), SHARED_HEADER}, "online_id", name);
@@ -1542,7 +1576,7 @@ static void online_name_modal(void) {
 		return;
 	}
 	ImGui::EndDisabled();
-	ImGui::SameLine(); if (ImGui::Button("Not now") || ImGui::IsKeyPressed(ImGuiKey_Escape)) { g_name_game.clear(); ImGui::CloseCurrentPopup(); }
+	same_line_fits(button_w("Not now")); if (ImGui::Button("Not now") || ImGui::IsKeyPressed(ImGuiKey_Escape)) { g_name_game.clear(); ImGui::CloseCurrentPopup(); }
 	ImGui::EndPopup();
 }
 static void sac_modal(void) {
@@ -1556,6 +1590,7 @@ static void sac_modal(void) {
 	ImGui::PopStyleVar(2);
 	const Game *g = nullptr; for (const Game &x : g_games) if (x.id == g_sac_game) g = &x;
 	ui::heading(("Windows blocked " + (g ? g->name : g_sac_game)).c_str(), em * 1.4f);
+	dialog_body_begin();
 	ImGui::PushTextWrapPos(0);
 	ImGui::TextUnformatted(g_sac_rebuilt ? "Windows' Smart App Control refused the rebuilt game too." : "Windows' Smart App Control refused to start it.");
 	ImGui::Dummy(ImVec2(0, em * 0.3f));
@@ -1568,7 +1603,7 @@ static void sac_modal(void) {
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
 	ui::muted_wrapped("On most versions of Windows 11, Smart App Control can't be turned back on without reinstalling Windows.");
 	ImGui::PopTextWrapPos();
-	ImGui::Dummy(ImVec2(0, em * 0.5f));
+	dialog_body_end();
 	auto rebuild = [&]() {   /* (a relink: the same code as a new file, then the game, as Play does) */
 		Step b = step("Rebuilding " + g->name + " as a new file for Windows to check", vitarecomp({"build", g->id}));
 		Step r = step("Running " + g->name, vitarecomp({"run", g->id})); r.env.push_back("ATIV_LAUNCHER=1");
@@ -1579,9 +1614,9 @@ static void sac_modal(void) {
 	ImGui::BeginDisabled(!g || g_task.running);
 	if (g_sac_rebuilt ? ImGui::Button("Rebuild and try again") : ui::primary_button("Rebuild and try again")) rebuild();
 	ImGui::EndDisabled();
-	ImGui::SameLine();
+	same_line_fits(button_w("Open Smart App Control settings"));
 	if (g_sac_rebuilt ? ui::primary_button("Open Smart App Control settings") : ImGui::Button("Open Smart App Control settings")) settings();
-	ImGui::SameLine(); if (ImGui::Button("Close")) { g_sac_open = g_sac_rebuilt = false; ImGui::CloseCurrentPopup(); }
+	same_line_fits(button_w("Close")); if (ImGui::Button("Close")) { g_sac_open = g_sac_rebuilt = false; ImGui::CloseCurrentPopup(); }
 	ImGui::EndPopup();
 }
 
@@ -1592,8 +1627,10 @@ static void stepper(int step) {
 	static const char *const names[] = {"Welcome", "Firmware", "Your games", "Online", "Ready"};
 	ImDrawList *dl = ImGui::GetWindowDrawList();
 	float h = ImGui::GetTextLineHeight(), r = h * 0.5f;
+	float all = 0; for (int i = 0; i < 5; i++) all += r * 2 + h * 0.35f + ImGui::CalcTextSize(names[i]).x + (i ? h * 0.9f : 0);
+	const bool compact = all > ImGui::GetContentRegionAvail().x;   /* (a narrow window: the numbers, and only the current step's name) */
 	for (int i = 0; i < 5; i++) {
-		if (i) ImGui::SameLine(0, h * 0.9f);
+		if (i) ImGui::SameLine(0, compact ? h * 0.35f : h * 0.9f);
 		ImVec2 p = ImGui::GetCursorScreenPos();
 		bool done = i == 1 ? g_firmware : i < step, cur = i == step;   /* (firmware: done only when installed, skipped or not) */
 		ImVec4 c = cur ? ui::accent : done ? ui::ready : ui::border;
@@ -1601,7 +1638,9 @@ static void stepper(int step) {
 		char n[4]; snprintf(n, sizeof n, "%d", i + 1);
 		ImVec2 ts = ImGui::CalcTextSize(n);
 		dl->AddText(ImVec2(p.x + r - ts.x * 0.5f, p.y + r - ts.y * 0.5f), ui::u32(cur || done ? ui::accent_ink : ui::muted), n);
-		ImGui::Dummy(ImVec2(r * 2, h)); ImGui::SameLine(0, h * 0.35f);
+		ImGui::Dummy(ImVec2(r * 2, h));
+		if (compact && !cur) continue;
+		ImGui::SameLine(0, h * 0.35f);
 		ImGui::PushStyleColor(ImGuiCol_Text, cur ? ui::text : ui::muted); ImGui::TextUnformatted(names[i]); ImGui::PopStyleColor();
 	}
 }
@@ -1617,8 +1656,12 @@ static void setup_modal(SDL_Window *win) {
 	ImGui::PopStyleVar(2);
 	stepper(g_setup_step);
 	ImGui::Dummy(ImVec2(0, em * 0.6f));
-	ImGui::PushTextWrapPos(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX());
 	auto finish = [&]() { prefs_set("setup_done", "1"); g_setup_open = false; ImGui::CloseCurrentPopup(); };
+	static std::string s3_name; static bool s3_loaded;   /* (the online name step's field) */
+	int have = 0; for (const Game &g : g_games) have += g.imported;
+	/* the step's content scrolls when the window is too small for it; its buttons, below, stay in view */
+	dialog_body_begin();
+	ImGui::PushTextWrapPos(0);
 	switch (g_setup_step) {
 	case 0:
 		{	/* the logo: the Vita, its screen dark, the name beneath (assets/brand/logo.svg) */
@@ -1636,9 +1679,6 @@ static void setup_modal(SDL_Window *win) {
 		ImGui::Bullet(); ImGui::TextWrapped("Your own copies of your games and their updates: game folders copied from your Vita, or PKGs, or a whole folder to search.");
 		ImGui::Bullet(); ImGui::TextWrapped("Their licences: a game folder from your Vita carries its own. For PKGs, Nativ fetches yours from your Vita over Wi-Fi, once.");
 		ui::muted_wrapped("Each game plays as one exact release: the US version, at the versions its card lists (Killzone: 1.00 or its 1.12 update). Other regions and versions are recognised and named, but not supported yet.");
-		ImGui::Dummy(ImVec2(0, em * 0.6f));
-		if (ui::primary_button("Get started")) g_setup_step = 1;
-		ImGui::SameLine(); if (ImGui::Button("Set up later")) finish();
 		break;
 	case 1:
 		ui::heading("Firmware", em * 1.55f);
@@ -1648,7 +1688,7 @@ static void setup_modal(SDL_Window *win) {
 			ImGui::TextWrapped("Download the PS Vita system software update file from Sony's official page, then choose it below. Its system libraries are decrypted once and every game builds against them.");
 			ImGui::Dummy(ImVec2(0, em * 0.2f));
 			if (ImGui::Button("Open Sony's download page")) SDL_OpenURL(SONY_FIRMWARE_PAGE);
-			ImGui::SameLine(); ImGui::TextLinkOpenURL("playstation.com/.../psvita/system-software", SONY_FIRMWARE_PAGE);
+			same_line_fits(ImGui::CalcTextSize("playstation.com/.../psvita/system-software").x); ImGui::TextLinkOpenURL("playstation.com/.../psvita/system-software", SONY_FIRMWARE_PAGE);
 			ui::muted_wrapped("On that page, download the update file (PSVUPDAT.PUP or PSP2UPDAT.PUP, version 3.74). Any recent version works.");
 			ImGui::Dummy(ImVec2(0, em * 0.2f));
 			if (path_row("##pup", g_fw_path, "Choose the update file (.PUP)")) pick_pup(win, &g_fw_path);
@@ -1657,42 +1697,32 @@ static void setup_modal(SDL_Window *win) {
 			ImGui::EndDisabled();
 		}
 		ImGui::Dummy(ImVec2(0, em * 0.2f)); task_line();
-		ImGui::Dummy(ImVec2(0, em * 0.5f));
-		if (g_task.running) ui::muted_wrapped("It carries on in the background: continue whenever you like.");
-		if (g_firmware || g_task.running) { if (ui::primary_button("Continue")) g_setup_step = 2; }
-		else if (ImGui::Button("Skip for now")) g_setup_step = 2;
-		ImGui::SameLine(); if (ImGui::Button("Back")) g_setup_step = 0;
+		if (g_task.running) { ImGui::Dummy(ImVec2(0, em * 0.3f)); ui::muted_wrapped("It carries on in the background: continue whenever you like."); }
 		break;
-	case 2: {
+	case 2:
 		ui::heading("Your games", em * 1.55f);
 		ImGui::TextWrapped("Add the games you own, with their updates. Each one is decrypted and checked against its game pack, which says which versions it plays. Your licences are kept once: every later PKG, update or add-on of those games just adds.");
 		ImGui::Dummy(ImVec2(0, em * 0.2f));
 		add_form(win);
 		ImGui::Dummy(ImVec2(0, em * 0.2f)); task_line();
 		ImGui::Dummy(ImVec2(0, em * 0.2f)); licences_row(win);
-		int have = 0; for (const Game &g : g_games) have += g.imported;
 		if (have) {
 			ImGui::Dummy(ImVec2(0, em * 0.3f));
 			ImGui::TextDisabled("In your library:");
-			for (const Game &g : g_games) if (g.imported) { ImGui::Bullet(); ImGui::TextUnformatted(g.name.c_str()); }
+			for (const Game &g : g_games) if (g.imported) { ImGui::Bullet(); ImGui::TextWrapped("%s", g.name.c_str()); }
 		}
-		ImGui::Dummy(ImVec2(0, em * 0.5f));
-		if (g_task.running) ui::muted_wrapped("Adding and building carry on in the background: continue whenever you like.");
-		if (have || g_task.running ? ui::primary_button("Continue") : ImGui::Button("Skip for now")) g_setup_step = 3;   /* (never waits on a running task: the bar at the bottom shows it) */
-		ImGui::SameLine(); if (ImGui::Button("Back")) g_setup_step = 1;
+		if (g_task.running) { ImGui::Dummy(ImVec2(0, em * 0.3f)); ui::muted_wrapped("Adding and building carry on in the background: continue whenever you like."); }
 		break;
-	}
 	case 3: {   /* the name other players see (the same field as Settings' Online name) */
-		static std::string name; static bool loaded;
-		if (!loaded) { g_shared = ini_load(shared_path()); name = online_name(g_shared); loaded = true; }
+		if (!s3_loaded) { g_shared = ini_load(shared_path()); s3_name = online_name(g_shared); s3_loaded = true; }
 		ui::heading("Your online name", em * 1.55f);
 		ImGui::TextWrapped("The name other players see when you play a game online. It shows as ntv_ and your name, so they know you're playing on PC.");
 		ImGui::Dummy(ImVec2(0, em * 0.2f));
-		ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("ntv_"); ImGui::SameLine(0, 0);
-		input_text("##setup_oid", name, em * 12, "your name");
-		const bool ok = online_name_ok(name);
+		ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("ntv_"); ImGui::SameLine(0, ImGui::GetFontSize() * 0.3f);   /* (room for the field's focus frame: it covered the "_") */
+		input_text("##setup_oid", s3_name, std::min(em * 12, ImGui::GetContentRegionAvail().x), "your name");
+		const bool ok = online_name_ok(s3_name);
 		if (!ok) ui::muted_wrapped("Up to 10 letters, digits, '-' or '_'.");
-		else if (name.empty()) ui::muted_wrapped(("Left empty, you play as ntv_" + online_tag(g_shared) + ", a tag made for this computer.").c_str());
+		else if (s3_name.empty()) ui::muted_wrapped(("Left empty, you play as ntv_" + online_tag(g_shared) + ", a tag made for this computer.").c_str());
 		ui::muted_wrapped("You can change it any time in Settings.");
 		ImGui::Dummy(ImVec2(0, em * 0.5f));
 		{	static bool online = true; static bool online_loaded;
@@ -1701,14 +1731,6 @@ static void setup_modal(SDL_Window *win) {
 			ui::muted_wrapped(ONLINE_EXPL);
 			g_setup_online = online;
 		}
-		ImGui::Dummy(ImVec2(0, em * 0.5f));
-		ImGui::BeginDisabled(!ok);
-		if (ui::primary_button("Continue")) {
-			if (g_settings_writable) { SetTarget st{&g_shared, shared_path(), SHARED_HEADER}; target_write(st, "online_id", name); target_write(st, "online", g_setup_online ? "1" : "0"); }
-			g_setup_step = 4;
-		}
-		ImGui::EndDisabled();
-		ImGui::SameLine(); if (ImGui::Button("Back")) g_setup_step = 2;
 		break;
 	}
 	default:
@@ -1718,12 +1740,39 @@ static void setup_modal(SDL_Window *win) {
 		ImGui::Bullet(); ImGui::TextWrapped("Settings, at the top right, holds the display, controls and sound for every game; a card's … menu has that game's own options.");
 		ImGui::Bullet(); ImGui::TextWrapped("Setup is at the top right whenever you need it again.");
 		if (g_task.running) { ImGui::Dummy(ImVec2(0, em * 0.3f)); ui::muted_wrapped("Still working on your games: the bar at the bottom of the library shows how far it's got."); }
-		ImGui::Dummy(ImVec2(0, em * 0.6f));
-		if (ui::primary_button("Go to my library")) finish();
-		ImGui::SameLine(); if (ImGui::Button("Back")) g_setup_step = 3;
 		break;
 	}
 	ImGui::PopTextWrapPos();
+	dialog_body_end();
+	/* the step's buttons: always in view */
+	switch (g_setup_step) {
+	case 0:
+		if (ui::primary_button("Get started")) g_setup_step = 1;
+		same_line_fits(button_w("Set up later")); if (ImGui::Button("Set up later")) finish();
+		break;
+	case 1:
+		if (g_firmware || g_task.running) { if (ui::primary_button("Continue")) g_setup_step = 2; }
+		else if (ImGui::Button("Skip for now")) g_setup_step = 2;
+		same_line_fits(button_w("Back")); if (ImGui::Button("Back")) g_setup_step = 0;
+		break;
+	case 2:
+		if (have || g_task.running ? ui::primary_button("Continue") : ImGui::Button("Skip for now")) g_setup_step = 3;   /* (never waits on a running task: the bar at the bottom shows it) */
+		same_line_fits(button_w("Back")); if (ImGui::Button("Back")) g_setup_step = 1;
+		break;
+	case 3:
+		ImGui::BeginDisabled(!online_name_ok(s3_name));
+		if (ui::primary_button("Continue")) {
+			if (g_settings_writable) { SetTarget st{&g_shared, shared_path(), SHARED_HEADER}; target_write(st, "online_id", s3_name); target_write(st, "online", g_setup_online ? "1" : "0"); }
+			g_setup_step = 4;
+		}
+		ImGui::EndDisabled();
+		same_line_fits(button_w("Back")); if (ImGui::Button("Back")) g_setup_step = 2;
+		break;
+	default:
+		if (ui::primary_button("Go to my library")) finish();
+		same_line_fits(button_w("Back")); if (ImGui::Button("Back")) g_setup_step = 3;
+		break;
+	}
 	ImGui::EndPopup();
 }
 
@@ -1801,16 +1850,17 @@ static void steam_closed_modal(void) {
 	if (!ImGui::BeginPopupModal("Close Steam", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove)) { ImGui::PopStyleVar(2); return; }
 	ImGui::PopStyleVar(2);
 	ui::heading("Close Steam first", em * 1.4f);
+	dialog_body_begin();
 	ImGui::PushTextWrapPos(0);
 	ImGui::TextUnformatted("Steam is running. It keeps its list of games in memory and writes it back when it closes, so a change made now would be lost.");
 	ImGui::Dummy(ImVec2(0, em * 0.3f));
 	ImGui::TextUnformatted("Close Steam completely (in Steam: Steam menu, Exit), then try again. The game shows up the next time Steam starts.");
 	ImGui::PopTextWrapPos();
-	ImGui::Dummy(ImVec2(0, em * 0.5f));
+	dialog_body_end();
 	ImGui::BeginDisabled(g_task.running);
 	if (ui::primary_button("Try again")) { g_steam_closed_open = false; ImGui::CloseCurrentPopup(); task_start(g_steam_name, "steam", g_steam_game, g_steam_steps); }
 	ImGui::EndDisabled();
-	ImGui::SameLine(); if (ImGui::Button("Not now")) { g_steam_closed_open = false; ImGui::CloseCurrentPopup(); }
+	same_line_fits(button_w("Not now")); if (ImGui::Button("Not now")) { g_steam_closed_open = false; ImGui::CloseCurrentPopup(); }
 	ImGui::EndPopup();
 }
 
@@ -1870,7 +1920,7 @@ static void game_actions(const Game &g, const Found *lf, float bw) {   /* the on
 	}
 	else {   /* (a small card: the short label) */
 		const float lw = bw - more - ImGui::GetStyle().ItemSpacing.x;
-		const char *label = ImGui::CalcTextSize("Add your copy…").x + ImGui::GetStyle().FramePadding.x * 2 > lw ? "Add copy" : "Add your copy…";
+		const char *label = button_w("Add your copy…") <= lw ? "Add your copy…" : button_w("Add copy") <= lw ? "Add copy" : "Add";
 		if (ImGui::Button(label, ImVec2(lw, 0))) g_add_open = true;
 		ImGui::SameLine();
 	}
@@ -1935,6 +1985,26 @@ static void game_row(const Game &g, float ic) {
 	const float mid = padv + (ic - ImGui::GetFrameHeight()) * 0.5f;
 	ImGui::TableSetColumnIndex(1); ImGui::SetCursorPosY(ImGui::GetCursorPosY() + padv + (ic - ImGui::GetTextLineHeight()) * 0.5f); game_state(g, lf, mine);
 	ImGui::TableSetColumnIndex(2); ImGui::SetCursorPosY(ImGui::GetCursorPosY() + mid); game_actions(g, lf, ImGui::GetContentRegionAvail().x);
+	ImGui::PopID();
+}
+
+/* ---- a game's row of the list in a narrow window: the icon and the name beside it, then its lines and actions under them */
+static void game_row_stacked(const Game &g, float ic) {
+	const float em = ImGui::GetFontSize();
+	const bool mine = g_task.running && std::find(g_task.games.begin(), g_task.games.end(), g.id) != g_task.games.end();
+	const Found *lf = g.imported ? nullptr : lib_find(g);
+	ImGui::PushID(g.id.c_str());
+	{	Tex icon = g.icon.empty() ? Tex() : texture(g.icon); ImVec2 p = ImGui::GetCursorScreenPos(); ImDrawList *dl = ImGui::GetWindowDrawList();
+		if (icon.t) dl->AddImageRounded(tex_ref(icon), p, ImVec2(p.x + ic, p.y + ic), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, ic * 0.16f);
+		else dl->AddRectFilled(p, ImVec2(p.x + ic, p.y + ic), ui::u32(ui::card_hi), ic * 0.16f);
+		ImGui::Dummy(ImVec2(ic, ic));
+	}
+	ImGui::SameLine(0, em * 0.8f);
+	ImGui::BeginGroup(); ImGui::PushTextWrapPos(0);
+	ImGui::TextWrapped("%s", g.name.c_str()); game_id_line(g); game_state(g, lf, mine);
+	ImGui::PopTextWrapPos(); ImGui::EndGroup();
+	game_actions(g, lf, ImGui::GetContentRegionAvail().x);
+	ImGui::Dummy(ImVec2(0, em * 0.2f)); ImGui::Separator(); ImGui::Dummy(ImVec2(0, em * 0.2f));
 	ImGui::PopID();
 }
 
@@ -2080,15 +2150,16 @@ static void hub_ui(SDL_Window *win) {
 	}
 	{	const ImGuiStyle &sty = ImGui::GetStyle(); const char *const views[] = {"Grid", "List"};
 		const float segw = ImGui::CalcTextSize("Grid").x + ImGui::CalcTextSize("List").x + sty.FramePadding.x * 4 + sty.ItemSpacing.x * 0.25f;
-		const float slw = em * 7, lbw = ImGui::CalcTextSize("Size").x;
-		const float x = ImGui::GetWindowContentRegionMax().x - segw - slw - lbw - sty.ItemSpacing.x * 3;
+		const float slw = em * 7, lbw = ImGui::CalcTextSize("Size").x, vw = ImGui::CalcTextSize("160%").x;   /* (the value beside the slider, not under its grab) */
+		const float x = ImGui::GetWindowContentRegionMax().x - segw - slw - lbw - vw - sty.ItemSpacing.x * 4;
 		const float text_end = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x + ImGui::GetScrollX();
 		if (x > text_end + em) ImGui::SameLine(x);   /* (else on a line of its own, below) */
 		ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("Size"); ImGui::SameLine();
 		ImGui::SetNextItemWidth(slw);
-		ImGui::SliderInt("##libsize", &size, 60, 160, "%d%%", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::SliderInt("##libsize", &size, 60, 160, "", ImGuiSliderFlags_AlwaysClamp);
 		if (ImGui::IsItemHovered()) ImGui::SetTooltip("How large the games are shown");
 		if (ImGui::IsItemDeactivatedAfterEdit() && g_settings_writable) prefs_set("library_size", std::to_string(size));
+		ImGui::SameLine(); ImGui::AlignTextToFramePadding(); ImGui::Text("%d%%", size);
 		ImGui::SameLine();
 		int v = view;
 		if (ui::segmented(views, 2, &v) && v != view) { view = v; if (g_settings_writable) prefs_set("library_view", view ? "list" : "grid"); }
@@ -2128,7 +2199,10 @@ static void hub_ui(SDL_Window *win) {
 		ImGui::Dummy(ImVec2(0, em * 2));
 		ImGui::TextDisabled("No games yet."); ImGui::TextWrapped("Add your own copy of a game — a PKG with its licence file, or a game folder — with + Add game.");
 	}
-	if (view == 1 && !g_games.empty()) {   /* the list: one row a game, its icon at the chosen size */
+	if (view == 1 && !g_games.empty() && ImGui::GetContentRegionAvail().x < em * 36) {   /* the list in a narrow window: each game's lines stacked, nothing squeezed into columns */
+		ImGui::Dummy(ImVec2(0, em * 0.2f));
+		for (const Game &g : g_games) game_row_stacked(g, em * 2.6f * zoom);
+	} else if (view == 1 && !g_games.empty()) {   /* the list: one row a game, its icon at the chosen size */
 		ImGui::Dummy(ImVec2(0, em * 0.2f));
 		if (ImGui::BeginTable("gamelist", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_PadOuterX)) {
 			ImGui::TableSetupColumn("Game", ImGuiTableColumnFlags_WidthStretch, 3.0f);
@@ -2193,11 +2267,13 @@ static void hub_ui(SDL_Window *win) {
 	if (ImGui::BeginPopupModal("Add a game", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove)) {
 		ImGui::PopStyleVar(2);
 		ui::heading("Add a game", em * 1.4f);
+		dialog_body_begin();
 		ImGui::PushTextWrapPos(0);
-		if (add_form(win)) { g_add_open = false; ImGui::CloseCurrentPopup(); }
-		ImGui::SameLine(); if (ImGui::Button("Cancel")) { g_add_open = false; ImGui::CloseCurrentPopup(); }
+		const bool started = add_form(win);
 		ImGui::Dummy(ImVec2(0, em * 0.3f)); ImGui::Separator(); ImGui::Dummy(ImVec2(0, em * 0.1f)); licences_row(win);
 		ImGui::PopTextWrapPos();
+		dialog_body_end();
+		if (started || ImGui::Button("Cancel")) { g_add_open = false; ImGui::CloseCurrentPopup(); }
 		ImGui::EndPopup();
 	} else ImGui::PopStyleVar(2);
 	sac_modal();
@@ -2208,6 +2284,93 @@ static void hub_ui(SDL_Window *win) {
 	game_settings_modal();
 	ImGui::End();
 }
+
+/* ---- ATIV_SHOT_FIT=<file>: the fit check (UI-01b). In a screenshot run's last frame every item is recorded through Dear
+ * ImGui's item hooks (IMGUI_ENABLE_TEST_ENGINE: they cost one flag test per item when off); after the frame each is checked
+ * against what its window shows. Reported, one line each: an item past its window's left or right edge, or above / below
+ * it with no scrolling parent to bring it into view; a framed item (a button, a field) whose label is wider than its box; a
+ * window larger than the screen; a window's content wider than the window; text drawn across a clip edge (a cut line, a
+ * table cell's text cut by its column). Nothing on screen may be cut off at any size: the report's lines are the bugs. */
+#ifdef IMGUI_ENABLE_TEST_ENGINE
+static bool g_fit_on;
+struct FitItem { ImGuiID id; ImRect bb; ImGuiWindow *w; };
+static std::vector<FitItem> g_fit_items;
+static std::vector<std::string> g_fit;
+void ImGuiTestEngineHook_ItemAdd(ImGuiContext *ctx, ImGuiID id, const ImRect &bb, const ImGuiLastItemData *) { if (g_fit_on) g_fit_items.push_back({id, bb, ctx->CurrentWindow}); }
+void ImGuiTestEngineHook_Log(ImGuiContext *, const char *, ...) {}
+const char *ImGuiTestEngine_FindItemDebugLabel(ImGuiContext *, ImGuiID) { return nullptr; }
+static std::string fit_name(const ImGuiWindow *w) {   /* "##hub/library_1A2B3C4D/card_..." -> "hub/library/card" */
+	std::string s, n = w ? w->Name : "?";
+	for (size_t i = 0; i < n.size(); ) {
+		if (n[i] == '#') { i++; continue; }
+		if (n[i] == '_' && i + 9 <= n.size() && std::all_of(n.begin() + i + 1, n.begin() + i + 9, [](char c) { return isxdigit((unsigned char)c) != 0; })) { i += 9; continue; }
+		s += n[i++];
+	}
+	return s;
+}
+static void fit_add(const std::string &line) { if (std::find(g_fit.begin(), g_fit.end(), line) == g_fit.end()) g_fit.push_back(line); }
+static bool fit_scrolls_y(const ImGuiWindow *w) { for (; w; w = w->ParentWindow) if (w->ScrollMax.y > 0.5f) return true; return false; }
+void ImGuiTestEngineHook_ItemInfo(ImGuiContext *ctx, ImGuiID id, const char *label, ImGuiItemStatusFlags) {
+	if (!g_fit_on || !label || g_fit_items.empty() || g_fit_items.back().id != id) return;
+	const char *end = strstr(label, "##"); std::string vis(label, end ? (size_t)(end - label) : strlen(label));
+	if (vis.empty()) return;
+	const FitItem &it = g_fit_items.back();
+	const ImGuiStyle &st = ctx->Style;
+	const float tw = ImGui::CalcTextSize(vis.c_str()).x, bw = it.bb.GetWidth();
+	const bool framed = it.bb.GetHeight() > ImGui::GetTextLineHeight() + 1.0f;   /* (a button, a field: its label sits inside the frame's padding) */
+	if (tw > (framed ? bw - 2 * st.FramePadding.x : bw) + 1.0f)
+		fit_add("label-cut " + fit_name(it.w) + " \"" + vis + "\" text " + std::to_string((int)tw) + " box " + std::to_string((int)bw));
+}
+static void fit_check(void) {
+	ImGuiContext &g = *GImGui;
+	const ImRect screen(ImVec2(0, 0), g.IO.DisplaySize);
+	for (const FitItem &it : g_fit_items) {
+		/* (ImGui's own parts of a window -- the window itself, its scrollbars, resize borders and corners -- sit on its edge
+		 * by design; ImGui's fallback "Debug" window is never shown) */
+		ImGuiWindow *w = it.w;
+		if (w->IsFallbackWindow || it.id == w->ID || it.id == ImGui::GetWindowScrollbarID(w, ImGuiAxis_X) || it.id == ImGui::GetWindowScrollbarID(w, ImGuiAxis_Y)) continue;
+		bool own = false;
+		for (int n = 0; n < 4 && !own; n++) own = it.id == ImGui::GetWindowResizeCornerID(w, n) || it.id == ImGui::GetWindowResizeBorderID(w, (ImGuiDir)n);
+		if (own) continue;
+		/* (a menu's entries span the menu's padding by design: in a menu or popup the edge is the window's own) */
+		const ImRect c = (w->Flags & ImGuiWindowFlags_Popup) && !(w->Flags & ImGuiWindowFlags_Modal) ? w->Rect() : w->InnerClipRect; const float e = 1.5f;
+		const bool out_y = it.bb.Max.y > c.Max.y + e || it.bb.Min.y < c.Min.y - e;
+		if (out_y && fit_scrolls_y(it.w)) continue;   /* (scrolled out of view: scrolling brings it back) */
+		if ((w->Flags & ImGuiWindowFlags_Popup) && !(w->Flags & ImGuiWindowFlags_Modal)) continue;   /* (a menu's entries span its padding and edges by design; their labels are checked as labels) */
+		if (it.bb.Max.x > c.Max.x + e || it.bb.Min.x < c.Min.x - e)
+			fit_add("item-past-edge " + fit_name(it.w) + " x " + std::to_string((int)it.bb.Min.x) + ".." + std::to_string((int)it.bb.Max.x) + " visible " + std::to_string((int)c.Min.x) + ".." + std::to_string((int)c.Max.x));
+		else if (out_y)
+			fit_add("item-off-screen " + fit_name(it.w) + " y " + std::to_string((int)it.bb.Min.y) + ".." + std::to_string((int)it.bb.Max.y) + " visible " + std::to_string((int)c.Min.y) + ".." + std::to_string((int)c.Max.y));
+	}
+	ImFontAtlas *atlas = g.IO.Fonts; const ImVec2 white = atlas->TexUvWhitePixel;
+	for (ImGuiWindow *w : g.Windows) {
+		if (!w->WasActive || w->Hidden || w->IsFallbackWindow) continue;
+		if (!(w->Flags & ImGuiWindowFlags_ChildWindow) && (w->Rect().Max.x > screen.Max.x + 1 || w->Rect().Max.y > screen.Max.y + 1 || w->Pos.x < -1 || w->Pos.y < -1))
+			fit_add("window-larger-than-screen " + fit_name(w) + " " + std::to_string((int)w->Size.x) + "x" + std::to_string((int)w->Size.y));
+		/* content reaching past what the window shows (not merely into its padding) */
+		if (!w->ScrollbarX && w->DC.CursorStartPos.x + w->ContentSize.x > w->InnerClipRect.Max.x + 1.5f)
+			fit_add("content-wider " + fit_name(w) + " content to " + std::to_string((int)(w->DC.CursorStartPos.x + w->ContentSize.x)) + " visible to " + std::to_string((int)w->InnerClipRect.Max.x));
+		/* text drawn across its clip rectangle: a cut line, a cell's text cut by its column. Only glyphs count (the font
+		 * atlas's texture, not its white pixel): panels, covers and frames drawn edge to edge are decoration, not content */
+		const ImDrawList *dl = w->DrawList;
+		for (const ImDrawCmd &cmd : dl->CmdBuffer) {
+			if (cmd.UserCallback || !cmd.ElemCount || cmd.TexRef._TexData != atlas->TexData) continue;
+			bool cut_x = false, cut_y = false; ImVec2 at(0, 0);
+			for (unsigned i = cmd.IdxOffset; i < cmd.IdxOffset + cmd.ElemCount && i < (unsigned)dl->IdxBuffer.Size; i++) {
+				const ImDrawVert &v = dl->VtxBuffer[cmd.VtxOffset + dl->IdxBuffer[i]];
+				if (fabsf(v.uv.x - white.x) < 1e-6f && fabsf(v.uv.y - white.y) < 1e-6f) continue;
+				const ImVec2 p = v.pos;
+				const bool x = p.x > cmd.ClipRect.z + 1.5f || p.x < cmd.ClipRect.x - 1.5f;
+				if (x && !cut_x) at = p;
+				cut_x |= x;
+				cut_y |= p.y > cmd.ClipRect.w + 1.5f || p.y < cmd.ClipRect.y - 1.5f;
+			}
+			if (cut_x) fit_add("drawn-across-edge " + fit_name(w) + " clip x " + std::to_string((int)cmd.ClipRect.x) + ".." + std::to_string((int)cmd.ClipRect.z) + " glyph at " + std::to_string((int)at.x) + "," + std::to_string((int)at.y));
+			if (cut_y && !fit_scrolls_y(w)) fit_add("drawn-below-edge " + fit_name(w) + " clip y " + std::to_string((int)cmd.ClipRect.y) + ".." + std::to_string((int)cmd.ClipRect.w));
+		}
+	}
+}
+#endif
 
 /* ---- ATIV_SHOT: one frame into a file, no visible window */
 static int shot(SDL_Window *win, const char *path, int w, int h) {
@@ -2222,7 +2385,18 @@ static int shot(SDL_Window *win, const char *path, int w, int h) {
 	for (int f = 0; f < frames; f++) {   /* ImGui sizes auto-sized windows on the first frames; a modal's dim fades in */
 		ImGui_ImplSDLGPU3_NewFrame(); ImGui_ImplSDL3_NewFrame();
 		ImGui::GetIO().DisplaySize = ImVec2((float)w, (float)h); ImGui::GetIO().DisplayFramebufferScale = ImVec2(1, 1); ImGui::GetIO().DeltaTime = 1.0f / 60;
+#ifdef IMGUI_ENABLE_TEST_ENGINE
+		const char *fit_path = getenv("ATIV_SHOT_FIT");
+		g_fit_on = fit_path && *fit_path && f == frames - 1; GImGui->TestEngineHookItems = g_fit_on;
+#endif
 		ImGui::NewFrame(); hub_ui(win); ImGui::Render();
+#ifdef IMGUI_ENABLE_TEST_ENGINE
+		if (g_fit_on) {
+			fit_check(); g_fit_on = false; GImGui->TestEngineHookItems = false;
+			if (FILE *fr = fopen(fit_path, "wb")) { for (const std::string &l : g_fit) fprintf(fr, "%s\n", l.c_str()); fclose(fr); }
+			fprintf(stderr, "ATIV_SHOT_FIT: %zu\n", g_fit.size());
+		}
+#endif
 		ImDrawData *dd = ImGui::GetDrawData();
 		SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(g_gpu);
 		ImGui_ImplSDLGPU3_PrepareDrawData(dd, cmd);
