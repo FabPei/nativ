@@ -1561,21 +1561,22 @@ static void target_write(const SetTarget &t, const std::string &k, const std::st
 }
 static std::string tget(const SetTarget &t, const char *k, const char *def) { const std::string *v = ini_find(*t.x, k); return v ? *v : def; }
 static void seg_row(const SetTarget &t, const char *label, const char *expl, const char *key, const char *def, std::initializer_list<std::pair<const char *, const char *>> opts) {
-	ui::row(label, expl);
+	std::string cur = tget(t, key, def);
+	ui::row(label, expl, cur == def ? "default" : nullptr);   /* (the in-game menu's "default" mark: U7) */
 	ImGui::PushID(key);
-	std::vector<const char *> names; std::string cur = tget(t, key, def); int v = 0, i = 0;
+	std::vector<const char *> names; int v = 0, i = 0;
 	for (auto &o : opts) { if (cur == o.first) v = i; names.push_back(o.second); i++; }
 	if (ui::segmented(names.data(), (int)names.size(), &v)) target_write(t, key, opts.begin()[v].first);
 	ImGui::PopID();
 }
 static void toggle_row(const SetTarget &t, const char *label, const char *expl, const char *key, bool def) {
-	ui::row(label, expl);
 	bool on = atoi(tget(t, key, def ? "1" : "0").c_str()) != 0;
+	ui::row(label, expl, on == def ? "default" : nullptr);
 	if (ui::toggle(key, &on)) target_write(t, key, on ? "1" : "0");
 }
 static void slider_row(const SetTarget &t, const char *label, const char *expl, const char *key, double def, float lo, float hi, const char *fmt, float shown = 1, ImGuiSliderFlags fl = 0) {
-	ui::row(label, expl);
 	float v = (float)atof(tget(t, key, fmt_g(def).c_str()).c_str()) * shown;
+	ui::row(label, expl, fabsf(v - (float)def * shown) < 0.0005f * (shown > 1 ? shown : 1) ? "default" : nullptr);
 	ImGui::SetNextItemWidth(-FLT_MIN);
 	std::string id = std::string("##") + key;
 	if (ImGui::SliderFloat(id.c_str(), &v, lo, hi, fmt, fl)) ini_set(*t.x, key, fmt_g(v / shown));
@@ -1698,6 +1699,25 @@ static void library_tab(void) {
 		ui::rows_end();
 	}
 }
+static SDL_Window *g_win;   /* (the launcher's window: About's fullscreen) */
+static void about_tab(void) {   /* (UI-01i) the version, the launcher's own window, and Quit -- the in-game menu's Help has its About too */
+	const float em = ImGui::GetFontSize();
+	ImGui::PushTextWrapPos(0);
+	{ ImVec2 p = ImGui::GetCursorScreenPos(); const float h = em * 1.6f; ImGui::Dummy(ImVec2(ui::wordmark(ImGui::GetWindowDrawList(), p, h), h)); }
+	const std::string v = first_line(g_root + "/version.txt");
+	ImGui::TextUnformatted(v.empty() ? "A development checkout (no version.txt)" : ("Version " + v).c_str());
+	ui::muted_wrapped("Your PS Vita games, rebuilt natively: no Sony or game code ships with Nativ; your copies, licences and saves stay on this computer.");
+	ImGui::Dummy(ImVec2(0, em * 0.4f));
+	if (ui::rows_begin("about")) {
+		ui::row("Launcher in fullscreen", "This window filling the screen; F11 switches it too. For a TV, or the launcher as a Steam entry (--fullscreen).", g_prefs["launcher_fullscreen"] == "1" ? nullptr : "default");
+		bool fs = g_prefs["launcher_fullscreen"] == "1";
+		if (ui::toggle("launcher_fs", &fs)) { prefs_set("launcher_fullscreen", fs ? "1" : "0"); if (g_win && !g_shot_mode) SDL_SetWindowFullscreen(g_win, fs); }
+		ui::row("Quit", "Closes the launcher. A build or game started from it stops.");
+		if (ImGui::Button("Quit Project Nativ")) { if (g_shot_mode) g_shot_done.push_back("quit"); else { SDL_Event q = {}; q.type = SDL_EVENT_QUIT; SDL_PushEvent(&q); } }
+		ui::rows_end();
+	}
+	ImGui::PopTextWrapPos();
+}
 static void settings_modal(void) {
 	const ImGuiViewport *vp = ImGui::GetMainViewport();
 	const float em = ImGui::GetFontSize();
@@ -1708,15 +1728,19 @@ static void settings_modal(void) {
 	if (!ImGui::BeginPopupModal("Settings", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove)) { ImGui::PopStyleVar(2); return; }
 	ImGui::PopStyleVar(2);
 	ui::heading("Settings", em * 1.4f);
-	ui::muted_wrapped("For every game. A game reads them when it starts; its own menu (F10) changes them too, for every game. A game's own options, and any value it keeps for itself, are under Game settings on its card.");
-	ImGui::Dummy(ImVec2(0, em * 0.2f));
-	static const char *const tabs[] = {"Display##st", "Controls##st", "Sound & online##st", "Library##st"};
-	ui::segmented(tabs, 4, &g_settings_tab); tab_hint();
-	g_settings_tab = (g_settings_tab + tab_step() + 4) % 4;
+	static const char *const tabs[] = {"Display##st", "Controls##st", "Sound & online##st", "Library##st", "About##st"};
+	ui::segmented(tabs, 5, &g_settings_tab); tab_hint();
+	g_settings_tab = (g_settings_tab + tab_step() + 5) % 5;
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
 	SetTarget t{&g_shared, shared_path(), SHARED_HEADER};
 	ImGui::BeginChild("settings_rows", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() - em * 0.4f - (hints_visible() ? ImGui::GetTextLineHeightWithSpacing() + em * 0.15f : 0)), ImGuiChildFlags_NavFlattened);
+	if (g_settings_tab <= 2) {   /* (what these settings are: at the top of the rows, scrolling with them -- a small window has no room for it above) */
+		ImGui::PushTextWrapPos(0);
+		ui::muted_wrapped("For every game. A game reads them when it starts; its own menu (F10) changes them too, for every game. A game's own options, and any value it keeps for itself, are on its page (its card's ...).");
+		ImGui::PopTextWrapPos(); ImGui::Dummy(ImVec2(0, em * 0.2f));
+	}
 	if (g_settings_tab == 3) library_tab();
+	else if (g_settings_tab == 4) about_tab();
 	else if (ui::rows_begin("shared")) {
 		if (g_settings_tab == 0) {
 			ui::row("Resolution", "The game drawn at a multiple of the Vita's 960 × 544. Higher is sharper; 4× and up want a fast GPU.");
@@ -1729,7 +1753,7 @@ static void settings_modal(void) {
 			seg_row(t, "Widescreen", "Shows more of the game at the sides, in games that support it.", "aspect_ratio", "native", {{"native", "Off"}, {"16:10", "16:10"}, {"3:2", "3:2"}, {"21:9", "21:9"}, {"32:9", "32:9"}, {"window", "Window"}});
 			seg_row(t, "HUD", "With widescreen on: the HUD at the screen's edges, in a 16:9 frame in the middle, or stretched.", "hud_layout", "edges", {{"edges", "Edges"}, {"16:9", "16:9"}, {"stretch", "Stretched"}});
 			seg_row(t, "Picture fit", "How the picture fills the window.", "aspect", "fit", {{"fit", "Fit"}, {"stretch", "Stretch"}, {"fill", "Fill"}});
-			seg_row(t, "Frame rate", "Above 30 is experimental: parts of a game timed in fixed 1/30 s steps can run fast. A game runs at the highest rate it allows up to this one (its Game settings show which).", "frame_rate", "30", {{"30", "30"}, {"60", "60"}, {"120", "120"}});
+			seg_row(t, "Frame rate", "Parts of a game timed in fixed 1/30 s steps can run fast at 60.", "frame_rate", "30", {{"30", "30"}, {"60", "60 (experimental)"}});
 			toggle_row(t, "Anti-aliasing", "Smooths jagged edges (FXAA).", "post_aa", true);
 			slider_row(t, "Sharpening", "Brings back detail lost to scaling and anti-aliasing.", "sharpen", 0.35, 0.0f, 100.0f, "%.0f%%", 100.0f);
 			seg_row(t, "Texture filtering", "Keeps textures crisp when seen at an angle.", "anisotropy", "16", {{"1", "Off"}, {"2", "2×"}, {"4", "4×"}, {"8", "8×"}, {"16", "16×"}});
@@ -2333,7 +2357,7 @@ static void game_id_line(const Game &g) {   /* the title id and the version: thi
 		          (g.update_note.empty() ? "Version " + rec + " is recommended" : g.update_note) + " (this copy is " + g.version + ").\nAdd it with + Add game: its update folder (ux0:patch/" + g.id + ") or PKG,\nor search the folder you copied from your Vita.");
 	}
 }
-static std::string g_shot_more;   /* (ATIV_SHOT_UI=more:<title>: that game's "more" menu open in a screenshot) */
+static std::string g_game_page;   /* (UI-01i) the game whose page is open ("": none; ATIV_SHOT_UI=more:<title> opens it in a screenshot run) */
 /* Add to Steam only for a game that is Ready to play (its built program is there, its data reachable): a shortcut to a
  * game never built would only fail in Steam. Remove from Steam is always offered, so an old shortcut can go. */
 static bool steam_addable(const Game &g) { return g.built && (!g.imported || g.missing.empty()); }
@@ -2413,40 +2437,10 @@ static void game_actions(const Game &g, const Found *lf, float bw) {   /* the on
 	}
 	ImGui::EndDisabled();
 	{	/* the "more" button: three dots, drawn (the font may have no ellipsis glyph) */
-		if (ImGui::Button("##more", ImVec2(more, 0))) ImGui::OpenPopup("more");
+		if (ImGui::Button("##more", ImVec2(more, 0))) g_game_page = g.id;   /* (UI-01i: the game's page, every action on it with its explanation) */
 		if (g_shot_mode) g_nav_game[ImGui::GetItemID()] = g.id;
-		if (!g_shot_more.empty() && g_shot_more == g.id) { ImGui::OpenPopup("more"); g_shot_more.clear(); }
 		ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax(), m((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
 		for (int k = -1; k <= 1; k++) dl->AddCircleFilled(ImVec2(m.x + k * em * 0.32f, m.y), em * 0.09f, ui::u32(ui::text, 0.8f));
-	}
-	if (ImGui::BeginPopup("more")) {
-		ImGui::BeginDisabled(busy || !g.imported);
-		if (menu_item(g.built ? "Rebuild" : "Build")) start_build(g);
-		ImGui::EndDisabled();
-		ImGui::BeginDisabled(!g.imported);
-		if (menu_item("Game settings…")) { make_dir(g_dump + "/decrypted/" + g.id + "/recomp"); g_game_settings = g.id; }
-		ImGui::EndDisabled();
-		{	bool have, in; { std::lock_guard<std::mutex> lk(g_steam.m); have = g_steam.have; in = g_steam.in.count(g.id) > 0; }
-			if (have && !self_exe().empty()) {   /* (Steam installed here, and a launcher it can start) */
-				const bool ok = steam_addable(g);
-				ImGui::BeginDisabled(busy || (!in && !ok));
-				if (menu_item(in ? "Remove from Steam" : "Add to Steam", in || ok ? nullptr : "build it first")) steam_task(g, !in);
-				ImGui::EndDisabled();
-				if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-					ImGui::SetTooltip("%s", in ? (ok ? "Takes this game's shortcut out of your Steam library (only this one: your other shortcuts stay).\nSteam needs to be closed for it."
-					                                 : "Takes this game's shortcut out of your Steam library (only this one: your other shortcuts stay).\nSteam needs to be closed for it.\nThis game isn't ready to play right now: build it again before starting it from Steam.")
-					                         : ok ? "Puts this game into your Steam library: a shortcut that starts the game directly.\nSteam needs to be closed for it; the game shows up the next time Steam starts."
-					                              : "Build the game first: a game can be added to Steam once it is Ready to play.");
-			}
-		}
-		if (menu_item("Show its folder")) open_folder(g_dump + "/decrypted/" + g.id);
-		ImGui::BeginDisabled(busy);
-		if (menu_item("Report a problem…"))   /* (the logs, settings and F5 pictures in one zip, shown in its folder) */
-			task_start("Making a bug report for " + g.name, "report", g.id, {step("Collecting the logs and settings", vitarecomp({"report", g.id}))});
-		ImGui::EndDisabled();
-		if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-			ImGui::SetTooltip("One zip of this game's logs, your settings and the pictures from your last F5,\nto send with a description of what happened. No game files, saves or keys.");
-		ImGui::EndPopup();
 	}
 }
 /* ---- a game's row of the list view: its icon, name, title-id line, state, actions */
@@ -2563,6 +2557,84 @@ static void game_card(const Game &g, float w, float name_h, float id_h) {
 	ImGui::EndChild();
 	ImGui::PopStyleVar(); ImGui::PopStyleColor(2);
 	ImGui::PopID();
+}
+
+/* ---- a game's page (UI-01i): what the card's "..." opens -- its picture, what it is and where it stands (version, region,
+ * Steam, played, size, notes in plain sight) and every action as a full-size button with what it does written under it
+ * (no hover needed: the explanations were tooltips). B or Back closes it */
+static void game_page_modal(void) {
+	if (g_game_page.empty()) return;
+	const Game *gp = nullptr; for (const Game &x : g_games) if (x.id == g_game_page) gp = &x;
+	if (!gp) { g_game_page.clear(); return; }
+	const Game &g = *gp; const bool busy = g_task.running;
+	const ImGuiViewport *vp = ImGui::GetMainViewport(); const float em = ImGui::GetFontSize();
+	if (!ImGui::IsPopupOpen("##gamepage")) ImGui::OpenPopup("##gamepage");
+	ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x < 48 * em ? vp->WorkSize.x * 0.94f : 44 * em, 0), ImGuiCond_Always);
+	ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(1.6f * em, 1.3f * em)); ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+	if (!ImGui::BeginPopupModal("##gamepage", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove)) { ImGui::PopStyleVar(2); return; }
+	ImGui::PopStyleVar(2);
+	ImGui::PushTextWrapPos(0); ui::heading(g.name.c_str(), em * 1.4f); ImGui::PopTextWrapPos();
+	bool close = false;
+	dialog_body_begin();
+	ImGui::PushTextWrapPos(0);
+	{	/* the picture, as wide as fits up to half the page */
+		Tex cover = g.cover.empty() ? Tex() : texture(g.cover);
+		if (cover.t) {
+			const float w = std::min(ImGui::GetContentRegionAvail().x, em * 20), h = w * 544.0f / 960.0f;
+			float ia = (float)cover.w / (float)cover.h, box = w / h; ImVec2 uv0(0, 0), uv1(1, 1);
+			if (ia > box) { uv0.x = (1 - box / ia) * 0.5f; uv1.x = 1 - uv0.x; } else { uv0.y = (1 - ia / box) * 0.5f; uv1.y = 1 - uv0.y; }
+			const ImVec2 p = ImGui::GetCursorScreenPos();
+			ImGui::GetWindowDrawList()->AddImageRounded(tex_ref(cover), p, ImVec2(p.x + w, p.y + h), uv0, uv1, IM_COL32_WHITE, em * 0.5f);
+			ImGui::Dummy(ImVec2(w, h));
+		}
+	}
+	const Found *lf = g.imported ? nullptr : lib_find(g);
+	const bool mine = g_task.running && std::find(g_task.games.begin(), g_task.games.end(), g.id) != g_task.games.end();
+	game_state(g, lf, mine);
+	game_id_line(g);
+	if (g.imported) ImGui::TextDisabled("Last played: %s  ·  Time played: %s  ·  Size: %s", stat_last(g).c_str(), stat_time(g).c_str(), stat_size(g).c_str());
+	{ std::lock_guard<std::mutex> lk(g_steam.m); if (g_steam.have) ImGui::TextDisabled("%s", g_steam.in.count(g.id) ? "In your Steam library" : "Not in your Steam library"); }
+	if (!g.pack) ui::muted_wrapped("Experimental: no game pack plays this game yet, so it may not run correctly.");
+	ImGui::Dummy(ImVec2(0, em * 0.4f));
+	/* the actions: a full-width button each, what it does under it */
+	auto action = [&](const char *label, const char *expl, bool primary, bool enabled) {
+		ImGui::BeginDisabled(!enabled);
+		const bool r = primary ? ui::primary_button(label, ImVec2(-FLT_MIN, 0)) : ImGui::Button(label, ImVec2(-FLT_MIN, 0));
+		ImGui::EndDisabled();
+		if (expl && *expl) ui::muted_wrapped(expl);
+		ImGui::Dummy(ImVec2(0, em * 0.15f));
+		return r && enabled;
+	};
+	if (g.built) { if (action("Play", "Starts the game (its build is brought up to date first).", true, !busy)) { start_play(g); close = true; } }
+	else if (g.imported) { if (action("Build", "A one-time build of the game from your copy: a few minutes. After it, Play starts it straight away.", true, !busy)) { start_build(g); close = true; } }
+	else if (lf) { if (action("Add", ("From " + leaf_name(lf->source) + ", where your library folders found it.").c_str(), true, !busy)) { g_game_page.clear(); ImGui::CloseCurrentPopup(); ImGui::PopTextWrapPos(); dialog_body_end(); ImGui::EndPopup();
+		if (found_ready(*lf, g_lib_found)) { int n = 0; std::vector<std::string> titles; std::vector<Step> s = found_steps(&n, &titles, g_lib_found, lf->id); task_start("Adding " + g.name, "add", g.id, s); }
+		else { g_found.clear(); for (const Found &x : g_lib_found) if (x.id == lf->id) g_found.push_back(x); g_found_ready = true; g_add_kind = 0; g_scan_path = lf->source; g_add_open = true; }
+		return; } }
+	else { if (action("Add your copy", "A game folder from your Vita, a PKG with its licence, or a folder to search.", true, !busy)) { g_add_open = true; close = true; } }
+	{	bool have, in; { std::lock_guard<std::mutex> lk(g_steam.m); have = g_steam.have; in = g_steam.in.count(g.id) > 0; }
+		if (have && !self_exe().empty()) {
+			const bool ok = steam_addable(g);
+			if (in) { if (action("Remove from Steam", "Takes only this game's shortcut out of your Steam library. Steam needs to be closed for it.", false, !busy)) { steam_task(g, false); close = true; } }
+			else if (action("Add to Steam", ok ? "A shortcut in your Steam library that starts the game directly. Steam needs to be closed for it; the game shows up the next time Steam starts."
+			                                    : "Build the game first: a game can go into Steam once it is ready to play.", false, ok && !busy)) { steam_task(g, true); close = true; }
+		}
+	}
+	if (g.imported && action("Game settings", "This game's own options (field of view, view distance, ...) and the values it keeps apart from the shared Settings.", false, true)) {
+		make_dir(g_dump + "/decrypted/" + g.id + "/recomp"); g_game_settings = g.id; close = true;
+	}
+	if (g.built && action("Rebuild", "Builds the game again from your copy: a new file, as after an update of Nativ.", false, !busy)) { start_build(g); close = true; }
+	if (g.imported && action("Show its folder", "Opens the game's folder in the library: its build, its logs.", false, true)) open_folder(g_dump + "/decrypted/" + g.id);
+	if (action("Report a problem", "One zip of this game's logs, your settings and the pictures from your last F5, shown in its folder: send it with a description of what happened. No game files, saves or keys.", false, !busy)) {
+		task_start("Making a bug report for " + g.name, "report", g.id, {step("Collecting the logs and settings", vitarecomp({"report", g.id}))}); close = true;
+	}
+	ImGui::PopTextWrapPos();
+	dialog_body_end();
+	if (ImGui::Button("Back") || dialog_back()) close = true;
+	dialog_hints();
+	if (close) { g_game_page.clear(); ImGui::CloseCurrentPopup(); }
+	ImGui::EndPopup();
 }
 
 /* ---- the log, copied or saved whole (the activity bar's Copy log / Save log...): for a bug report or a question */
@@ -2916,6 +2988,7 @@ static void hub_ui(SDL_Window *win) {
 	setup_modal(win);
 	settings_modal();
 	game_settings_modal();
+	game_page_modal();
 	if (g_browse.top) browser_modal();   /* (one opened with no dialog around it) */
 	if (g_osk.top) osk_modal();
 	{	/* (a press of B this frame that ImGui used to end an edit or close a menu: no dialog takes it next frame either) */
@@ -3311,7 +3384,7 @@ int main(int argc, char **argv) {
 	int sw = 1280, sh = 800;
 	if (const char *s = getenv("ATIV_SHOT_SIZE")) sscanf(s, "%dx%d", &sw, &sh);
 	const float start_scale = shot_path ? 1.0f : SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());   /* the window's opening size only; the UI's scale comes from the window */
-	SDL_Window *win = shot_path ? SDL_CreateWindow("Project Nativ", sw, sh, SDL_WINDOW_HIDDEN)
+	SDL_Window *win = g_win = shot_path ? SDL_CreateWindow("Project Nativ", sw, sh, SDL_WINDOW_HIDDEN)
 	                            : SDL_CreateWindow("Project Nativ", (int)(1180 * start_scale), (int)(760 * start_scale), SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
 	g_gpu = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_DXIL | SDL_GPU_SHADERFORMAT_METALLIB, false, nullptr);
 	if (!win || !g_gpu || (!shot_path && !SDL_ClaimWindowForGPUDevice(g_gpu, win))) { fprintf(stderr, "window/GPU: %s\n", SDL_GetError()); return 1; }
@@ -3351,7 +3424,7 @@ int main(int argc, char **argv) {
 		g_sac_open = ui_sel.rfind("sac", 0) == 0; g_sac_game = "PCSE00640"; g_sac_rebuilt = ui_sel == "sac:again";
 		g_settings_open = ui_sel.rfind("settings", 0) == 0; if (g_settings_open && ui_sel.size() > 9) g_settings_tab = atoi(ui_sel.c_str() + 9);
 		if (ui_sel.rfind("game:", 0) == 0) g_game_settings = ui_sel.substr(5);
-		if (ui_sel.rfind("more:", 0) == 0) g_shot_more = ui_sel.substr(5);
+		if (ui_sel.rfind("more:", 0) == 0) g_game_page = ui_sel.substr(5);
 		if (ui_sel.rfind("name:", 0) == 0) g_name_game = ui_sel.substr(5);
 		if (ui_sel == "osk") { static std::string sample = "D:/Vita backup/ux0"; osk_open(&sample, "##scanpath"); g_osk.top = true; }
 		if (ui_sel.rfind("browse:", 0) == 0) {   /* (browse:<kind>:<dir>: the own browser, opened at <dir>) */
