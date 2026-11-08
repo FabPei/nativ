@@ -16,6 +16,10 @@
                                             library folders, kept (pipeline/folders.py): a copied ux0:, a dump folder,
                                             a Vita3K install (its ux0 found, config.yml's pref-path followed), each
                                             searched again by scan -- scan's rows plus the folder each was found in
+  vitarecomp steam     [list | add <title> --exe <launcher> --name <name> [--icon <png>] [--cover <png>] | remove <title>]
+                                            a game as a Steam shortcut (pipeline/steam.py): <launcher> --play <title>,
+                                            written into every Steam user's shortcuts.vdf (a copy kept first; refused
+                                            while Steam runs); remove takes out only ours
   vitarecomp add       <copy> [--license work.bin] [--no-build] [--in-place]   a game or its update (ux0:app/<title>
                                             or ux0:patch/<title> copied off the Vita, or a PKG with its licence file
                                             (.rif or work.bin); an already-decrypted folder works too), decrypted here
@@ -1067,10 +1071,11 @@ def main(argv):
     except AttributeError: pass
     cmd = argv[0] if argv else ""; T = argv[1] if len(argv) > 1 else ""
     if cmd == "update-check": cmd_update_check(); return 0
-    if not cmd or (not T and cmd not in ("licenses", "folders")): usage(); return 1
+    if not cmd or (not T and cmd not in ("licenses", "folders", "steam")): usage(); return 1
     if cmd == "firmware": cmd_firmware(T); return 0
     if cmd == "scan": cmd_scan(T, argv[2:]); return 0
     if cmd == "folders": return run([PY, os.path.join(R, "folders.py")] + argv[1:], env=env_with(TOOLS_ENV, {"ATIV_DUMP": DUMP}), check=False).returncode
+    if cmd == "steam": return run([PY, os.path.join(R, "steam.py")] + argv[1:], check=False).returncode
     if cmd == "licenses": return run([PY, os.path.join(R, "licenses.py")] + argv[1:], env=env_with({"ATIV_DUMP": DUMP}), check=False).returncode
     if cmd == "add": cmd_add(T, argv[2:]); return 0
     if cmd == "dist": cmd_dist(T); return 0
