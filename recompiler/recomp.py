@@ -484,7 +484,7 @@ class Fn:
             # compile (x86 register coalescer, BUILD-03). An index past the table took JUMP's default before too.
             return ([f"{{ uint32_t t = 0x{tab:x}u + 2 * {ld}; switch (t) {{"]
                     + [f"\tcase 0x{a:x}u: goto L_{a:08x};" for a in sorted(set(targets))]
-                    + ["\tdefault: c->r[15] = t; recomp_unimplemented(c, t); return;", "} }"])
+                    + ["\tdefault: { GuestFn f = recomp_lookup(t); if (f) { f(c); return; } } c->r[15] = t; recomp_unimplemented(c, t); return;", "} }"])
         raise Unsupported(mn)
 
     # ------------------------------------------------------------------ VFP / NEON
@@ -1387,7 +1387,9 @@ class Fn:
         lines.append("\tswitch (c->r[15]) {")
         for i in self.insns:
             lines.append(f"\tcase 0x{i.address:x}u: goto L_{i.address:08x};")
-        lines.append("\tdefault: recomp_unimplemented(c, c->r[15]); return;")
+        # a computed jump to another function's entry (a table case that is a split-off entry: libSceFt2's FreeType
+        # interpreter, AUTO-01 GR-11) is a tail call: run it and return, as the branch would; anything else asserts
+        lines.append("\tdefault: { GuestFn f = recomp_lookup(c->r[15]); if (f) { f(c); return; } } recomp_unimplemented(c, c->r[15]); return;")
         lines.append("\t}")
         lines.append("}")
         return lines
