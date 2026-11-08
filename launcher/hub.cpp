@@ -875,7 +875,9 @@ static void dialog_body_begin(void) {
  * end an edit (a field typed in, a slider held) or to close a menu over the dialog: those were busy the frame before */
 static bool g_ui_busy_prev;
 static bool dialog_back(void) {
-	if (g_ui_busy_prev || !ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) return false;
+	/* (NoPopupHierarchy: only the topmost dialog takes it -- ImGui counts a dialog opened inside this one, the browser, the
+	 * keyboard, a Change, as this one's child, and B there closed both) */
+	if (g_ui_busy_prev || !ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows | ImGuiFocusedFlags_NoPopupHierarchy)) return false;
 	return ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false);
 }
 static void dialog_body_end(void) { ImGui::EndChild(); ImGui::Dummy(ImVec2(0, ImGui::GetFontSize() * 0.2f)); }
@@ -1054,7 +1056,8 @@ static void osk_modal(void) {
 	if (done || cancel) { g_osk.open = false; ImGui::CloseCurrentPopup(); }
 	ImGui::EndPopup();
 }
-static bool g_osk_open_any(void) { return g_osk.open || g_browse.open; }
+static bool g_bind_open(void);
+static bool g_osk_open_any(void) { return g_osk.open || g_browse.open || g_bind_open(); }
 static void child_dialogs(void) { browser_modal(); osk_modal(); }   /* (the browser and the keyboard, inside the dialog that asked) */
 static void tab_hint(void) {   /* (while a controller or the keyboard moves the focus: the buttons that step the tabs) */
 	if (!hints_visible()) return;
@@ -1718,6 +1721,139 @@ static void about_tab(void) {   /* (UI-01i) the version, the launcher's own wind
 	}
 	ImGui::PopTextWrapPos();
 }
+/* ---- Controls > Mapping (UI-01m): which button or key does which of the Vita's -- for the controller and for keyboard
+ * and mouse, the same settings keys the game's own menu (F10, Controls) writes (runtime/ui/window.c: pad_bind_<x> with
+ * "south" / "east" / ... names, "" the default, "none" unbound; bind_<x> with SDL key names), and the same rule: a button
+ * another action had is taken from it. Change: press the new button or key (a controller's press is taken for
+ * 6 seconds; Esc leaves a key as it was), or pick it from the list (touch and a mouse can map a controller too).
+ * Touch: the game's touch rules; on-screen buttons come with UI-01n */
+struct BindRow { const char *key, *label, *def; };
+static const BindRow k_pad_rows[] = {   /* (window.c pad_binds, in its order; def: pad_bind.c's defaults) */
+	{"pad_bind_cross", "Cross", "south"}, {"pad_bind_circle", "Circle", "east"}, {"pad_bind_square", "Square", "west"}, {"pad_bind_triangle", "Triangle", "north"},
+	{"pad_bind_start", "Start", "start"}, {"pad_bind_select", "Select", "back"}, {"pad_bind_up", "D-pad up", "dpad_up"}, {"pad_bind_down", "D-pad down", "dpad_down"},
+	{"pad_bind_left", "D-pad left", "dpad_left"}, {"pad_bind_right", "D-pad right", "dpad_right"}, {"pad_bind_l3", "L3", "left_stick"}, {"pad_bind_r3", "R3", "right_stick"}};
+static const BindRow k_key_rows[] = {   /* (window.c kb_binds, in its order, with its defaults) */
+	{"bind_move_up", "Move forward (left stick)", "W"}, {"bind_move_down", "Move back", "S"}, {"bind_move_left", "Move left", "A"}, {"bind_move_right", "Move right", "D"},
+	{"bind_cross", "Cross", "Space"}, {"bind_circle", "Circle", "C"}, {"bind_square", "Square", "F"}, {"bind_triangle", "Triangle", "E"},
+	{"bind_l", "L (also the right mouse button)", "Q"}, {"bind_r", "R (also the left mouse button)", "R"}, {"bind_start", "Start", "Return"}, {"bind_select", "Select", "Tab"},
+	{"bind_up", "D-pad up", "Up"}, {"bind_down", "D-pad down", "Down"}, {"bind_left", "D-pad left", "Left"}, {"bind_right", "D-pad right", "Right"}};
+static const char *const k_pad_names[] = {"south", "east", "west", "north", "start", "back", "dpad_up", "dpad_down", "dpad_left", "dpad_right", "left_stick", "right_stick"};
+static std::string pad_button_label(const std::string &name) {   /* "south" -> the pad's own name (Cross / A / B on a Switch pad) */
+	const PadNames *n = pad_names_of(g_pad_fam);
+	if (name == "south") return n->select; if (name == "east") return n->back; if (name == "west") return n->west; if (name == "north") return n->north;
+	if (name == "start") return n->menu; if (name == "back") return n->view;
+	if (name == "dpad_up") return "D-pad up"; if (name == "dpad_down") return "D-pad down"; if (name == "dpad_left") return "D-pad left"; if (name == "dpad_right") return "D-pad right";
+	if (name == "left_stick") return "Left stick (press)"; if (name == "right_stick") return "Right stick (press)";
+	return "(none)";
+}
+static std::string bind_value(const SetTarget &t, const BindRow &r, bool pad) {   /* what the game reads for this row */
+	const std::string v = tget(t, r.key, "");
+	if (pad) return v.empty() ? r.def : v;
+	return v.empty() ? r.def : v;
+}
+static void bind_write(const SetTarget &t, bool pad, int row, const std::string &value) {   /* the game's rule: the button or key another row had is taken from it */
+	const BindRow *rows = pad ? k_pad_rows : k_key_rows; const int n = pad ? 12 : 16;
+	for (int j = 0; j < n; j++) if (j != row && bind_value(t, rows[j], pad) == value) target_write(t, rows[j].key, pad ? "none" : "");
+	target_write(t, rows[row].key, value);
+}
+static struct { bool open = false, pad = true; int row = 0; double until = 0; } g_bind;   /* the Change dialog */
+static int g_map_type;   /* 0 controller, 1 keyboard & mouse, 2 touch */
+static const char *imgui_key_sdl_name(ImGuiKey k) {   /* a pressed key as SDL names it (window.c reads SDL_GetKeyFromName) */
+	static char b[8];
+	if (k >= ImGuiKey_A && k <= ImGuiKey_Z) { b[0] = (char)('A' + (k - ImGuiKey_A)); b[1] = 0; return b; }
+	if (k >= ImGuiKey_0 && k <= ImGuiKey_9) { b[0] = (char)('0' + (k - ImGuiKey_0)); b[1] = 0; return b; }
+	switch (k) {
+	case ImGuiKey_Space: return "Space"; case ImGuiKey_Enter: return "Return"; case ImGuiKey_Tab: return "Tab"; case ImGuiKey_Backspace: return "Backspace";
+	case ImGuiKey_UpArrow: return "Up"; case ImGuiKey_DownArrow: return "Down"; case ImGuiKey_LeftArrow: return "Left"; case ImGuiKey_RightArrow: return "Right";
+	case ImGuiKey_LeftShift: return "Left Shift"; case ImGuiKey_RightShift: return "Right Shift"; case ImGuiKey_LeftCtrl: return "Left Ctrl"; case ImGuiKey_RightCtrl: return "Right Ctrl";
+	case ImGuiKey_LeftAlt: return "Left Alt"; case ImGuiKey_CapsLock: return "CapsLock";
+	case ImGuiKey_Comma: return ","; case ImGuiKey_Period: return "."; case ImGuiKey_Minus: return "-"; case ImGuiKey_Semicolon: return ";";
+	default: return nullptr;
+	}
+}
+static void bind_modal(const SetTarget &t) {   /* (inside Settings) */
+	if (!g_bind.open) return;
+	const ImGuiViewport *vp = ImGui::GetMainViewport(); const float em = ImGui::GetFontSize();
+	if (!ImGui::IsPopupOpen("##bind")) ImGui::OpenPopup("##bind");
+	ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x < 40 * em ? vp->WorkSize.x * 0.94f : 34 * em, 0), ImGuiCond_Always);
+	ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(1.6f * em, 1.3f * em)); ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+	if (!ImGui::BeginPopupModal("##bind", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove)) { ImGui::PopStyleVar(2); return; }
+	ImGui::PopStyleVar(2);
+	const BindRow &r = (g_bind.pad ? k_pad_rows : k_key_rows)[g_bind.row];
+	ui::heading((std::string(r.label) + (g_bind.pad ? ": which button?" : ": which key?")).c_str(), em * 1.3f);
+	const double left = g_bind.until - ImGui::GetTime();
+	ImGui::PushTextWrapPos(0);
+	if (g_bind.pad) { char s[96]; snprintf(s, sizeof s, "Press the button on the controller now (%d s), or pick it below.", (int)ceil(left > 0 ? left : 0)); ImGui::TextUnformatted(s); }
+	else ImGui::TextUnformatted("Press the key now, or pick it below. Esc leaves it as it was.");
+	ui::muted_wrapped(("Now: " + (g_bind.pad ? pad_button_label(bind_value(t, r, true)) : bind_value(t, r, false))).c_str());
+	ui::muted_wrapped(g_bind.pad ? "A button another action had is taken from it." : "A key another action had is taken from it.");
+	ImGui::PopTextWrapPos();
+	std::string chosen; bool cancel = false;
+	/* the pick list: by touch or with a mouse (no controller focus: a controller's press is the answer) */
+	ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
+	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x * 0.5f, ImGui::GetStyle().ItemSpacing.y * 0.5f));
+	if (g_bind.pad) {
+		for (const char *nm : k_pad_names) { const std::string l = pad_button_label(nm) + "##pick" + nm; same_line_fits(button_w(l.c_str())); if (ImGui::Button(l.c_str())) chosen = nm; }
+	} else {
+		static const char *const keys[] = {"W", "A", "S", "D", "Q", "E", "R", "F", "C", "Space", "Return", "Tab", "Up", "Down", "Left", "Right", "Left Shift", "Left Ctrl", "1", "2", "3", "4"};
+		for (const char *k : keys) { const std::string l = std::string(k) + "##pick"; same_line_fits(button_w(l.c_str())); if (ImGui::Button(l.c_str())) chosen = k; }
+	}
+	ImGui::PopStyleVar();
+	ImGui::Dummy(ImVec2(0, em * 0.3f));
+	if (ImGui::Button("Cancel##bind")) cancel = true;
+	ImGui::PopItemFlag();
+	/* the press itself */
+	if (g_bind.pad) {
+		static const std::pair<ImGuiKey, const char *> pads[] = {{ImGuiKey_GamepadFaceDown, "south"}, {ImGuiKey_GamepadFaceRight, "east"}, {ImGuiKey_GamepadFaceLeft, "west"},
+			{ImGuiKey_GamepadFaceUp, "north"}, {ImGuiKey_GamepadStart, "start"}, {ImGuiKey_GamepadBack, "back"}, {ImGuiKey_GamepadDpadUp, "dpad_up"},
+			{ImGuiKey_GamepadDpadDown, "dpad_down"}, {ImGuiKey_GamepadDpadLeft, "dpad_left"}, {ImGuiKey_GamepadDpadRight, "dpad_right"},
+			{ImGuiKey_GamepadL3, "left_stick"}, {ImGuiKey_GamepadR3, "right_stick"}};
+		for (auto &pk : pads) if (ImGui::IsKeyPressed(pk.first, false)) chosen = pk.second;
+		if (left <= 0) cancel = true;
+	} else {
+		if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) cancel = true;
+		else for (int k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_NamedKey_END && chosen.empty(); k++)
+			if (ImGui::IsKeyPressed((ImGuiKey)k, false)) if (const char *nm = imgui_key_sdl_name((ImGuiKey)k)) chosen = nm;
+	}
+	if (!chosen.empty()) {
+		if (g_settings_writable) bind_write(t, g_bind.pad, g_bind.row, chosen);
+		if (g_shot_mode) g_shot_done.push_back(std::string("bound ") + r.key + "=" + chosen);
+	}
+	if (!chosen.empty() || cancel) { g_bind.open = false; ImGui::CloseCurrentPopup(); }
+	ImGui::EndPopup();
+}
+static bool g_bind_open(void) { return g_bind.open; }
+static void mapping_rows(const SetTarget &t) {   /* (Controls tab, after its rows) */
+	const float em = ImGui::GetFontSize();
+	ui::row("Mapping for", "Each way of playing has its own mapping; the game's own menu (F10, Controls) changes the same.");
+	{	static const char *const types[] = {"Controller##mt", "Keyboard & mouse##mt", "Touch##mt"}; ui::segmented(types, 3, &g_map_type); }
+	ui::rows_end();
+	ImGui::Dummy(ImVec2(0, em * 0.2f));
+	if (g_map_type == 2) {
+		ImGui::PushTextWrapPos(0);
+		ui::muted_wrapped("Your touch screen is the Vita's front touch screen. The rear touch pad: hold the shoulder pair that isn't L and R and move a stick, or Alt and the mouse (see Touch cursor speed above).");
+		ui::muted_wrapped("On-screen buttons, for playing by touch alone, come with the next update of the in-game controls (UI-01n): this is where their layout will be set.");
+		ImGui::PopTextWrapPos();
+		ui::rows_begin("map_rest");
+		return;
+	}
+	const bool pad = g_map_type == 0;
+	const BindRow *rows = pad ? k_pad_rows : k_key_rows; const int n = pad ? 12 : 16;
+	if (ui::rows_begin(pad ? "map_pad" : "map_keys")) {
+		for (int i = 0; i < n; i++) {
+			const std::string v = bind_value(t, rows[i], pad);
+			ui::row(rows[i].label, nullptr, v == rows[i].def ? "default" : nullptr);
+			const std::string shown = (pad ? pad_button_label(v) : (v.empty() ? std::string("(none)") : v)) + "##map" + rows[i].key;
+			if (ImGui::Button(shown.c_str(), ImVec2(-FLT_MIN, 0))) { g_bind.open = true; g_bind.pad = pad; g_bind.row = i; g_bind.until = ImGui::GetTime() + 6.0; }
+		}
+		ui::rows_end();
+	}
+	if (ImGui::Button(pad ? "Reset the controller mapping" : "Reset the keyboard mapping")) {
+		for (int i = 0; i < n; i++) if (g_settings_writable) target_write(t, rows[i].key, pad ? "" : rows[i].def);
+	}
+	ui::rows_begin("map_rest");
+}
 static void settings_modal(void) {
 	const ImGuiViewport *vp = ImGui::GetMainViewport();
 	const float em = ImGui::GetFontSize();
@@ -1773,6 +1909,7 @@ static void settings_modal(void) {
 			toggle_row(t, "Gyro", "A controller's gyro as the Vita's motion sensor.", "gyro", true);
 			seg_row(t, "A level controller is a Vita held", "Upright, as in your hands, or flat on a table.", "gyro_pose", "upright", {{"upright", "Upright"}, {"flat", "Flat"}});
 			slider_row(t, "Gyro sensitivity", nullptr, "gyro_sens", 1.0, 0.25f, 3.0f, "%.2f×");
+			mapping_rows(t);
 		} else {
 			slider_row(t, "Volume", nullptr, "volume", 1.0, 0.0f, 100.0f, "%.0f%%", 100.0f);
 			toggle_row(t, "Play online", ONLINE_EXPL, "online", true);
@@ -1797,6 +1934,7 @@ static void settings_modal(void) {
 	if (ui::primary_button("Done") || dialog_back()) { g_settings_open = false; ImGui::CloseCurrentPopup(); }
 	dialog_hints();
 	child_dialogs();   /* (Library: Add a folder; the online name) */
+	bind_modal(SetTarget{&g_shared, shared_path(), SHARED_HEADER});
 	ImGui::EndPopup();
 }
 
@@ -3426,6 +3564,10 @@ int main(int argc, char **argv) {
 		if (ui_sel.rfind("game:", 0) == 0) g_game_settings = ui_sel.substr(5);
 		if (ui_sel.rfind("more:", 0) == 0) g_game_page = ui_sel.substr(5);
 		if (ui_sel.rfind("name:", 0) == 0) g_name_game = ui_sel.substr(5);
+		if (ui_sel.rfind("map:", 0) == 0) {   /* (map:pad|key:<row>: Settings > Controls with that row's Change dialog open) */
+			g_settings_open = true; g_settings_tab = 1; g_map_type = ui_sel.compare(4, 3, "pad") == 0 ? 0 : 1;
+			g_bind.open = true; g_bind.pad = g_map_type == 0; g_bind.row = atoi(ui_sel.c_str() + 8); g_bind.until = 6.0;   /* (a screenshot run's clock starts at 0: the real 6 seconds) */
+		}
 		if (ui_sel == "osk") { static std::string sample = "D:/Vita backup/ux0"; osk_open(&sample, "##scanpath"); g_osk.top = true; }
 		if (ui_sel.rfind("browse:", 0) == 0) {   /* (browse:<kind>:<dir>: the own browser, opened at <dir>) */
 			static std::string picked_here;
