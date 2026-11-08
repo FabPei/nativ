@@ -36,6 +36,7 @@
 #include "backends/imgui_impl_sdl3.h"
 #include "backends/imgui_impl_sdlgpu3.h"
 #include "ui_theme.h"   /* the look shared with the in-game overlay */
+#include "hub_scale.h"   /* (UI-01h) the UI's scale from the window's height or the display's scale */
 #include "pad_family.h"   /* (UI-01e) the controller in use and its buttons' names, shared with the in-game menu */
 #include <ctime>
 #include <SDL3/SDL.h>
@@ -2271,8 +2272,19 @@ static bool log_button(const char *label, const char *id) {   /* its label, or t
 }
 
 /* ---- the window */
+static int g_style_gen;   /* (counts ui::apply calls: a new scale means a new base style) */
+static float g_ui_scale = 1.0f;
+static void apply_scale(float scale) {   /* the whole look at this scale, if it changed */
+	if (fabsf(scale - g_ui_scale) < 0.01f && g_style_gen) return;
+	g_ui_scale = scale; ui::apply(16.0f * scale, 1.0f); g_style_gen++;   /* (the font size itself, not FontScaleDpi: PushFont(nullptr, em * x) passes sizes already in em, which FontScaleDpi scaled a second time -- headings were scale^2 large; the in-game menu does it this way too) */
+}
+static void apply_window_scale(SDL_Window *win) {   /* the larger of the display's scale and the window height's (hub_scale.h) */
+	int w = 0, h = 0; SDL_GetWindowSize(win, &w, &h);
+	apply_scale(hub_ui_scale((float)h, SDL_GetWindowDisplayScale(win)));
+}
 static void touch_style(void) {   /* a touch screen in use: finger-sized targets, until a mouse moves again */
-	ImGuiStyle &st = ImGui::GetStyle(); static ImGuiStyle base;
+	ImGuiStyle &st = ImGui::GetStyle(); static ImGuiStyle base; static int seen_gen = -1;
+	if (seen_gen != g_style_gen) { seen_gen = g_style_gen; base = st; g_touch = false; }   /* (a new scale: this style is the new base; touch sizes again from it) */
 	const bool t = ImGui::GetIO().MouseSource == ImGuiMouseSource_TouchScreen;   /* (the SDL backend tags touch-driven pointer events) */
 	if (!t) {
 		if (g_touch) { st.FramePadding = base.FramePadding; st.GrabMinSize = base.GrabMinSize; st.ScrollbarSize = base.ScrollbarSize; st.ItemSpacing = base.ItemSpacing; }
@@ -2556,11 +2568,11 @@ void ImGuiTestEngineHook_ItemInfo(ImGuiContext *ctx, ImGuiID id, const char *lab
 	if ((g_nav_on || g_fit_on) && label) g_nav_labels[id] = label;
 	if (!g_fit_on || !label || g_fit_items.empty() || g_fit_items.back().id != id) return;
 	const char *end = strstr(label, "##"); std::string vis(label, end ? (size_t)(end - label) : strlen(label));
-	if (vis.empty()) return;
+	if (vis.empty() || vis.find('/') != std::string::npos) return;   /* (a child window's name is no label) */
 	const FitItem &it = g_fit_items.back();
 	const ImGuiStyle &st = ctx->Style;
 	const float tw = ImGui::CalcTextSize(vis.c_str()).x, bw = it.bb.GetWidth();
-	const bool framed = it.bb.GetHeight() > ImGui::GetTextLineHeight() + 1.0f;   /* (a button, a field: its label sits inside the frame's padding) */
+	const bool framed = it.bb.GetHeight() > ImGui::GetTextLineHeight() + 1.0f && !(it.w->Flags & ImGuiWindowFlags_Popup && !(it.w->Flags & ImGuiWindowFlags_Modal));   /* (a button, a field: its label sits inside the frame's padding; a menu's entry has none) */
 	if (tw > (framed ? bw - 2 * st.FramePadding.x : bw) + 1.0f)
 		fit_add("label-cut " + fit_name(it.w) + " \"" + vis + "\" text " + std::to_string((int)tw) + " box " + std::to_string((int)bw));
 }
@@ -2922,8 +2934,8 @@ int main(int argc, char **argv) {
 	io.IniFilename = nullptr;
 	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;   /* a controller (or the arrows) moves through everything; L1/R1 the tabs */
 	ui::load_system_font(io);
-	const float scale = shot_path ? 1.0f : SDL_GetWindowDisplayScale(win);   /* the display the window is on, not the primary one */
-	ui::apply(16.0f, scale);
+	if (shot_path) apply_scale(hub_ui_scale((float)sh, 1.0f));   /* (a screenshot run: the size it renders at, display scale 1) */
+	else apply_window_scale(win);   /* the display the window is on, not the primary one, and the window's height */
 	ImGui_ImplSDL3_InitForSDLGPU(win);
 	ImGui_ImplSDLGPU3_InitInfo info = {};
 	info.Device = g_gpu; info.ColorTargetFormat = shot_path ? SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM : SDL_GetGPUSwapchainTextureFormat(g_gpu, win); info.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
@@ -2961,13 +2973,24 @@ int main(int argc, char **argv) {
 	}
 
 	update_check_start(); files_check_start(); steam_refresh();
+	/* fullscreen (UI-01h): --fullscreen (a Steam entry for the launcher itself), or as last time (hub.ini launcher_fullscreen);
+	 * F11 switches it and keeps the choice */
+	{	bool fs = g_prefs["launcher_fullscreen"] == "1";
+		for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "--fullscreen")) fs = true;
+		if (fs) SDL_SetWindowFullscreen(win, true);
+	}
 	bool quit = false;
 	while (!quit) {
 		SDL_Event e;
 		while (SDL_PollEvent(&e)) {
 			ImGui_ImplSDL3_ProcessEvent(&e);
 			if (e.type == SDL_EVENT_QUIT || (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && e.window.windowID == SDL_GetWindowID(win))) quit = true;
-			if (e.type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED && e.window.windowID == SDL_GetWindowID(win)) ui::apply(16.0f, SDL_GetWindowDisplayScale(win));   /* (apply resets the style first, so this is safe) */
+			if ((e.type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED || e.type == SDL_EVENT_WINDOW_RESIZED || e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) && e.window.windowID == SDL_GetWindowID(win))
+				apply_window_scale(win);   /* (apply resets the style first, so this is safe; touch_style rebuilds its sizes from it) */
+			if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_F11 && !e.key.repeat) {
+				const bool fs = (SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN) == 0;
+				SDL_SetWindowFullscreen(win, fs); prefs_set("launcher_fullscreen", fs ? "1" : "0");
+			}
 		}
 		if (SDL_GetWindowFlags(win) & SDL_WINDOW_MINIMIZED) { SDL_Delay(50); continue; }
 		pick_poll();
