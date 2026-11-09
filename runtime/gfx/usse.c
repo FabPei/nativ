@@ -1779,6 +1779,38 @@ void usse_read_color(const UsseInst *inst, const UsseFragLayout *fl, float out[4
 		out[c] = norm ? lane_to_float_norm(raw, o.type) : lane_to_float(raw, o.type);
 	}
 }
+/* (usse.h) GXP -> its variants' output register format: a small open-addressed table, written by the patcher hook
+ * (the game's threads) and read per draw; a word per slot, so a reader sees a slot whole or not at all */
+#define FP_OUTFMT_SLOTS 4096
+static volatile uint64_t fp_outfmt[FP_OUTFMT_SLOTS];   /* gxp << 8 | format; 0 empty */
+void usse_set_fp_output_format(uint32_t gxp, int fmt) {
+	if (!gxp) return;
+	for (uint32_t i = 0, h = (gxp >> 2) * 2654435761u; i < FP_OUTFMT_SLOTS; i++) {
+		uint32_t k = (h + i) % FP_OUTFMT_SLOTS; uint64_t e = fp_outfmt[k];
+		if (!e || (uint32_t)(e >> 8) == gxp) { fp_outfmt[k] = (uint64_t)gxp << 8 | (uint64_t)(fmt & 0xff); return; }
+	}
+}
+int usse_fp_output_format(uint32_t gxp) {
+	static int env = -1; static uint32_t eg[64]; static int ef[64], ne, edef;
+	if (env < 0) {
+		const char *e = getenv("RECOMP_FP_OUTFMT"); env = e != 0;
+		for (const char *p = e; p && *p && ne < 64; ) {
+			char *end; uint32_t g = *p == '*' ? (p++, 0u) : (uint32_t)strtoul(p, &end, 16);
+			if (g) p = end;
+			if (*p != ':') break;
+			int f = (int)strtol(p + 1, &end, 10); p = end;
+			if (g) { eg[ne] = g; ef[ne++] = f; } else edef = f;
+			if (*p == ',') p++;
+		}
+	}
+	if (env) { for (int i = 0; i < ne; i++) if (eg[i] == gxp) return ef[i]; if (edef) return edef; }
+	for (uint32_t i = 0, h = (gxp >> 2) * 2654435761u; i < FP_OUTFMT_SLOTS; i++) {
+		uint64_t e = fp_outfmt[(h + i) % FP_OUTFMT_SLOTS];
+		if (!e) return 0;
+		if ((uint32_t)(e >> 8) == gxp) return (int)(e & 0xff);
+	}
+	return 0;
+}
 void usse_preload_color(UsseInst *inst, const UsseFragLayout *fl, const float in[4]) {
 	UOperand o; memset(&o, 0, sizeof o);
 	o.bank = (uint8_t)(fl->native_color ? BK_O : BK_PA); o.num = (uint16_t)fl->color_pa_start; o.type = (uint8_t)fl->color_type;

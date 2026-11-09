@@ -1896,7 +1896,13 @@ static void shade_interp(const Tri *t, const DrawRec *r, int x, int y, float b0,
 	/* FRAGCOLOR_USED: the program reads the pixel's current colour (programmable blending -- Unit 13's
 	 * occlusion pass multiplies the lit HDR buffer by its half-res AO; without the preload it
 	 * multiplied by zero and the whole frame went black under the later passes) */
-	if (fl->frag_color_used) { float cur[4]; target_read(x, y, cur); usse_preload_color(&finst, fl, cur); }
+	if (fl->frag_color_used) {
+		if (fl->native_color && target.data) {   /* NATIVECOLOR: the pixel's own bits, word by word (usse.h) */
+			int bpp = target_bpp_of(&target); uint8_t px[16] = {0};
+			memcpy(px, G(target.data + (uint32_t)bpp * target_index(&target, x, y)), bpp <= 16 ? (size_t)bpp : 16);
+			for (int k = 0; k < (bpp + 3) / 4 && k < 4; k++) memcpy(&finst.o[k].u, px + 4 * k, 4);
+		} else { float cur[4]; target_read(x, y, cur); usse_preload_color(&finst, fl, cur); }
+	}
 	uint64_t t0 = usse_profile_on() ? now_ns() : 0;
 	/* RECOMP_TRACE_DRAW=k with RECOMP_DEBUG_PIXEL=x,y: that pixel's fragment program instruction by
 	 * instruction (the vertex trace above covers vertex 0 only; a text glyph's alpha went negative
@@ -1940,7 +1946,7 @@ static void shade_interp(const Tri *t, const DrawRec *r, int x, int y, float b0,
 				for (int i = 0; i < 40; i++) fprintf(stderr, "%s%2d=%08x(%g)", i % 8 ? " " : "\n   ", i, r->fdraw.sa[i].u, r->fdraw.sa[i].f);
 				fprintf(stderr, "\n");
 			}
-			fprintf(stderr, "debug draw %d pixel %d,%d f %#x (%d iterators, %s):", r->draw_index, x, y, r->d.fprog, fl->niters, r->use_interp ? "interp" : "stand-in");
+			fprintf(stderr, "debug draw %d pixel %d,%d f %#x (%d iterators, %s; colour type %d x%d at %s%d%s):", r->draw_index, x, y, r->d.fprog, fl->niters, r->use_interp ? "interp" : "stand-in", fl->color_type, fl->color_comps, fl->native_color ? "o" : "pa", fl->color_pa_start, fl->frag_color_used ? ", reads fb" : "");
 			for (int i = 0; i < fl->niters; i++) {
 				const UsseIter *it = &fl->iters[i]; float comps[4] = {0, 0, 0, 1}; int base, ncomp;
 				if (it->is_tex) sample_nondep(&r->d, it, r->vlayout, vary, 0, comps);
@@ -1951,7 +1957,9 @@ static void shade_interp(const Tri *t, const DrawRec *r, int x, int y, float b0,
 		}
 	}
 	*nraw = 0;
-	if (!probed && (fl->color_type == 8 /* TY_U32 */ || fl->color_type == 9 /* TY_S32 */)) {   /* a probe shows as floats even on a raw-word target */
+	if (!probed && fl->native_color && target_bpp_of(&target) <= 4 && usse_output_format_raw32(usse_fp_output_format(r->d.fprog))) {
+		raw[0] = finst.o[0].u; *nraw = 1;   /* NATIVECOLOR in a 32-bit register format: O0 is the surface's word (usse.h) */
+	} else if (!probed && (fl->color_type == 8 /* TY_U32 */ || fl->color_type == 9 /* TY_S32 */)) {   /* a probe shows as floats even on a raw-word target */
 		const UWord *bank = fl->native_color ? finst.o : finst.pa;
 		int n = fl->color_comps > 0 && fl->color_comps <= 4 ? fl->color_comps : 1;
 		for (int k = 0; k < n; k++) raw[k] = bank[(fl->color_pa_start + k) % 160].u;

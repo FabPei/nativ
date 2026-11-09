@@ -155,6 +155,25 @@ void usse_pack_iter_raw(UsseInst *inst, const UsseIter *it, const uint32_t raw[4
 /* FRAGCOLOR_USED: the framebuffer's current colour at the pixel, preloaded where the program's
  * colour output lives before it runs (programmable blending: the program reads and rewrites it) */
 void usse_preload_color(UsseInst *inst, const UsseFragLayout *fl, const float in[4]);
+/* A NATIVECOLOR fragment program's colour registers hold the surface's own bits: it reads the framebuffer as the
+ * pixel's raw word(s) in O0.., and what reaches the surface is in the register format its variant was created with
+ * (sceGxmShaderPatcherCreateFragmentProgram's outputFormat, SceGxmOutputRegisterFormat) -- not the GXP's declared
+ * output type. Tearaway's scene programs declare F16 x4 yet pack U8 into O0 themselves (created UCHAR4); its
+ * post pass reads O0 as bytes (bitwise byte blends) and writes F16 x4 (HALF4). Read as F16 lanes both ways, its
+ * whole frame came out as saturated green and then blocky contour rings (AUTO-01 TW-10).
+ * usse_set_fp_output_format records a variant's format by GXP (libgxm's patcher hook, core/hooks.c); RECOMP_FP_OUTFMT
+ * ("<gxp hex>:<fmt>,...", "*:<fmt>" for the rest) overrides it (replays: the capture holds no patcher calls).
+ * usse_fp_output_format: the format, 0 (DECLARED) when unknown. usse_output_format_raw32: one 32-bit register,
+ * written to the surface as it is (UCHAR4, CHAR4, USHORT2, SHORT2, HALF2, FLOAT). */
+enum { USSE_OUT_DECLARED, USSE_OUT_UCHAR4, USSE_OUT_CHAR4, USSE_OUT_USHORT2, USSE_OUT_SHORT2, USSE_OUT_HALF4, USSE_OUT_HALF2, USSE_OUT_FLOAT2, USSE_OUT_FLOAT };
+void usse_set_fp_output_format(uint32_t gxp, int fmt);
+int usse_fp_output_format(uint32_t gxp);
+/* the GPU translator's colour kind for a NATIVECOLOR program (gfx_gpu.c get_shader -> usse_spirv_translate): the
+ * target's kind (gfx_gpu.c TK_*: 0 RGBA8, 1 RGBA16F, 2 RGBA32F, 3 sRGB RGBA8, 4 R11G11B10) in the low byte, NATIVE set,
+ * RAW32 when its output register format is one raw 32-bit word */
+#define USSE_KIND_NATIVE 0x100
+#define USSE_KIND_RAW32 0x200
+static inline int usse_output_format_raw32(int fmt) { return fmt == USSE_OUT_UCHAR4 || fmt == USSE_OUT_CHAR4 || fmt == USSE_OUT_USHORT2 || fmt == USSE_OUT_SHORT2 || fmt == USSE_OUT_HALF2 || fmt == USSE_OUT_FLOAT; }
 /* what a FRAGCOLOR_USED program does with the colour it reads, when the blend unit can do it instead (colour out =
  * K * colour in + X; see usse.c): gfx_gpu.c runs such a program without the framebuffer and blends. Tested on the
  * interpreter, cached. */

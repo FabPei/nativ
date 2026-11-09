@@ -534,6 +534,7 @@ static void load_image(const char *path) {
  * reports its address; with RECOMP_PROFILE=<seconds> set, the main thread's instructions are
  * counted per guest function from that time on, and printed when the run ends */
 __thread uint32_t recomp_last_pc;   /* profile builds: the guest instruction this thread ran last (kernel.c's write watch names it) */
+uint32_t recomp_last_pc_now(void) { return recomp_last_pc; }   /* (platform_win32.c's exception log: a weak reference to a function links everywhere) */
 #ifdef RECOMP_TRACE
 #include <time.h>
 static __thread int prof_main;

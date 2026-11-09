@@ -42,6 +42,8 @@
 #include "platform.h"
 
 uint8_t *recomp_mem;
+uint32_t recomp_watch_lo, recomp_watch_hi;   /* rt.h's guest write watch (WR32 & co.): off in a replay */
+void recomp_watch_write(uint32_t a, uint32_t v, int w) { (void)a; (void)v; (void)w; }
 
 /* what the graphics code expects from the rest of the host */
 int guest_mem_ranges(uint32_t lo[], uint32_t hi[], int max) { (void)lo; (void)hi; (void)max; return 0; }   /* no capturing a replay */
@@ -119,6 +121,15 @@ int main(int argc, char **argv) {
 			if (scratch_cap < raw) { scratch_cap = raw; scratch = realloc(scratch, raw); }
 			if (uncompress(scratch, &dl, buf + 8, len - 8) != Z_OK || dl != raw) { fprintf(stderr, "bad memory record at %#x\n", addr); return 1; }
 			/* RECOMP_REPLAY_KEEP_TARGETS: the record's bytes outside every rendered surface, in pieces */
+			/* RECOMP_REPLAY_KEEP_LOG=1: which kept surfaces the record would have changed, and where (the run wrote there after a scene rendered it) */
+			static int klog = -1; if (klog < 0) klog = getenv("RECOMP_REPLAY_KEEP_LOG") != 0;
+			for (int k = 0; klog && keep && k < nkept; k++) {
+				uint32_t lo = kept[k][0] > addr ? kept[k][0] : addr, hi = kept[k][1] < addr + raw ? kept[k][1] : addr + raw;
+				if (lo >= hi) continue;
+				uint32_t ndiff = 0, first = 0, last = 0;
+				for (uint32_t a = lo; a < hi; a++) if (*G(a) != scratch[a - addr]) { if (!ndiff) first = a; last = a; ndiff++; }
+				if (ndiff) fprintf(stderr, "keep: before draw %d scene %d: surface %d [%#x,%#x) %u bytes differ in [%#x,%#x]\n", draws, scenes, k, kept[k][0], kept[k][1], ndiff, first, last);
+			}
 			uint32_t seg[64][2]; int nseg = 1; seg[0][0] = addr; seg[0][1] = addr + raw;
 			for (int k = 0; keep && k < nkept && nseg; k++) {
 				int n2 = 0; uint32_t out[64][2];

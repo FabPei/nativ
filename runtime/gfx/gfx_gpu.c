@@ -1008,7 +1008,10 @@ static void recipe_used_shader(ShaderEntry *x, uint32_t addr, const UsseProgram 
 static ShaderEntry *get_shader(uint32_t addr, const UsseProgram *prog, const UsseProgram *vprog, const UsseVertexLayout *vl, const UsseFragLayout *fl, const uint32_t sa_tex_unit[256], int kind, uint32_t cube_mask, uint32_t snap_mask,
                                const UsseVfLayout *vf, uint32_t layout_hash) {   /* vf/layout_hash: a vertex program's GPU-side fetch plan (vf_plan), null/0 for the CPU packer's records (and fragment programs) */
 	uint32_t hash = usse_program_hash(prog), hash2 = vprog && !canon_vary_on() ? usse_program_hash(vprog) : 0;
+	const int target_kind_of_draw = kind;
 	usse_spirv_key(prog, fl, sa_tex_unit, &kind, &cube_mask, &snap_mask);   /* (only what changes the module: one shader for the variants that don't) */
+	if (kind >= 0 && fl && fl->native_color)   /* NATIVECOLOR: the surface's own bits in and out (usse.h) -- the target's kind and the variant's register format matter */
+		kind = USSE_KIND_NATIVE | (usse_output_format_raw32(usse_fp_output_format(addr)) ? USSE_KIND_RAW32 : 0) | (target_kind_of_draw & 0xff);
 	int pcf_unit = kind >= 0 ? shadow_unit(addr, hash) : -1, pcf = pcf_unit >= 0 && shadow_filter_want() ? 16 : 0;   /* (fragment programs: kind is the target's) */
 	ShaderEntry *x = shader_find(hash, hash2, kind, cube_mask, snap_mask, layout_hash, pcf, g_points_draw, g_fzero_draw);
 	if (x) {

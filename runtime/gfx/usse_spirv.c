@@ -1771,6 +1771,10 @@ static void emit_frag_color_preload(Gen *g, uint32_t texel, int *ok) {
 	o.bank = (uint8_t)(fl->native_color ? BK_O : BK_PA); o.num = (uint16_t)fl->color_pa_start; o.type = (uint8_t)fl->color_type;
 	for (int k = 0; k < 4; k++) o.swiz[k] = (uint8_t)k;
 	int n = fl->color_comps > 0 ? fl->color_comps : 4;
+	if (fl->native_color && (g->color_kind & USSE_KIND_NATIVE)) {   /* NATIVECOLOR: the surface's bits (usse.h) -- RGBA8's bytes in O0, RGBA16F's halves in O0-O1, RGBA32F's words */
+		int tk = g->color_kind & 0xff;
+		o.type = (uint8_t)(tk == 1 ? TY_F16 : tk == 2 ? TY_F32 : TY_U8); n = 4;
+	}
 	int norm = o.type == TY_U8 || o.type == TY_S8 || o.type == TY_U16 || o.type == TY_S16;
 	for (int c = 0; c < n && c < 4 && *ok; c++) {
 		uint32_t v = composite_extract1(s, t_float(s), texel, (uint32_t)c);
@@ -1840,6 +1844,19 @@ static void emit_frag_epilogue(Gen *g, int *ok) {
 		}
 	}
 	uint32_t comp[4];
+	if (fl->native_color && (g->color_kind & USSE_KIND_RAW32)) {   /* NATIVECOLOR in a 32-bit register format: O0 is the surface's word (usse.h) */
+		uint32_t w0; { UOperand r = o; r.type = TY_U32; w0 = read_raw_comp(g, &r, 0, 0, ok); }
+		int tk = g->color_kind & 0xff;
+		for (int c = 0; c < 4; c++) {
+			if (tk == 1) comp[c] = c < 2 ? half_to_float_spv(s, extract_lane_spv(s, w0, TY_F16, c)) : c_float(s, c == 3 ? 1.0f : 0.0f);   /* (a half pair into RGBA16F) */
+			else if (tk == 2) comp[c] = c == 0 ? result1(s, &s->func, SpvOpBitcast, t_float(s), w0) : c_float(s, c == 3 ? 1.0f : 0.0f);
+			else comp[c] = fop2(s, SpvOpFDiv, result1(s, &s->func, SpvOpConvertUToF, t_float(s), extract_lane_spv(s, w0, TY_U8, c)), c_float(s, 255.0f));   /* RGBA8: bytes */
+		}
+		if (!*ok) return;
+		uint32_t id = nid(s); INS(&s->func, SpvOpCompositeConstruct, t_vec(s, t_float(s), 4), id, comp[0], comp[1], comp[2], comp[3]);
+		store(s, g->var_frag_color, id);
+		return;
+	}
 	if (o.type == TY_U32 || o.type == TY_S32) {   /* raw words (Unit 13's packed G-buffer): placed so the target holds the bits */
 		uint32_t w[4];
 		for (int k = 0; k < 4; k++) w[k] = k < n ? read_raw_comp(g, &o, 0, k, ok) : c_uint(s, 0);
