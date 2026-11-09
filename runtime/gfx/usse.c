@@ -665,6 +665,7 @@ struct UsseProgram {
 	UsseFragLayout fl;
 	uint32_t literal_addr, literal_words;   /* container 16's data, for the uniform-buffer-address table */
 	int8_t additive;   /* usse_fragment_fb_blend's answer + 1, once asked (0: not yet) */
+	int8_t packed8;    /* usse_fragment_colour_packed8's answer + 1, once asked (0: not yet) */
 	struct UsseProgram *next, *hnext;   /* the address table's chain; the content table's chain (decoded entries only) */
 };
 typedef struct {
@@ -1668,6 +1669,49 @@ int usse_primary_reads_memory(const UsseProgram *p) { for (int i = 0; i < p->npr
 const UOp *usse_program_code(const UsseProgram *p, int secondary, int *count) {
 	*count = secondary ? p->nsec : p->nprim;
 	return secondary ? p->sec : p->prim;
+}
+/* (usse.h) a NATIVECOLOR program whose colour word is an 8-bit pack: the primary code walked in order, each TEMP / PA /
+ * O word remembering what last wrote it -- a VPCK into U8/S8/O8 (packed), a plain move of a word that was (carried
+ * over), or anything else -- and the colour register's first word asked at the end. Straight-line view: a write under
+ * a predicate or behind a branch counts as if it ran (both of Tearaway's kinds of program are straight-line). */
+static int words_written(const UOp *o, int *first, int *count) {
+	int t = o->dst.type, lanes = t == TY_F16 || t == TY_U16 || t == TY_S16 ? 2 : t == TY_U8 || t == TY_S8 || t == TY_O8 ? 4 : 1;
+	int lo = 4, hi = -1; for (int l = 0; l < 4; l++) if (o->mask & (1 << l)) { if (l < lo) lo = l; if (l > hi) hi = l; }
+	if (hi < 0) return 0;
+	int reps = o->reps ? o->reps : 1;
+	*first = o->dst.num + lo / lanes; *count = (hi / lanes - lo / lanes + 1) + (reps - 1) * ((4 + lanes - 1) / lanes);
+	return 1;
+}
+int usse_fragment_colour_packed8(const UsseProgram *cp) {
+	UsseProgram *p = (UsseProgram *)cp;
+	if (p->packed8) return p->packed8 - 1;
+	enum { W_OTHER, W_PACKED };
+	static __thread uint8_t st[3][256];   /* TEMP, PA, O */
+	memset(st, W_OTHER, sizeof st);
+	int r = 0;
+	if (p->is_fragment && p->fl.native_color) {
+		for (int i = 0; i < p->nprim; i++) {
+			const UOp *o = &p->prim[i];
+			int b = o->dst.bank == BK_TEMP ? 0 : o->dst.bank == BK_PA ? 1 : o->dst.bank == BK_O ? 2 : -1, first, n;
+			if (b < 0 || o->op == OP_NOP || o->op == OP_BR || o->op == OP_KILL || o->op == OP_DEPTHF || !words_written(o, &first, &n)) continue;
+			int kind = W_OTHER, sb = o->s1.bank == BK_TEMP ? 0 : o->s1.bank == BK_PA ? 1 : o->s1.bank == BK_O ? 2 : -1;
+			int8_t ident = o->s1.swiz[0] == 0 && o->s1.swiz[1] == 1 && o->s1.swiz[2] == 2 && o->s1.swiz[3] == 3 && !o->s1.negabs;
+			if (o->op == OP_VPCK && (o->dst.type == TY_U8 || o->dst.type == TY_S8 || o->dst.type == TY_O8)) kind = W_PACKED;
+			for (int k = 0; k < n; k++) {
+				int w = first + k; if (w < 0 || w >= 256) continue;
+				int v = kind;
+				if (o->op == OP_VMOV && sb >= 0 && ident && o->s1.type == o->dst.type && o->s1.num + k < 256) v = st[sb][o->s1.num + k];   /* a move carries the word over */
+				st[b][w] = (uint8_t)v;
+			}
+		}
+		int c = p->fl.color_pa_start; r = c >= 0 && c < 256 && st[2][c] == W_PACKED;
+	}
+	p->packed8 = (int8_t)(r + 1);
+	return r;
+}
+int usse_native_raw32(const UsseProgram *p, uint32_t gxp) {
+	static int env = -1; if (env < 0) env = getenv("RECOMP_FP_OUTFMT") != 0;
+	return env ? usse_output_format_raw32(usse_fp_output_format(gxp)) : usse_fragment_colour_packed8(p);
 }
 const UsseVertexLayout *usse_vertex_layout(const UsseProgram *p) { return &p->vl; }
 const UsseFragLayout *usse_fragment_layout(const UsseProgram *p) { return &p->fl; }
