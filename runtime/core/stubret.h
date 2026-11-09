@@ -30,7 +30,8 @@ static inline uint32_t stub_family_result(const char *name, int zero) {
 	size_t nl = strlen(name);
 	int setup = stubret_ends(name, nl, "Init") || stubret_ends(name, nl, "Initialize") || stubret_ends(name, nl, "Term")
 	         || stubret_ends(name, nl, "Terminate") || stubret_ends(name, nl, "Shutdown") || stubret_ends(name, nl, "Finalize")
-	         || strstr(name, "Callback") || strstr(name, "RegisterHandler") || strstr(name, "InitWithParam") || strstr(name, "SetParam") || strstr(name, "Create") || strstr(name, "Delete") || strstr(name, "Destroy") || strstr(name, "Abort");
+	         || strstr(name, "Callback") || strstr(name, "RegisterHandler") || strstr(name, "InitWithParam") || strstr(name, "SetParam") || strstr(name, "Create") || strstr(name, "Delete") || strstr(name, "Destroy") || strstr(name, "Abort")
+	         || stubret_ends(name, nl, "SetNpTitleId");   /* (naming the title to NP / its web API: set-up, local) */
 	if (setup || stubret_ends(name, nl, "DialogGetStatus")) return 0;
 	for (int i = 0; stub_errs[i].prefix; i++) if (!strncmp(name, stub_errs[i].prefix, strlen(stub_errs[i].prefix))) return stub_errs[i].err;
 	return 0;

@@ -39,6 +39,10 @@ int main(void) {
 	check("sceNpMessageDialogInit", 0, 0);
 	check("sceNpMessageDialogTerm", 0, 0);
 	check("sceNpRegisterServiceStateCallback", 0, 0);
+	/* set-up too (NIGHT-01 batch B): naming the title to the web API right after its Initialize -- a game module
+	 * asserted on the family error and stopped at start-up */
+	check("sceNpWebApiSetNpTitleId", 0, 0);
+	check("sceNpSetNpTitleId", 0, 0);
 	check("sceImeUpdate", 0, 0);
 	check("sceNpManagerGetAccountRegion", 1, 0);
 
