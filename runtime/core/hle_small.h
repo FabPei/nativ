@@ -52,6 +52,26 @@ static inline int hle_audio_port_slot(const uint32_t len[HLE_AUDIO_PORTS], uint3
 	return i < HLE_AUDIO_PORTS && len[i] ? (int)i : -1;
 }
 
+/* (AUTO-01 LBP-7) audio input: sceAudioInOpenPort(type, grain, freq, param). Types: 0 VOICE (16 kHz), 2 RAW (16 or 48 kHz);
+ * one port per type; the handle is 1-based like an output port's. sceAudioInInput(port, dest) hands one grain of 16-bit mono
+ * samples per call and returns when the hardware would have captured it (grain / freq). Without one (a stub returning 0 at
+ * once) LittleBigPlanet's 'Mic Thread' spun at its priority beside the job workers */
+#define HLE_AUDIO_IN_ERR_INVALID_PORT      0x80260101u
+#define HLE_AUDIO_IN_ERR_INVALID_POINTER   0x80260102u
+#define HLE_AUDIO_IN_ERR_PORT_FULL         0x80260103u
+#define HLE_AUDIO_IN_ERR_NOT_OPENED        0x80260104u
+#define HLE_AUDIO_IN_ERR_INVALID_PARAMETER 0x80260106u
+/* 0 when (type, grain, freq) can be opened, an error otherwise */
+static inline uint32_t hle_audio_in_open_check(uint32_t type, uint32_t grain, uint32_t freq) {
+	if (type != 0 && type != 2) return HLE_AUDIO_IN_ERR_INVALID_PARAMETER;
+	if (type == 0 && freq != 16000) return HLE_AUDIO_IN_ERR_INVALID_PARAMETER;
+	if (type == 2 && freq != 16000 && freq != 48000) return HLE_AUDIO_IN_ERR_INVALID_PARAMETER;
+	if (grain == 0 || grain > 4096) return HLE_AUDIO_IN_ERR_INVALID_PARAMETER;
+	return 0;
+}
+/* the microseconds one grain takes to capture */
+static inline uint64_t hle_audio_in_grain_us(uint32_t grain, uint32_t freq) { return freq ? (uint64_t)grain * 1000000u / freq : 0; }
+
 /* NGS: one patch's source side, as the host keeps it */
 typedef struct { uint32_t src; int32_t out, sub; int active; } HleNgsPatchSrc;
 /* the slot a new patch from (src, out) takes: the requested one, or with -1 the lowest one no active patch uses */

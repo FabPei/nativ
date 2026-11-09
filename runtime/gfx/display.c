@@ -543,12 +543,12 @@ static void h_audio_set_volume(Cpu *c) {
  * goes on rather than deadlock, and says so. */
 static uint64_t port_vnext[8];
 static uint64_t guest_vblank_us(void) { return (1ull << 32) + vclock_edges() * 16667ull; }
-static void audio_wait_guest(uint32_t i, uint64_t len) {
+static void audio_wait_guest_at(uint64_t *vnext, uint32_t i, uint64_t len) {
 	vclock_idle();
 	uint64_t now = guest_vblank_us();
-	if (port_vnext[i] < now) port_vnext[i] = now;
-	uint64_t start = port_vnext[i];   /* this buffer starts playing when the previous one ends */
-	port_vnext[i] += len;
+	if (*vnext < now) *vnext = now;
+	uint64_t start = *vnext;   /* this buffer starts playing when the previous one ends */
+	*vnext += len;
 	if (start <= now) return;
 	int b = sched_block_begin();
 	pthread_mutex_lock(&vclock_m);
@@ -564,6 +564,7 @@ static void audio_wait_guest(uint32_t i, uint64_t len) {
 	pthread_mutex_unlock(&vclock_m);
 	if (b) sched_block_end();
 }
+static void audio_wait_guest(uint32_t i, uint64_t len) { audio_wait_guest_at(&port_vnext[i], i, len); }
 static void h_audio_output(Cpu *c) {   /* (port, buffer) */
 	uint32_t i = A0 - 1;
 	if (i >= 8 || !port_len[i]) { RET(0x80260003u); return; }
@@ -596,6 +597,44 @@ static void h_audio_output(Cpu *c) {   /* (port, buffer) */
 	port_next[i] += len;
 	RET(0);
 }
+
+/* ---- audio input (AUTO-01 LBP-7): a microphone that hears silence. Input hands one grain of zero samples and returns
+ * when the console's would have captured it: paced on the wall clock, or on guest time under RECOMP_CLOCK=fixed (as an
+ * output port). The stubs before returned 0 at once, and LittleBigPlanet's 'Mic Thread' (prio 148) called
+ * GetStatus/OpenPort/Input 10000s of times in seconds beside the job workers, and its runs ended differently each time */
+static uint32_t in_grain[2], in_freq[2];   /* by port type: 0 VOICE, 1 RAW (type 2) */
+static uint64_t in_next[2], in_vnext[2];
+static void h_audio_in_open(Cpu *c) {   /* (type, grain, freq, param) */
+	const uint32_t e = hle_audio_in_open_check(A0, A1, A2);
+	if (e) { RET(e); return; }
+	const int t = A0 == 2;
+	if (in_grain[t]) { RET(HLE_AUDIO_IN_ERR_PORT_FULL); return; }
+	in_grain[t] = A1; in_freq[t] = A2; in_next[t] = 0; in_vnext[t] = 0;
+	fprintf(stderr, "    audio in port %d: %u samples at %u Hz (silent microphone)\n", t + 1, A1, A2);
+	RET(t + 1);
+}
+static void h_audio_in_release(Cpu *c) {
+	const uint32_t t = A0 - 1;
+	if (t >= 2) { RET(HLE_AUDIO_IN_ERR_INVALID_PORT); return; }
+	if (!in_grain[t]) { RET(HLE_AUDIO_IN_ERR_NOT_OPENED); return; }
+	in_grain[t] = 0; RET(0);
+}
+static void h_audio_in_input(Cpu *c) {   /* (port, dest) */
+	const uint32_t t = A0 - 1;
+	if (t >= 2) { RET(HLE_AUDIO_IN_ERR_INVALID_PORT); return; }
+	if (!in_grain[t]) { RET(HLE_AUDIO_IN_ERR_NOT_OPENED); return; }
+	if (!A1) { RET(HLE_AUDIO_IN_ERR_INVALID_POINTER); return; }
+	memset(G(A1), 0, (size_t)in_grain[t] * 2);
+	const uint64_t len = hle_audio_in_grain_us(in_grain[t], in_freq[t]);
+	if (clock_fixed()) { audio_wait_guest_at(&in_vnext[t], 8 + t, len); RET(0); return; }
+	uint64_t now = now_us();
+	if (!in_next[t] || in_next[t] + len < now) in_next[t] = now;
+	in_next[t] += len;   /* this grain is captured once its time has passed */
+	if (in_next[t] > now) { int b = sched_block_begin(); usleep((useconds_t)(in_next[t] - now)); if (b) sched_block_end(); }
+	RET(0);
+}
+static void h_audio_in_status(Cpu *c) { RET(0); }   /* (select): SCE_AUDIO_IN_GETSTATUS_MUTE 1 -- not muted */
+static void h_audio_in_adopt(Cpu *c) { RET(A0 == 0 || A0 == 2 ? 1 : 0); }
 
 /* ---- input: nothing pressed yet */
 /* ---- input recording and replay. RECOMP_INPUT_RECORD=path records the pad state DELIVERED to
@@ -1201,7 +1240,9 @@ const HleEntry hle_display[] = {
 	{"sceDisplayWaitSetFrameBufCB", h_wait_setbuf_cb}, {"sceDisplayWaitSetFrameBufMultiCB", h_wait_setbuf_multi_cb},
 	{"sceDisplayRegisterVblankStartCallback", h_register_vblank_cb}, {"sceDisplayUnregisterVblankStartCallback", h_unregister_vblank_cb},
 	{"sceAudioOutOpenPort", h_audio_open}, {"sceAudioOutOutput", h_audio_output}, {"sceAudioOutSetVolume", h_audio_set_volume},
-	{"sceAudioOutReleasePort", h_audio_release}, {"sceKernelGetModel", h_kernel_model},   /* (HLE-PORT-01) */
+	{"sceAudioOutReleasePort", h_audio_release},
+	{"sceAudioInOpenPort", h_audio_in_open}, {"sceAudioInReleasePort", h_audio_in_release}, {"sceAudioInInput", h_audio_in_input},
+	{"sceAudioInGetStatus", h_audio_in_status}, {"sceAudioInGetAdopt", h_audio_in_adopt}, {"sceKernelGetModel", h_kernel_model},   /* (HLE-PORT-01) */
 	{"sceCtrlPeekBufferPositive", h_ctrl_peek}, {"sceTouchPeek", h_touch_peek},
 	{"sceCtrlReadBufferPositive", h_ctrl_read}, {"sceTouchRead", h_touch_read}, {"sceTouchGetPanelInfo", h_touch_panel_info},
 	/* the "2" reads (Killzone 1.12): the same SceCtrlData, on a handheld only from port 0 -- the PS TV's paired pads are ports 1-4,

@@ -37,6 +37,13 @@ int main(void) {
 	for (int k = 0; k < HLE_AUDIO_PORTS; k++) { int s = hle_audio_port_free_slot(len); ok &= s == k; if (s >= 0) len[s] = 256; }
 	check("audio: 8 opens take slots 0..7", ok);
 	check("audio: a 9th open finds no slot (PORT_FULL)", hle_audio_port_free_slot(len) == -1);
+	/* (AUTO-01 LBP-7) audio input: LittleBigPlanet opens a voice port (type 0, grain 256, 16 kHz) */
+	check("audio in: a voice port, 256 samples at 16 kHz, opens", hle_audio_in_open_check(0, 256, 16000) == 0);
+	check("audio in: raw ports at 16 and 48 kHz open", hle_audio_in_open_check(2, 256, 16000) == 0 && hle_audio_in_open_check(2, 768, 48000) == 0);
+	check("audio in: a voice port at 48 kHz, type 1, grain 0: INVALID_PARAMETER",
+	      hle_audio_in_open_check(0, 256, 48000) == HLE_AUDIO_IN_ERR_INVALID_PARAMETER && hle_audio_in_open_check(1, 256, 16000) == HLE_AUDIO_IN_ERR_INVALID_PARAMETER
+	      && hle_audio_in_open_check(0, 0, 16000) == HLE_AUDIO_IN_ERR_INVALID_PARAMETER);
+	check("audio in: one 256-sample grain at 16 kHz takes 16000 us", hle_audio_in_grain_us(256, 16000) == 16000u);
 	int s = hle_audio_port_slot(len, 3);   /* release handle 3 = slot 2 */
 	check("audio: handle 3 names slot 2", s == 2);
 	if (s >= 0) len[s] = 0;
