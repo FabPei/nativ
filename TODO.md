@@ -366,3 +366,4 @@ generic, PR-suitable with the fixture's synthetic content (comment wording gener
 <!-- INTEGRATION-01 2026-11-09 16:5x refresh 19: + UI 799cdb3 (UI-02c drawn controller mapping). pad_diagram_test passes; launcher rebuilt. -->
 <!-- INTEGRATION-01 2026-11-09 17:0x refresh 20: + UI a43507b (UI-02b controller + camera choice by name). device_pick_test passes; run_ci_tests see ledger. UI-02 a-e all in. -->
 <!-- INTEGRATION-01 2026-11-09 17:1x refresh 21: + kamera-ar f8fe9b9 (NEON VABD/VABA). fixture_vabd + fixture_jump_table pass. -->
+<!-- INTEGRATION-01 2026-11-09 19:1x refresh 22: + UI ea90d64 (UI-03 F10 top tabs, one pad flow; launcher Settings the same). menu_walk_test all passed, menu_sidebar_test all passed. -->
