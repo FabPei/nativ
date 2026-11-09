@@ -413,4 +413,4 @@ module (`SPIRV_TMP=.` for a Windows spirv-val from WSL):
 
     cc -O1 -g -Wall -D_GNU_SOURCE -I ../gfx -I ../core -I ../../recompiler -I ../.. usse_iterraw_test.c ../gfx/usse.c ../gfx/usse_spirv.c -o /tmp/usse_iterraw_test -lm && /tmp/usse_iterraw_test
 
-It prints `10 checks, 0 failed` / `all passed` and exits 0 (fail-before: "+0 FToU").
+It prints `11 checks, 0 failed` / `all passed` and exits 0 (fail-before: "+0 FToU"; with fa401fc's translator the sRGB check fails, 6 pow: it decoded a gamma texture before the pack).

@@ -1375,21 +1375,28 @@ static uint32_t srgb_mask_comp(Gen *g, int comp) {
 	INS(&s->func, SpvOpAccessChain, g->ptr_sa_u, id, g->var_sa, c_uint(s, 3), c_uint(s, (uint32_t)comp));
 	return load(s, t_uint(s), id);
 }
-static uint32_t srgb_fixup(Gen *g, int unit, uint32_t texel) {
+/* decode 0: the raw-word path (a result-format-0 texture iterator) -- the texel as stored: a gamma texture over plain data
+ * is NOT decoded (the interpreter's usse_texfn_raw reads the bytes, no tex_gamma), but a non-gamma texture over an sRGB
+ * target is still re-encoded (the GPU decoded the target's stored sRGB bytes). Open: a gamma texture over an sRGB target
+ * would need an encode no mask word names (the GPU's linear value goes out). */
+static uint32_t srgb_fixup_mode(Gen *g, int unit, uint32_t texel, int decode);
+static uint32_t srgb_fixup(Gen *g, int unit, uint32_t texel) { return srgb_fixup_mode(g, unit, texel, 1); }
+static uint32_t srgb_fixup_mode(Gen *g, int unit, uint32_t texel, int decode) {
 	Spv *s = &g->s; uint32_t tf = t_float(s), tb = t_bool(s), tu = t_uint(s), bit = c_uint(s, 1u << (unit & 15));
-	uint32_t dec = result2(s, &s->func, SpvOpINotEqual, tb, result2(s, &s->func, SpvOpBitwiseAnd, tu, srgb_mask_comp(g, 0), bit), c_uint(s, 0));
+	uint32_t dec = decode ? result2(s, &s->func, SpvOpINotEqual, tb, result2(s, &s->func, SpvOpBitwiseAnd, tu, srgb_mask_comp(g, 0), bit), c_uint(s, 0)) : 0;
 	uint32_t enc = result2(s, &s->func, SpvOpINotEqual, tb, result2(s, &s->func, SpvOpBitwiseAnd, tu, srgb_mask_comp(g, 1), bit), c_uint(s, 0));
 	uint32_t ch[4];
 	for (int c = 0; c < 4; c++) ch[c] = composite_extract1(s, tf, texel, (uint32_t)c);
 	for (int c = 0; c < 3; c++) {
 		uint32_t x = fclamp(s, ch[c], 0.0f, 1.0f);
-		uint32_t lin = result3(s, &s->func, SpvOpSelect, tf, result2(s, &s->func, SpvOpFOrdLessThanEqual, tb, x, c_float(s, 0.04045f)),
+		uint32_t lin = !decode ? 0 : result3(s, &s->func, SpvOpSelect, tf, result2(s, &s->func, SpvOpFOrdLessThanEqual, tb, x, c_float(s, 0.04045f)),
 		                       fop2(s, SpvOpFDiv, x, c_float(s, 12.92f)),
 		                       glsl2(s, GLSLPow, fop2(s, SpvOpFDiv, fop2(s, SpvOpFAdd, x, c_float(s, 0.055f)), c_float(s, 1.055f)), c_float(s, 2.4f)));
 		uint32_t srgb = result3(s, &s->func, SpvOpSelect, tf, result2(s, &s->func, SpvOpFOrdLessThanEqual, tb, x, c_float(s, 0.0031308f)),
 		                        fop2(s, SpvOpFMul, x, c_float(s, 12.92f)),
 		                        fop2(s, SpvOpFSub, fop2(s, SpvOpFMul, c_float(s, 1.055f), glsl2(s, GLSLPow, x, c_float(s, 1.0f / 2.4f))), c_float(s, 0.055f)));
-		ch[c] = result3(s, &s->func, SpvOpSelect, tf, dec, lin, result3(s, &s->func, SpvOpSelect, tf, enc, srgb, ch[c]));
+		uint32_t keep = result3(s, &s->func, SpvOpSelect, tf, enc, srgb, ch[c]);
+		ch[c] = decode ? result3(s, &s->func, SpvOpSelect, tf, dec, lin, keep) : keep;
 	}
 	uint32_t id = nid(s); INS(&s->func, SpvOpCompositeConstruct, t_vec(s, tf, 4), id, ch[0], ch[1], ch[2], ch[3]);
 	return id;
@@ -1690,9 +1697,10 @@ static void emit_sample_nondep(Gen *g, const UsseIter *it, const uint32_t sa_tex
 		if (base >= 0 && it->tex_proj >= 2 && g->vl->ncomp_tex[it->tex_coord_src] > 2) { u = read_vary_comp(g, base, ok); v = read_vary_comp(g, base + 1, ok); }
 		coord = cube_coord(g, u, v, w3, grad);
 	} else coord = result2(s, &s->func, SpvOpCompositeConstruct, t_vec(s, t_float(s), 2), u, v);
-	uint32_t texel = srgb_fixup(g, it->tex_unit, (g->snap_mask >> (it->tex_unit & 15) & 1) && !slot_is_cube(g, slot) ? snap_fetch(g, slot, it->tex_unit, u, v)
-	                                               : sample_lod(g, slot, it->tex_unit, coord, 0, 0, grad));
-	if (it->result_fmt == 0 && !slot_is_cube(g, slot)) {
+	const int raw_word = it->result_fmt == 0 && !slot_is_cube(g, slot);   /* (below: the texel as stored, no gamma decode) */
+	uint32_t texel = srgb_fixup_mode(g, it->tex_unit, (g->snap_mask >> (it->tex_unit & 15) & 1) && !slot_is_cube(g, slot) ? snap_fetch(g, slot, it->tex_unit, u, v)
+	                                               : sample_lod(g, slot, it->tex_unit, coord, 0, 0, grad), !raw_word);
+	if (raw_word) {
 		/* result format 0 asks for no conversion: the texture unit hands over the texel's native packed
 		 * word, a U8U8U8U8 (or block-decoded) texel as ONE word, bytes R G B A from the low end -- what
 		 * usse_pack_iter_raw / gfx_soft.c's usse_texfn_raw give the interpreter. Writing four F32 words
