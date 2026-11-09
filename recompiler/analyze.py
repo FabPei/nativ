@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from imports import known_names
 
 VAR_BASE, VAR_SLOT, VAR_SIZE = 0xfff00000, 0x1000, 0x80000
+INSN_CACHE_MAX = 131072   # Analyser.insn's memo bound (~0.55 GB)
 
 
 class Module:
@@ -289,6 +290,10 @@ class Analyser:
     def insn(self, a, arm):
         k = (a, arm)
         if k not in self.cache:
+            # a bounded memo: a capstone instruction with detail is ~4 KB in Python and pointer seeding probes the
+            # whole text, so an unbounded cache grew past 12 GB on a 17.5 MB eboot; clearing it only costs re-decodes
+            if len(self.cache) >= INSN_CACHE_MAX:
+                self.cache.clear()
             o = a - self.lo
             if not (0 <= o < len(self.code) - 1):
                 self.cache[k] = None
