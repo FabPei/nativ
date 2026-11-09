@@ -68,6 +68,19 @@ static void log_exception(const EXCEPTION_RECORD *r) {
 	n += snprintf(line + n, sizeof line - (size_t)n, ") guest thread %#x last pc %#x host thread %lu\n", kernel_current_tid ? kernel_current_tid() : 0,
 	              recomp_last_pc_now ? recomp_last_pc_now() : 0, (unsigned long)GetCurrentThreadId());
 	DWORD w; WriteFile(GetStdHandle(STD_ERROR_HANDLE), line, (DWORD)n, &w, 0);   /* (no stdio: this may run on a nearly full stack) */
+	if (r->ExceptionCode == EXCEPTION_STACK_OVERFLOW) {
+		/* (AUTO-01 LBP-10) a stack overflow: the frames as module+offset (llvm-symbolizer on the .exe names them; a
+		 * recompiled guest function is fn_<addr>) -- the recursion is the repeating run. On the thread's reserve
+		 * (plat_thread_guard): no stdio, a small buffer */
+		void *bt[40]; USHORT nb = CaptureStackBackTrace(0, 40, bt, 0);
+		for (USHORT i = 0; i < nb; i++) {
+			HMODULE m = 0; char nm[MAX_PATH] = "?"; char l2[MAX_PATH + 48];
+			if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)bt[i], &m) && m) GetModuleFileNameA(m, nm, sizeof nm);
+			const char *b = strrchr(nm, '\\');
+			int k = snprintf(l2, sizeof l2, "      overflow frame %2u %s+%#llx\n", i, b ? b + 1 : nm, (unsigned long long)(m ? (uint8_t *)bt[i] - (uint8_t *)m : (uintptr_t)bt[i]));
+			WriteFile(GetStdHandle(STD_ERROR_HANDLE), l2, (DWORD)k, &w, 0);
+		}
+	}
 }
 static LONG CALLBACK on_vectored(EXCEPTION_POINTERS *ep) {
 	if (ep->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION) log_exception(ep->ExceptionRecord);
