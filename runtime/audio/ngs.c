@@ -448,6 +448,10 @@ static void vo_state_log(Voice *v, uint32_t lr, uint64_t us) {
 /* ---- voices */
 static void h_voice_play(Cpu *c) {
 	Voice *v = voice_of(A0);
+	if (v && hle_ngs_voice_play(&v->playing)) {   /* (NGS-PLAY-01, hle_small.h) already playing: untouched */
+		static uint8_t said[512]; if (!said[VIDX(v)]) { said[VIDX(v)] = 1; fprintf(stderr, "    ngs: Play on voice %d, which plays already: left as it is (SCE_NGS_ERROR)\n", VIDX(v)); }
+		RET(HLE_NGS_ERROR); return;
+	}
 	if (v) { v->playing = 1; v->paused = 0; v->buffer = 0; v->byte_pos = 0; v->samples_gen = v->bytes_consumed = 0; v->loops_done = 0; v->upd_active = 0;
 		v->frac = 1; memset(v->rs_h, 0, sizeof v->rs_h); v->rs_i = 0;   /* (1: the first output fetches the first source sample) */
 		v->pcm_len = v->pcm_pos = 0; v->at9_cfg = 0; v->stage_on = 0;   /* (a fresh decoder: ATRAC9 frames carry state) */

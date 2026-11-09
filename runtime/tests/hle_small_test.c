@@ -26,6 +26,12 @@ int main(void) {
 	check("ctrl: 8 samples end at +0x100 (no write past an 8-record buffer)", hle_ctrl_data_addr(0x1000, 7) + HLE_CTRL_DATA_SIZE == 0x1100);
 	check("model: PS TV is SCE_KERNEL_MODEL_VITATV 0x20000", hle_kernel_model(1) == 0x20000u);
 
+	{ int playing = 0;   /* NGS-PLAY-01: Play every update must not restart the voice */
+	  check("ngs: Play on a voice at rest starts it (0, playing)", hle_ngs_voice_play(&playing) == 0 && playing == 1);
+	  int restarted = 0; for (int u = 0; u < 100; u++) restarted += hle_ngs_voice_play(&playing) == 0;
+	  check("ngs: Play on a playing voice, 100 updates: never restarted, SCE_NGS_ERROR", restarted == 0 && hle_ngs_voice_play(&playing) == 0x804a0001u && playing == 1);
+	  playing = 0;   /* finished, keyed off without release, or killed */
+	  check("ngs: once it stopped, Play starts it again", hle_ngs_voice_play(&playing) == 0 && playing == 1); }
 	uint32_t len[HLE_AUDIO_PORTS] = {0};
 	int ok = 1;
 	for (int k = 0; k < HLE_AUDIO_PORTS; k++) { int s = hle_audio_port_free_slot(len); ok &= s == k; if (s >= 0) len[s] = 256; }

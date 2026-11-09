@@ -64,6 +64,16 @@ static inline int32_t hle_ngs_patch_sub(const HleNgsPatchSrc *p, int n, uint32_t
 	}
 	return 0;
 }
+/* NGS-PLAY-01: sceNgsVoicePlay starts a voice from rest only. On a voice that plays -- also paused, or in its key-off
+ * release -- it changes nothing and returns SCE_NGS_ERROR (Vita3K's VoiceScheduler::play: not AVAILABLE, not played).
+ * Medieval Defenders calls Play on its streamed ATRAC9 music voice every system update; restarting it each time
+ * (buffer 0, byte 0, fresh decoder) played the same first 512 decoded frames over and over: a loud ~94 Hz buzz.
+ * 0 and *playing set: started (the caller resets the voice); HLE_NGS_ERROR: left as it was */
+#define HLE_NGS_ERROR 0x804a0001u
+static inline uint32_t hle_ngs_voice_play(int *playing) {
+	if (*playing) return HLE_NGS_ERROR;
+	*playing = 1; return 0;
+}
 /* HLE-LIB-03: an integer of a PARAM.SFO (little-endian: "\0PSF" +0, key table +8, data table +0xc, entry count +0x10;
  * 16-byte index entries from +0x14: key offset u16, format u16 (0x0404 = u32), length u32, max u32, data offset u32).
  * 1 and *v when the key holds an integer, else 0 */
