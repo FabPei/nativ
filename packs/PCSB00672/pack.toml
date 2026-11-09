@@ -8,6 +8,7 @@ ELF = "eboot.bin.elf"     # the main module (the decrypted eboot)
 # task scheduler) and the firmware's GXM + GPU services (GXM runs as Sony's code). Import coverage checked
 # at import -- modules named there get added here.
 MODULES = "libc libgxm_es4 libgpu_es4 libfios2 libult libSceJson"   # libSceJson: the firmware's JSON library (vs0/sys/external), translated like libc -- the game imports 50 sce::Json functions (HLE-LIB-04)
+RUN_ENV = "RECOMP_FRAME_RATES=30,60,120"   # FEAT-ALL-01 (local, menu only): the game presents 60 itself and runs its menu on wall-clock time at 120 (anim_sync: no drift); no 960/544 site -> wider windows pillarbox
 TEST_FRAMES = 6000        # a boot probe: toward the game's menu (extended once the boot is characterised)
 
 [versions."1.00"]
