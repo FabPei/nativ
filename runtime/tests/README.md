@@ -233,6 +233,21 @@ own record: these imports were logged `not implemented -- returns 0`.
 
 It prints `all passed` and exits 0.
 
+## Branches and loops on the GPU: `usse_cf_test.c`
+
+NIGHT-01 USSE-CF: `usse_spirv.c` turned only predicated forward skips into structured SPIR-V; an if/else (a skip range
+ending in an unconditional forward branch) or a loop (an unconditional backward branch; predicated forward branches to
+just past it are breaks, to it continues) sent the whole draw to the CPU interpreter. The fixture hand-encodes branch
+and NOP words, decodes them with the real decoder and translates them: the old form, if/else, loop + break,
+break + continue, an if/else holding two loops (vertex and fragment), nested loops -- each must translate with the
+expected OpLoopMerge / OpSelectionMerge count and, with `SPIRV_VAL=<spirv-val>`, validate; two back edges to one header
+and a loop leaving its skip range must be refused cleanly. Before USSE-CF: 6 of the 6 new forms fail to translate.
+
+    cc -O1 -g -Wall -D_GNU_SOURCE -I ../gfx -I ../core -I ../../recompiler -I ../.. usse_cf_test.c ../gfx/usse.c ../gfx/usse_spirv.c -o /tmp/usse_cf_test -lm && /tmp/usse_cf_test
+
+It prints `N checks, 0 failed` and `all passed` and exits 0 (`SPIRV_TMP=<dir>`: where the modules are written for the
+validator, default /tmp).
+
 ## The last offline system functions: `hle_offline_test.c`, `hle_offline_glue_test.c`
 
 HLE-LIB-06: `runtime/core/hle_offline.h` holds the pure contracts -- SceLiveAreaUtil (argument checks, a per-frame

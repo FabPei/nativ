@@ -47,7 +47,7 @@ enum {
 	SpvOpFOrdEqual = 180, SpvOpFOrdNotEqual = 182, SpvOpFOrdLessThanEqual = 188, SpvOpFOrdGreaterThan = 186,
 	SpvOpLogicalOr = 166, SpvOpLogicalAnd = 167, SpvOpLogicalNot = 168, SpvOpBitwiseXor = 198, SpvOpINotEqualB = 171,
 	SpvOpSLessThan = 177, SpvOpSLessThanEqual = 179, SpvOpSGreaterThanEqual = 175,
-	SpvOpBranch = 249, SpvOpBranchConditional = 250, SpvOpSelectionMerge = 247,
+	SpvOpBranch = 249, SpvOpBranchConditional = 250, SpvOpSelectionMerge = 247, SpvOpLoopMerge = 246,
 	SpvOpSNegate = 126, SpvOpShiftRightArithmetic = 195, SpvOpNot = 200, SpvOpBitFieldSExtract = 202,
 	SpvOpULessThan = 176, SpvOpUGreaterThan = 172, SpvOpUMod = 137,
 	SpvOpImage = 100, SpvOpImageFetch = 95, SpvOpImageGather = 96, SpvOpImageQuerySizeLod = 103, SpvOpDPdx = 207, SpvOpDPdy = 208,
@@ -2404,23 +2404,90 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 				g.pcf_dv = fop2(s, SpvOpFMul, pcf_step[1], c_float(s, (float)(tap / side) - (float)(side - 1) * 0.5f));
 			}
 		}
-		struct { int end; uint32_t merge; } brstack[8]; int nbr = 0;
+		/* (NIGHT-01 USSE-CF) two more structured forms, as compilers emit them (Injustice's skinning-style vertex
+		 * programs, Gravity Rush's two fallbacks):
+		 * - if/else: a predicated skip range whose LAST instruction is an unconditional forward branch -- the range is
+		 *   the then part, the branch jumps over the else part (range end .. its target);
+		 * - loops: an unconditional backward branch at j to h is a loop with header h (usse.c runs both as pc += imm);
+		 *   a predicated forward branch inside it to j+1 is a break, to j a continue. The loop is OpLoopMerge with
+		 *   the header at h, a continue block that only branches back, and the merge after j; a break is glslang's
+		 *   `if (c) break;` (a selection whose then block branches to the loop's merge).
+		 * Each entry is an if (kind 0: closes at end; with an else part pending at else_at) or a loop (kind 1: closes at
+		 * its back edge); a branch nested in an entry must stay inside it (limit). */
+		struct { int kind, end, else_at, else_end, back; uint32_t merge, else_lbl, cont, header; } brstack[16]; int nbr = 0;
+		int loop_at[n > 0 ? n : 1];   /* header -> its back edge, -1 none */
+		for (int i = 0; i < n; i++) loop_at[i] = -1;
+		for (int j = 0; j < n && ok; j++) if (code[j].op == OP_BR && code[j].pred_kind == 0 && code[j].imm < 0 && !code[j].args[0]) {
+			int h = j + (int)code[j].imm;
+			if (h < 0 || loop_at[h] >= 0) { snprintf(m.err, sizeof m.err, "backward branch at instruction %d (offset %d) outside the structured forms translated", j, (int)code[j].imm); ok = 0; }
+			else loop_at[h] = j;
+		}
+#define BR_LIMIT(e) ((e).kind == 1 ? (e).back : (e).end)
 		for (int i = 0; i < n && ok; i++) {
 			const UOp *op = &code[i];
-			while (nbr && brstack[nbr - 1].end <= i) { INS(&s->func, SpvOpBranch, brstack[nbr - 1].merge); INS(&s->func, SpvOpLabel, brstack[nbr - 1].merge); nbr--; }
+			int consumed = 0;
+			while (nbr) {
+				if (brstack[nbr - 1].kind == 0 && brstack[nbr - 1].else_at == i) {   /* the then part's closing jump: the else part follows */
+					INS(&s->func, SpvOpBranch, brstack[nbr - 1].merge); INS(&s->func, SpvOpLabel, brstack[nbr - 1].else_lbl);
+					brstack[nbr - 1].end = brstack[nbr - 1].else_end; brstack[nbr - 1].else_at = -1; consumed = 1; break;
+				}
+				if (brstack[nbr - 1].kind == 1 && brstack[nbr - 1].back == i) {   /* the back edge: continue block, then the merge */
+					INS(&s->func, SpvOpBranch, brstack[nbr - 1].cont); INS(&s->func, SpvOpLabel, brstack[nbr - 1].cont);
+					INS(&s->func, SpvOpBranch, brstack[nbr - 1].header); INS(&s->func, SpvOpLabel, brstack[nbr - 1].merge);
+					nbr--; consumed = 1; break;
+				}
+				if (brstack[nbr - 1].kind == 0 && brstack[nbr - 1].end <= i) { INS(&s->func, SpvOpBranch, brstack[nbr - 1].merge); INS(&s->func, SpvOpLabel, brstack[nbr - 1].merge); nbr--; continue; }
+				break;
+			}
+			if (consumed && loop_at[i] >= 0) { snprintf(m.err, sizeof m.err, "loop header on a consumed branch at instruction %d", i); ok = 0; break; }
+			if (consumed) continue;
+			if (loop_at[i] >= 0) {   /* a loop's header: its body runs from here to the back edge */
+				int back = loop_at[i];
+				if (nbr >= 16 || (nbr && back >= BR_LIMIT(brstack[nbr - 1]))) { snprintf(m.err, sizeof m.err, "loop at instructions %d-%d outside the structured forms translated", i, back); ok = 0; break; }
+				uint32_t header = nid(s), body = nid(s);
+				brstack[nbr].kind = 1; brstack[nbr].back = back; brstack[nbr].end = back + 1; brstack[nbr].else_at = -1;
+				brstack[nbr].header = header; brstack[nbr].cont = nid(s); brstack[nbr].merge = nid(s);
+				INS(&s->func, SpvOpBranch, header); INS(&s->func, SpvOpLabel, header);
+				INS(&s->func, SpvOpLoopMerge, brstack[nbr].merge, brstack[nbr].cont, 0 /*None*/);
+				INS(&s->func, SpvOpBranch, body); INS(&s->func, SpvOpLabel, body);
+				nbr++;
+			}
 			if (op->op == OP_BR) {
-				int target = i + (int)op->imm;
-				if (op->pred_kind == 0 || op->imm <= 0 || op->args[0] || target > n || (nbr && target > brstack[nbr - 1].end) || nbr >= 8) {
+				int target = i + (int)op->imm, lp = nbr - 1;
+				while (lp >= 0 && brstack[lp].kind != 1) lp--;   /* the innermost loop */
+				if (op->pred_kind != 0 && op->imm > 0 && !op->args[0] && lp >= 0 && (target == brstack[lp].back + 1 || target == brstack[lp].back)) {
+					/* break (to just past the back edge) or continue (to the back edge) */
+					uint32_t p = load(s, t_bool(s), pred_ptr(&g, op->pred_reg));
+					uint32_t taken = op->pred_kind == 1 ? p : result1(s, &s->func, SpvOpLogicalNot, t_bool(s), p);
+					uint32_t then = nid(s), join = nid(s);
+					INS(&s->func, SpvOpSelectionMerge, join, 0 /*None*/);
+					INS(&s->func, SpvOpBranchConditional, taken, then, join);
+					INS(&s->func, SpvOpLabel, then);
+					INS(&s->func, SpvOpBranch, target == brstack[lp].back ? brstack[lp].cont : brstack[lp].merge);
+					INS(&s->func, SpvOpLabel, join);
+					continue;
+				}
+				if (op->pred_kind == 0 || op->imm <= 0 || op->args[0] || target > n || (nbr && target > BR_LIMIT(brstack[nbr - 1])) || nbr >= 16) {
 					snprintf(m.err, sizeof m.err, "branch at instruction %d (%s, offset %d) outside the structured forms translated", i, op->pred_kind ? "predicated" : "unconditional", (int)op->imm); ok = 0; break;
+				}
+				/* an else part: the range's last instruction jumps forward over it, and stays inside the enclosing entry */
+				int else_end = -1;
+				if (target - 1 > i) {
+					const UOp *j = &code[target - 1];
+					int t2 = target - 1 + (int)j->imm;
+					if (j->op == OP_BR && j->pred_kind == 0 && j->imm > 0 && !j->args[0] && t2 <= n && (!nbr || t2 <= BR_LIMIT(brstack[nbr - 1]))) else_end = t2;
 				}
 				uint32_t p = load(s, t_bool(s), pred_ptr(&g, op->pred_reg));
 				uint32_t taken = op->pred_kind == 1 ? p : result1(s, &s->func, SpvOpLogicalNot, t_bool(s), p);
 				uint32_t run = result1(s, &s->func, SpvOpLogicalNot, t_bool(s), taken);   /* the skipped range runs when the branch is NOT taken */
-				uint32_t then = nid(s), merge = nid(s);
+				uint32_t then = nid(s), merge = nid(s), els = else_end >= 0 ? nid(s) : 0;
 				INS(&s->func, SpvOpSelectionMerge, merge, 0 /*None*/);
-				INS(&s->func, SpvOpBranchConditional, run, then, merge);
+				INS(&s->func, SpvOpBranchConditional, run, then, els ? els : merge);
 				INS(&s->func, SpvOpLabel, then);
-				brstack[nbr].end = target; brstack[nbr].merge = merge; nbr++;
+				brstack[nbr].kind = 0; brstack[nbr].merge = merge; brstack[nbr].back = -1;
+				if (els) { brstack[nbr].end = target - 1; brstack[nbr].else_at = target - 1; brstack[nbr].else_end = else_end; brstack[nbr].else_lbl = els; }
+				else { brstack[nbr].end = target; brstack[nbr].else_at = -1; }
+				nbr++;
 				continue;
 			}
 			/* (pN) / (!pN) predication: the instruction runs inside a structured if on the predicate
@@ -2481,6 +2548,7 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 			}
 		}
 		while (ok && nbr) { INS(&s->func, SpvOpBranch, brstack[nbr - 1].merge); INS(&s->func, SpvOpLabel, brstack[nbr - 1].merge); nbr--; }   /* ranges ending at the program's end */
+#undef BR_LIMIT
 		if (ok) { if (g.is_fragment) emit_frag_epilogue(&g, &ok); else emit_vert_epilogue(&g, &ok); }
 		if (g.motion && ok && !tap) store(s, g.var_mv_cur, load(s, t_v4, g.var_pos));   /* (this frame's position, as gl_Position got it) */
 		if (taps > 1 && ok && g.is_fragment) { uint32_t col = load(s, t_v4, g.var_frag_color); if (lerp) lerp_col[tap] = col; else pcf_acc = pcf_acc ? result2(s, &s->func, SpvOpFAdd, t_v4, pcf_acc, col) : col; }
