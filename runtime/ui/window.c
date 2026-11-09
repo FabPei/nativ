@@ -1502,8 +1502,9 @@ void window_run(void *(*fn)(void *), void *arg) {
 		{	/* the menu just closed (any way: F10, Escape, a pad combo, its Resume button): the sticks moved
 			 * while it had the events -- a stick let go with the menu up would otherwise stay deflected */
 			static int was_open; int open = overlay_is_open() || overlay_dialog_active();   /* (the save dialog too) */
-			if (open && !was_open) { buttons = 0; touch_down = 0; gamepad_touch_release(); for (int i = 0; i < KB_N; i++) kb_binds[i].held = 0; }   /* let go of what was held as it opened */
+			if (open && !was_open) { buttons = 0; touch_down = 0; gamepad_touch_release(); for (int i = 0; i < KB_N; i++) kb_binds[i].held = 0; overlay_input_lost(); }   /* let go of what was held as it opened (and ImGui of what it last saw held) */
 			if (was_open && !open) {
+				overlay_input_lost();   /* (a press that closed it -- Cross on Resume -- is released to the game: ImGui must not keep it held) */
 				kb_reload();   /* (the Controls page may have rebound keys) */
 				for (int i = 0; i < 4; i++) sticks[i] = pad ? (uint8_t)((SDL_GetGamepadAxis(pad, (SDL_GamepadAxis)i) + 32768) >> 8) : 128;
 				pad_resync(pad);   /* and L and R: one held through the menu sends no new event (the other pair, held through, waits for a new press) */

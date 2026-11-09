@@ -50,6 +50,9 @@ void settings_set_str(const char *key, const char *v) { (void)key; (void)v; }
 void settings_set_own(const char *key, const char *v) { (void)key; (void)v; }
 int settings_save(void) { return 1; }
 
+#ifndef HAVE_INPUT_LOST
+#define HAVE_INPUT_LOST 1   /* -DHAVE_INPUT_LOST=0: without the host's "input lost" call (the Deck report's state) */
+#endif
 static int fails;
 static void check(const char *what, int ok) {
 	printf("%-58s %s\n", what, ok ? "ok" : "FAILED");
@@ -145,8 +148,24 @@ int main(void) {
 	press(SDL_GAMEPAD_BUTTON_SOUTH);
 	check("released and pressed again: the row is answered", sd.sub == ST_FINISHED && sd.result == 0 && sd.slot == 7);
 
+	/* Case 7 (a Steam Deck report, 2026-11-09: the save dialog ignored the controller): a button ImGui saw go DOWN whose
+	 * release went to the game -- the menu closed on that press (Cross on Resume, or Circle), so window.c routed the
+	 * release to the game -- stays held in ImGui's key state. The next step never arms (Cross "held") and no later press
+	 * is an edge. The host tells the overlay it lost the input as the menu or a dialog goes (savedlg_ui_input_lost).
+	 * -DHAVE_INPUT_LOST=0: the host as it was -> FAILED. */
+	savedlg_ui_gamepad_button(SDL_GAMEPAD_BUTTON_SOUTH, 1);   /* (Cross on the menu's Resume: the menu closes) */
+	frame();
+#if HAVE_INPUT_LOST
+	savedlg_ui_input_lost();   /* (window.c: the menu closed) */
+#endif
+	frame(); frame();   /* (Cross let go: that event went to the game, not here) */
+	open_list(7);
+	frame();
+	press(SDL_GAMEPAD_BUTTON_SOUTH);
+	check("a press whose release went to the game doesn't block the next step", sd.sub == ST_FINISHED && sd.result == 0 && sd.slot == 7);
+
 	ImGui::DestroyContext();
 	if (fails) { printf("%d checks FAILED\n", fails); return 1; }
-	printf("all passed (7 ok)\n");
+	printf("all passed (8 ok)\n");
 	return 0;
 }

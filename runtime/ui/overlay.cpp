@@ -58,6 +58,7 @@
 #include "ui_scale.h"
 #include "pad_family.h"   /* (UI-01e) the pad's own button names, shared with the launcher */
 #include "touch_controls.h"   /* (UI-01n) the on-screen buttons' layout, shared with window.c */
+#include "menu_sidebar.h"   /* the sections' list (a controller reaches and chooses them: menu_sidebar_test) */
 #include "sysinfo.h"   /* the "Copy system info" text (U5) */
 #define STBI_NO_STDIO
 #include "third_party/stb/stb_image.h"   /* (its implementation: runtime/media/jpeg.c) */
@@ -814,20 +815,8 @@ static void build_ui(void) {
 		if (step) { int k = 0; while (k < TAB_N - 1 && order[k] != g_section) k++; g_section = order[(k + step + TAB_N) % TAB_N]; focus_page = true; }
 	}
 	/* (U12c) NavFlattened: the D-pad / arrow keys cross from the sidebar into the page and back */
-	ImGui::BeginChild("nav", ImVec2(em * 11.5f, -foot), ImGuiChildFlags_NavFlattened);
-	for (int k = 0; k < TAB_N; k++) {
-		int i = order[k]; bool on = g_section == i;
-		ImVec2 p = ImGui::GetCursorScreenPos(); float h = ImGui::GetFrameHeight() * 1.15f, w = ImGui::GetContentRegionAvail().x;
-		ImGui::PushID(i);
-		if (ImGui::InvisibleButton("sec", ImVec2(w, h))) g_section = i;
-		bool hov = ImGui::IsItemHovered() || ImGui::IsItemFocused();
-		ImDrawList *dl = ImGui::GetWindowDrawList();
-		if (on || hov) dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), ui::u32(on ? ui::card_hi : ui::card), ImGui::GetStyle().FrameRounding);
-		if (on) dl->AddRectFilled(ImVec2(p.x, p.y + h * 0.22f), ImVec2(p.x + 3, p.y + h * 0.78f), ui::u32(ui::accent), 2);
-		dl->AddText(ImVec2(p.x + em * 0.9f, p.y + (h - ImGui::GetTextLineHeight()) * 0.5f), ui::u32(on ? ui::text : ui::muted), ui_tr(g_tab_ids[i]));
-		ImGui::PopID();
-	}
-	ImGui::EndChild();
+	{	const char *labels[TAB_N]; for (int i = 0; i < TAB_N; i++) labels[i] = ui_tr(g_tab_ids[i]);
+		menu_sidebar(&g_section, order, TAB_N, labels, -foot); }
 	ImGui::SameLine(0, em * 0.8f);
 	/* the page */
 	ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::bg);
@@ -1341,6 +1330,13 @@ int overlay_modal_open(void) {
 }
 /* overlay_dialog_active: the save-data dialog is waiting on the player (the dialog itself is drawn
  * and answered by savedlg_ui.cpp) */
+void overlay_input_lost(void) {
+	if (!g_ctx) return;
+	ImGuiContext *prev = ImGui::GetCurrentContext();
+	ImGui::SetCurrentContext(g_ctx);
+	savedlg_ui_input_lost();
+	ImGui::SetCurrentContext(prev);
+}
 int overlay_dialog_active(void) {
 	if (!g_ctx || !g_has_window) return 0;
 	SaveDlgView v; const int k = savedlg_view(&v); savedlg_release();

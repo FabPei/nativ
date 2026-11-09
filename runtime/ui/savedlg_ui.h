@@ -17,6 +17,10 @@ void savedlg_ui_build(float w, float hgt);
 void savedlg_ui_gamepad_button(int sdl_button, int down);
 void savedlg_ui_gamepad_axis(int sdl_axis, int value);
 void savedlg_ui_gamepad_frame(int pad_connected);   /* (U12c) after the backend frame, before ImGui::NewFrame */
+/* the host stops (or starts) routing the keys and the pad here -- the menu or a dialog closed (or opened): every key and
+ * button is let go in ImGui's state. A release that went to the game instead would otherwise leave its key held here,
+ * and the next dialog step would never arm (a Steam Deck report: Cross on the menu's Resume, then the save dialog) */
+void savedlg_ui_input_lost(void);
 
 #ifdef __cplusplus
 }

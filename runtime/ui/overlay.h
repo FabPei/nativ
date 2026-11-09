@@ -26,6 +26,9 @@ void overlay_toast(const char *msg, double seconds);   /* (no title) */
  * question -- and the overlay is drawing it: window.c then routes the keyboard to the overlay instead of the
  * game, drops the mouse capture and lets go of what was held (the game is polling the dialog, not the pad) */
 int overlay_dialog_active(void);
+/* window.c: the keys and the pad stop (or start) going to the overlay -- the menu or a dialog closed (or opened): ImGui
+ * lets go of every key it thinks held (savedlg_ui_input_lost) */
+void overlay_input_lost(void);
 /* overlay_modal_open: one of our modal dialogs is up (the menu's "Reset all settings…"): window.c must leave Esc
  * to it, so the dialog cancels instead of the whole menu closing */
 int overlay_modal_open(void);

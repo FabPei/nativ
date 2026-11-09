@@ -165,6 +165,11 @@ void savedlg_ui_gamepad_axis(int sdl_axis, int value) {
 /* (U12c) once per frame, after the backend's own frame (ImGui_ImplSDL3_NewFrame clears HasGamepad while its
  * pad list is empty) and before ImGui::NewFrame: a connected pad keeps the flag, so the keys fed above are not
  * wiped and gamepad navigation stays on */
+void savedlg_ui_input_lost(void) {
+	if (!ImGui::GetCurrentContext()) return;
+	ImGui::GetIO().ClearInputKeys();
+}
+
 void savedlg_ui_gamepad_frame(int pad_connected) {
 	if (!ImGui::GetCurrentContext()) return;
 	if (pad_connected) sdlg_gamepad_mark();

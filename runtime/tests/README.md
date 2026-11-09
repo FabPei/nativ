@@ -172,7 +172,7 @@ cancels on Circle, and keeps its arm rule (a key already held when the step appe
         ../../third_party/imgui/imgui.cpp ../../third_party/imgui/imgui_draw.cpp ../../third_party/imgui/imgui_tables.cpp \
         ../../third_party/imgui/imgui_widgets.cpp -o /tmp/savedlg_pad_test -lpthread && /tmp/savedlg_pad_test
 
-It prints `all passed (7 ok)` and exits 0. `-DAPPUTIL_UNDER_TEST='\"<file>\"'` / `-DSAVEDLG_UI_UNDER_TEST='\"<file>\"'`
+It prints `all passed (8 ok)` and exits 0. `-DAPPUTIL_UNDER_TEST='\"<file>\"'` / `-DSAVEDLG_UI_UNDER_TEST='\"<file>\"'`
 compile against different copies for fail-before comparisons.
 
 ## The full menu answers the whole controller: `menu_pad_test.cpp`
@@ -187,6 +187,21 @@ frames; case 4: gamepad nav moves the focus and Cross activates. Fail-before (`-
 the pre-U12c savedlg_ui.cpp): `20 FAILED`, exit 1.
 
     c++ -O1 -g -w -D_GNU_SOURCE -std=c++17 $INC -I ../../third_party/imgui -I $SDL3_INC menu_pad_test.cpp         ../../third_party/imgui/imgui.cpp ../../third_party/imgui/imgui_draw.cpp ../../third_party/imgui/imgui_tables.cpp         ../../third_party/imgui/imgui_widgets.cpp -o /tmp/menu_pad_test -lpthread && /tmp/menu_pad_test
+
+It prints `all passed` and exits 0.
+
+## The menu's sections with a controller: `menu_sidebar_test.cpp`
+
+A Steam Deck report (2026-11-09): the in-game menu's sections on the left could be stepped only with L1 / R1. The fixture
+builds the menu's shape (Resume, the sidebar of `runtime/ui/menu_sidebar.h`, a page of rows, the foot) and drives it
+through the pad feed: D-pad left from the page reaches the sidebar, down / up move along it, Cross shows that section,
+right goes back into the page. Fail-before: the sidebar's InvisibleButtons (the code as it was in overlay.cpp) --
+case 1 FAILED (left kept the focus in the page). `savedlg_pad_test.cpp` case 7 belongs to the same report: a press
+whose release went to the game must not block the next save-dialog step (`-DHAVE_INPUT_LOST=0`: FAILED).
+
+    c++ -O1 -g -w -std=c++17 -I ../ui -I ../core -I ../../third_party/imgui -I $SDL3_INC menu_sidebar_test.cpp \
+        ../../third_party/imgui/imgui.cpp ../../third_party/imgui/imgui_draw.cpp ../../third_party/imgui/imgui_tables.cpp \
+        ../../third_party/imgui/imgui_widgets.cpp -o /tmp/menu_sidebar_test -lpthread && /tmp/menu_sidebar_test
 
 It prints `all passed` and exits 0.
 
