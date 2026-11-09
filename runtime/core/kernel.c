@@ -592,8 +592,17 @@ static void spawn(Thread *t, Cpu *n) {
 static void h_start_thread(Cpu *c) {   /* (uid, arg size, arg block): the block is copied to the new stack */
 	Thread *t = thread_of(A0);
 	if (!t || t == &main_thread) { RET(E_UNKNOWN_THREAD_ID); return; }
-	if (t->started) { RET(E_NOT_DORMANT); return; }
-	Cpu *n = calloc(1, sizeof *n);
+	/* NOT_DORMANT only while it runs: a thread that ended (returned or sceKernelExitThread) is DORMANT again and
+	 * starts anew, as the firmware's does (a game's worker thread started once per job; refused, every job after the
+	 * first was dropped -- NIGHT-01 batch B). The old host thread is past thread_done and touches nothing of t (its
+	 * Cpu block is reused here) */
+	klock_take();
+	const int running = t->started && !t->done;
+	if (!running && t->started) { t->done = 0; t->status = 0; t->signal_pending = 0; t->wait_type = t->wait_id = 0; t->fiber = 0; t->fgo = t->fexit = 0; }
+	klock_give();
+	if (running) { RET(E_NOT_DORMANT); return; }
+	Cpu *n = t->cpu ? t->cpu : calloc(1, sizeof *n);
+	memset(n, 0, sizeof *n);
 	uint32_t sp = t->stack + t->stack_size - 16, size = A1;
 	if (size && A2) { sp = (sp - size) & ~7u; memcpy(G(sp), G(A2), size); }
 	n->r[0] = size; n->r[1] = size && A2 ? sp : 0;

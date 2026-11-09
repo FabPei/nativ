@@ -389,6 +389,14 @@ static void test_threads(void) {
 	uint32_t st = word(); WR32(st, 0xffffffff);
 	CHECKEQ(call(h_wait_thread_end, 3, t, st, 0), 0); CHECKEQ(RD32(st), 1);
 	CHECKEQ(call(h_thread_exit_status, 2, t, st), 0); CHECKEQ(RD32(st), 1);
+	/* an ended thread is DORMANT again: it starts anew (a game's worker started once per job), with the new
+	 * argument block, and ends with the new status; it is only NOT_DORMANT while it runs */
+	WR32(arg, 0x1234);
+	CHECKEQ(call(h_start_thread, 3, t, 4, arg), 0);
+	WR32(st, 0xffffffff); CHECKEQ(call(h_wait_thread_end, 3, t, st, 0), 0); CHECKEQ(RD32(st), 0);   /* argp no longer 0xabcd */
+	WR32(arg, 0xabcd);
+	CHECKEQ(call(h_start_thread, 3, t, 4, arg), 0);
+	WR32(st, 0xffffffff); CHECKEQ(call(h_wait_thread_end, 3, t, st, 0), 0); CHECKEQ(RD32(st), 1);
 	CHECKEQ(call(h_delete_thread, 1, t), 0); CHECKEQ(call(h_wait_thread_end, 3, t, st, 0), E_UNKNOWN_THREAD_ID);
 	/* a thread ending through sceKernelExitThread; event handlers see its start and exit */
 	uint32_t h = call(h_register_thread_event, 5, name, 0xfffffff0u, 4 | 8, 0x100c, 0xc0ffee);
@@ -396,7 +404,11 @@ static void test_threads(void) {
 	uint32_t t2 = call(h_create_thread, 7, name, 0x1004, 160, 0x1000, 0, 0, 0);
 	CHECKEQ(call(h_start_thread, 3, t2, 0, 0), 0);
 	CHECKEQ(call(h_wait_thread_end, 3, t2, st, 0), 0); CHECKEQ(RD32(st), 9);
-	CHECKEQ((uint32_t)handler_calls, 2); CHECKEQ(handler_type_seen, 12); CHECKEQ(handler_common, 0xc0ffee);
+	CHECKEQ((uint32_t)handler_calls, 2);
+	/* one that ended through sceKernelExitThread starts again too */
+	CHECKEQ(call(h_start_thread, 3, t2, 0, 0), 0);
+	WR32(st, 0); CHECKEQ(call(h_wait_thread_end, 3, t2, st, 0), 0); CHECKEQ(RD32(st), 9);
+	CHECKEQ((uint32_t)handler_calls, 4);   /* the event handler saw the second run's start and exit as well */ CHECKEQ(handler_type_seen, 12); CHECKEQ(handler_common, 0xc0ffee);
 	CHECKEQ(call(h_unregister_thread_event, 1, h), 0); CHECKEQ(call(h_unregister_thread_event, 1, h), 0x80028061u);
 	/* a thread that runs on: exit status not available, a timed wait times out */
 	uint32_t s = the_sema = call(h_create_sema, 5, name, 0, 0, 1, 0);
