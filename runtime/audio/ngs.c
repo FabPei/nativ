@@ -55,6 +55,7 @@ enum { DEF_MASTER = 1, DEF_SIMPLE, DEF_REVERB, DEF_OTHER, DEF_SCREAM, DEF_SCREAM
 typedef struct Voice {
 	uint32_t handle, def;
 	int playing, paused;
+	int started;   /* the game's Play on a voice the runtime runs from its creation (master, reverb, bus): hle_ngs_voice_play_state */
 	uint32_t params[MAX_MODULES];          /* guest memory: each module's parameter block */
 	int bypass[MAX_MODULES];
 	/* player state */
@@ -448,7 +449,7 @@ static void vo_state_log(Voice *v, uint32_t lr, uint64_t us) {
 /* ---- voices */
 static void h_voice_play(Cpu *c) {
 	Voice *v = voice_of(A0);
-	if (v && hle_ngs_voice_play(&v->playing)) {   /* (NGS-PLAY-01, hle_small.h) already playing: untouched */
+	if (v && hle_ngs_voice_play_state(PLAYER_VOICE(v->def), &v->playing, &v->started)) {   /* (NGS-PLAY-01, hle_small.h) already playing: untouched */
 		static uint8_t said[512]; if (!said[VIDX(v)]) { said[VIDX(v)] = 1; fprintf(stderr, "    ngs: Play on voice %d, which plays already: left as it is (SCE_NGS_ERROR)\n", VIDX(v)); }
 		RET(HLE_NGS_ERROR); return;
 	}
@@ -483,7 +484,7 @@ static void h_voice_play(Cpu *c) {
 static void h_voice_kill(Cpu *c) {   /* stopped dead: no callback */
 	Voice *v = voice_of(A0);
 	if (v && v->def == DEF_SCREAM_AT9 && vo_log_on()) fprintf(stderr, "    vo: v%d kill us %llu upd %llu lr %#x\n", VIDX(v), (unsigned long long)vo_us(), (unsigned long long)updates, c->r[14]);
-	if (v) { v->playing = 0; v->finishing = 0; v->releasing = v->released_out = 0; }
+	if (v) { v->playing = 0; v->started = 0; v->finishing = 0; v->releasing = v->released_out = 0; }
 	RET(0);
 }
 /* key-off = release: a voice with an envelope module plays on through its release (voice_stages) and
@@ -496,7 +497,7 @@ static void h_voice_keyoff(Cpu *c) {
 	if (v && v->def == DEF_SCREAM_AT9 && vo_log_on()) fprintf(stderr, "    vo: v%d keyoff us %llu upd %llu lr %#x\n", VIDX(v), (unsigned long long)vo_us(), (unsigned long long)updates, c->r[14]);
 	if (v && v->playing && !v->paused && PLAYER_VOICE(v->def) && !stages_off() && stage_module(v, ENV_ID) >= 0) {
 		if (!v->releasing) { v->releasing = 1; v->rel_ms = 0; v->rel_from = v->env_level; }
-	} else if (v) { if (v->playing && PLAYER_VOICE(v->def)) v->finishing = 1; v->playing = 0; v->releasing = 0; }
+	} else if (v) { if (v->playing && PLAYER_VOICE(v->def)) v->finishing = 1; v->playing = 0; v->started = 0; v->releasing = 0; }
 	pthread_mutex_unlock(&lock);
 	RET(v ? 0 : 0x804a0005u);
 }

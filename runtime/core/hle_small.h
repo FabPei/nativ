@@ -115,6 +115,13 @@ static inline uint32_t hle_ngs_voice_play(int *playing) {
 	if (*playing) return HLE_NGS_ERROR;
 	*playing = 1; return 0;
 }
+/* which state that Play checks: a voice that plays data (a player) is playing until it ends or stops; a voice the
+ * runtime runs from its creation so that it mixes (master, reverb, bus) is AVAILABLE to the game until the game's own
+ * first Play -- that one succeeds, as on the console. Checking the runtime's running flag for those refused FMOD's
+ * first Play on its master voice (SCE_NGS_ERROR), and one title's audio start-up failed into a crash report. */
+static inline uint32_t hle_ngs_voice_play_state(int player_voice, int *playing, int *started) {
+	return hle_ngs_voice_play(player_voice ? playing : started);
+}
 /* HLE-LIB-03: an integer of a PARAM.SFO (little-endian: "\0PSF" +0, key table +8, data table +0xc, entry count +0x10;
  * 16-byte index entries from +0x14: key offset u16, format u16 (0x0404 = u32), length u32, max u32, data offset u32).
  * 1 and *v when the key holds an integer, else 0 */

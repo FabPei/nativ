@@ -32,6 +32,11 @@ int main(void) {
 	  check("ngs: Play on a playing voice, 100 updates: never restarted, SCE_NGS_ERROR", restarted == 0 && hle_ngs_voice_play(&playing) == 0x804a0001u && playing == 1);
 	  playing = 0;   /* finished, keyed off without release, or killed */
 	  check("ngs: once it stopped, Play starts it again", hle_ngs_voice_play(&playing) == 0 && playing == 1); }
+	{ int running = 1, started = 0;   /* a master / reverb / bus voice: the runtime runs it from its creation */
+	  check("ngs: the game's first Play on a master voice the runtime runs: 0", hle_ngs_voice_play_state(0, &running, &started) == 0 && started == 1);
+	  check("ngs: its second Play: SCE_NGS_ERROR", hle_ngs_voice_play_state(0, &running, &started) == 0x804a0001u);
+	  int pl = 1, st = 0;
+	  check("ngs: a player voice still checks its own playing (SCE_NGS_ERROR)", hle_ngs_voice_play_state(1, &pl, &st) == 0x804a0001u && st == 0); }
 	uint32_t len[HLE_AUDIO_PORTS] = {0};
 	int ok = 1;
 	for (int k = 0; k < HLE_AUDIO_PORTS; k++) { int s = hle_audio_port_free_slot(len); ok &= s == k; if (s >= 0) len[s] = 256; }
