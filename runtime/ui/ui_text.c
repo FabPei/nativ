@@ -132,7 +132,7 @@ static const Str catalog[] = {
 	{"touch.badge_rear", "Rear touch pad", "Hinteres Touchpad"},
 	{"touch.badge_hint", "%s touches  -  the stick moves", "%s berührt  -  der Stick bewegt"},
 	{"ctrl.osb", "On-screen buttons", "Bildschirmtasten"},
-	{"ctrl.osb_help", "For playing by touch alone: the Vita's buttons and sticks on the screen. Automatic shows them once you touch the screen and hides them when you use a controller or the keyboard.", "Zum Spielen nur per Touch: die Tasten und Sticks der Vita auf dem Bildschirm. Automatisch zeigt sie, sobald du den Bildschirm berührst, und blendet sie aus, wenn du einen Controller oder die Tastatur benutzt."},
+	{"ctrl.osb_help", "For playing by touch alone: the Vita's buttons and sticks on the screen. Automatic shows them when you touch the screen and no controller is connected (a Steam Deck never shows them by itself).", "Zum Spielen nur per Touch: die Tasten und Sticks der Vita auf dem Bildschirm. Automatisch zeigt sie, wenn du den Bildschirm berührst und kein Controller verbunden ist (ein Steam Deck zeigt sie nie von selbst)."},
 	{"ctrl.osb_auto", "Automatic", "Automatisch"},
 	{"ctrl.osb_on", "Always", "Immer"},
 	{"ctrl.osb_off", "Off", "Aus"},

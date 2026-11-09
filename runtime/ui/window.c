@@ -190,7 +190,9 @@ static void osb_update(void) {   /* the fingers on them -> the buttons, the stic
 	osb_buttons = bits; osb_held = held; osb_stick_on[0] = on[0]; osb_stick_on[1] = on[1];
 }
 static void osb_release(void) { for (int i = 0; i < ST_FINGERS; i++) osb_fdown[i] = 0; osb_update(); }
-int window_osb_shown(void) { return osb_visible(osb_mode, osb_touch_last); }
+int window_gamepad_connected(void);
+int window_osb_mode(void) { return osb_mode; }   /* (UI-02e: the start hint names the off switch while they can show) */
+int window_osb_shown(void) { return osb_visible(osb_mode, osb_touch_last, window_gamepad_connected()); }   /* (UI-02e: auto never with a controller connected) */
 /* for overlay.cpp's drawing: shown now; the size setting, which controls a finger holds, the D-pad's directions, the stick
  * fingers (window points) */
 int window_osb_state(float *size, unsigned *held, unsigned *bits, float knob[4]) {

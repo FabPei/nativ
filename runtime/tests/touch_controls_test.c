@@ -32,6 +32,9 @@ static void layout_checks(float w, float h, float size) {
 	CHECK(osb_hit(&L, w * 0.5f, h * 0.4f) == -1);
 }
 
+/* the rule of UI-01n, as it was (no pad argument): the fail-before of UI-02e */
+static int osb_visible_ui01n(int mode, int touch_last) { return mode == OSB_ON || (mode == OSB_AUTO && touch_last); }
+
 int main(void) {
 	CHECK(OSB_BIT_CROSS == 0x4000 && OSB_BIT_START == 0x8 && OSB_BIT_L == 0x100 && OSB_BIT_UP == 0x10);   /* (sceCtrl's values) */
 	const float sizes[][2] = {{1280, 800}, {1280, 720}, {1920, 1080}, {960, 544}, {640, 400}, {2560, 1600}, {800, 1280}};
@@ -73,7 +76,14 @@ int main(void) {
 	/* the setting and when they show */
 	CHECK(osb_mode_parse("on") == OSB_ON && osb_mode_parse("off") == OSB_OFF && osb_mode_parse("auto") == OSB_AUTO);
 	CHECK(osb_mode_parse(0) == OSB_AUTO && osb_mode_parse("junk") == OSB_AUTO);
-	CHECK(osb_visible(OSB_ON, 0) && !osb_visible(OSB_OFF, 1) && osb_visible(OSB_AUTO, 1) && !osb_visible(OSB_AUTO, 0));
+	CHECK(osb_visible(OSB_ON, 0, 0) && !osb_visible(OSB_OFF, 1, 0) && osb_visible(OSB_AUTO, 1, 0) && !osb_visible(OSB_AUTO, 0, 0));
+	/* (UI-02e) a touch with a controller connected (a Steam Deck): auto keeps them away -- before, "touch_last" alone
+	 * showed them (the rule as it was, kept here as the fail-before: it says shown) */
+	{	CHECK(osb_visible_ui01n(OSB_AUTO, 1) == 1);   /* (the old rule: a touch with a pad connected -> shown: the defect) */
+		CHECK(!osb_visible(OSB_AUTO, 1, 1)); }
+	CHECK(osb_visible(OSB_ON, 0, 1));    /* (on: shown with a pad too) */
+	CHECK(!osb_visible(OSB_OFF, 1, 1));
+	CHECK(osb_visible(OSB_AUTO, 1, 0));  /* (the pad unplugged, then a touch: shown again) */
 
 	printf("touch_controls: %d checks, %d failed\n", checks, fails);
 	return fails != 0;

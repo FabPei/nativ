@@ -11,8 +11,10 @@
 #include "pad_family.h"
 
 /* out: the toast's body (lines split by '\n'); pad_type: the player's controller's SDL gamepad type, -1 for none; deck:
- * Steam says this is a Steam Deck; touch: a touch screen is there. Returns the number of lines. */
-static inline int menu_hint_text(char *out, size_t n, int keyboard, int mouse, int pad_type, int deck, int touch) {
+ * Steam says this is a Steam Deck; touch: a touch screen is there; osb: the on-screen buttons can come up by a touch
+ * (their setting isn't off and no controller is connected) -- then the hint says where they are switched off. Returns
+ * the number of lines. */
+static inline int menu_hint_text(char *out, size_t n, int keyboard, int mouse, int pad_type, int deck, int touch, int osb) {
 	int lines = 0; size_t at = 0;
 	out[0] = 0;
 #define MH_LINE(...) do { int w = snprintf(out + at, at < n ? n - at : 0, "%s", lines ? "\n" : ""); at += w > 0 ? (size_t)w : 0; \
@@ -25,6 +27,7 @@ static inline int menu_hint_text(char *out, size_t n, int keyboard, int mouse, i
 		MH_LINE("Controller: [%s] + [%s]", p->menu, p->view);
 	}
 	if (touch) MH_LINE("Touch: the tab at the top, then Game > Full menu");
+	if (touch && osb) MH_LINE("On-screen buttons: off in the menu, Controls");
 	if (!lines) MH_LINE("[F10] opens the menu");
 #undef MH_LINE
 	if (at >= n && n) out[n - 1] = 0;

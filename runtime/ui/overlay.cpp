@@ -1308,7 +1308,9 @@ static bool touch_screen_present(void) {
 static void menu_hint_toast(void) {
 	char body[224];
 	const bool dump = !g_has_window;   /* (a dump: as a desktop with a keyboard and a mouse) */
-	menu_hint_text(body, sizeof body, dump || SDL_HasKeyboard(), dump || SDL_HasMouse(), SDL_HasGamepad() ? player_pad_type() : -1, steam_deck(), touch_screen_present());
+	const bool pad = SDL_HasGamepad(), touch = touch_screen_present();
+	extern "C" int window_osb_mode(void);
+	menu_hint_text(body, sizeof body, dump || SDL_HasKeyboard(), dump || SDL_HasMouse(), pad ? player_pad_type() : -1, steam_deck(), touch, touch && !pad && window_osb_mode() != OSB_OFF);
 	overlay_toast_titled("Menu", body, TOAST_S);
 }
 /* (UI-02d) while the controller drives the touch screen (the shoulder pair that isn't L and R held: window.c's touch

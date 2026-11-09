@@ -17,31 +17,31 @@ int main(void) {
 	CHECK(!HAS(old, "Touch") && !HAS(old, "[Menu] + [View]"));   /* (true: the defect -- no touch, the Xbox pad's names missing) */
 	char b[224]; int n;
 	/* keyboard + mouse only (a desktop without a pad): no controller, no touch line */
-	n = menu_hint_text(b, sizeof b, 1, 1, -1, 0, 0);
+	n = menu_hint_text(b, sizeof b, 1, 1, -1, 0, 0, 0);
 	CHECK(n == 1 && HAS(b, "[F10]") && HAS(b, "mouse") && !HAS(b, "Controller") && !HAS(b, "Touch"));
 	/* an Xbox pad: its own names */
-	n = menu_hint_text(b, sizeof b, 1, 1, SDL_GAMEPAD_TYPE_XBOXONE, 0, 0);
+	n = menu_hint_text(b, sizeof b, 1, 1, SDL_GAMEPAD_TYPE_XBOXONE, 0, 0, 0);
 	CHECK(n == 2 && HAS(b, "Controller: [Menu] + [View]") && HAS(b, "\nController"));
 	/* a DualSense */
-	menu_hint_text(b, sizeof b, 1, 1, SDL_GAMEPAD_TYPE_PS5, 0, 0);
+	menu_hint_text(b, sizeof b, 1, 1, SDL_GAMEPAD_TYPE_PS5, 0, 0, 0);
 	CHECK(HAS(b, "[Options] + [Share]"));
 	/* a Switch pad */
-	menu_hint_text(b, sizeof b, 1, 1, SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO, 0, 0);
+	menu_hint_text(b, sizeof b, 1, 1, SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO, 0, 0, 0);
 	CHECK(HAS(b, "[+] + [-]"));
 	/* the Steam Deck in Game Mode: Steam's virtual Xbox pad, the Deck's names, its touch screen; no keyboard or mouse */
-	n = menu_hint_text(b, sizeof b, 0, 0, SDL_GAMEPAD_TYPE_XBOX360, 1, 1);
-	CHECK(n == 2 && !HAS(b, "[F10]") && HAS(b, "Controller: [Menu] + [View]") && HAS(b, "Touch: the tab at the top"));
+	n = menu_hint_text(b, sizeof b, 0, 0, SDL_GAMEPAD_TYPE_XBOX360, 1, 1, 0);   /* (UI-02e: a pad is connected -> no on-screen buttons) */
+	CHECK(n == 2 && !HAS(b, "[F10]") && HAS(b, "Controller: [Menu] + [View]") && HAS(b, "Touch: the tab at the top") && !HAS(b, "On-screen"));
 	/* a tablet: touch only */
-	n = menu_hint_text(b, sizeof b, 0, 0, -1, 0, 1);
-	CHECK(n == 1 && HAS(b, "Touch") && !HAS(b, "Controller"));
+	n = menu_hint_text(b, sizeof b, 0, 0, -1, 0, 1, 1);   /* (a tablet: the on-screen buttons come up -- where they're switched off) */
+	CHECK(n == 2 && HAS(b, "Touch") && !HAS(b, "Controller") && HAS(b, "On-screen buttons: off in the menu, Controls"));
 	/* nothing detected: F10 all the same (a keyboard SDL didn't report) */
-	n = menu_hint_text(b, sizeof b, 0, 0, -1, 0, 0);
+	n = menu_hint_text(b, sizeof b, 0, 0, -1, 0, 0, 0);
 	CHECK(n == 1 && HAS(b, "[F10]"));
 	/* everything: fits the toast's body (224 bytes) */
-	n = menu_hint_text(b, sizeof b, 1, 1, SDL_GAMEPAD_TYPE_PS4, 0, 1);
+	n = menu_hint_text(b, sizeof b, 1, 1, -1, 0, 1, 1);
 	CHECK(n == 3 && strlen(b) < sizeof b - 1);
 	/* a short buffer: cut, still a string */
-	char s[16]; menu_hint_text(s, sizeof s, 1, 1, SDL_GAMEPAD_TYPE_PS4, 0, 1);
+	char s[16]; menu_hint_text(s, sizeof s, 1, 1, SDL_GAMEPAD_TYPE_PS4, 0, 1, 0);
 	CHECK(strlen(s) == sizeof s - 1);
 	printf("menu_hint: %d checks, %d failed\n", checks, fails);
 	return fails != 0;

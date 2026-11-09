@@ -8,8 +8,9 @@
  * window's short side (times "osb_size"), never under 44 points (a finger's target), and capped so the columns fit the
  * height. Fingers that land elsewhere stay the Vita's front touch screen.
  *
- * Setting "osb": "auto" (default: they show once a finger touches the screen, and hide when a controller or the keyboard
- * is used), "on" (always), "off" (never).
+ * Setting "osb": "auto" (default: they show once a finger touches the screen while no controller is connected, and hide
+ * when a controller or the keyboard is used -- a Steam Deck or a laptop with a pad never brings them up by a touch: UI-02e,
+ * the owner's Deck report), "on" (always), "off" (never).
  * Plain C, header-only: runtime/tests/touch_controls_test.c checks it.
  */
 #ifndef RECOMP_TOUCH_CONTROLS_H
@@ -118,7 +119,8 @@ static inline int osb_mode_parse(const char *s) {
 }
 
 /* shown now: "on" always, "off" never; "auto" while the last thing used was the touch screen (touch_last: 1 a finger
- * landed after the last controller / keyboard input) */
-static inline int osb_visible(int mode, int touch_last) { return mode == OSB_ON || (mode == OSB_AUTO && touch_last); }
+ * landed after the last controller / keyboard input) and no controller is connected (pad: 1 one is) -- a controller in
+ * hand plays the game; a touch then is the touch screen, not a reason for buttons on top of the picture */
+static inline int osb_visible(int mode, int touch_last, int pad) { return mode == OSB_ON || (mode == OSB_AUTO && touch_last && !pad); }
 
 #endif
