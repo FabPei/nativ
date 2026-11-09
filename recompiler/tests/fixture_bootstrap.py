@@ -186,6 +186,10 @@ check('LOAD_MODULES = "bin/*.self modules_psvita/*.suprx"' in t, "pack_text: wri
 # PCSB00672 hand pack lists it -- else its sce::Json calls run as stubs
 m, _ = bootstrap.modules(_d, {"SceLibJson"}, lambda m: True, lambda m: [])
 check("libSceJson" in m, f"modules: SceLibJson -> libSceJson ({' '.join(m)})")
+# the firmware's PGF font library (the PSP-style sceFont* calls): a game importing ScePgf gets libpgf -- as a stub,
+# sceFontOpenUserMemory returned no font handle and the game asserted at start-up
+m, _ = bootstrap.modules(_d, {"ScePgf"}, lambda m: True, lambda m: [])
+check("libpgf" in m, f"modules: ScePgf -> libpgf ({' '.join(m)})")
 lf = bootstrap.load_module_files(_d, lm) if hasattr(bootstrap, "load_module_files") else []
 check(sorted(os.path.relpath(f, _d).replace(os.sep, "/") for f in lf) == ["bin/god.self", "bin/ui.self", "modules_psvita/libmd5.suprx"],
       f"load_module_files: the files LOAD_MODULES names ({lf})")

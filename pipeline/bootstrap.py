@@ -23,7 +23,9 @@ BASE_MODULES = ("libc", "libgxm_es4", "libgpu_es4", "libfios2")
 # packs: libscemp4 for SceMp4, libsceavplayer for SceAvPlayer; P4G's / SSD's: libpvf for the ScePvf font library, which
 # itself imports SceFt2 from libSceFt2); the runtime's own HLE covers the rest
 IMPORT_MODULES = {"SceMp4": "libscemp4", "SceAvPlayer": "libsceavplayer", "ScePvf": "libpvf", "SceFt2": "libSceFt2",
-                  "SceLibJson": "libSceJson"}   # (libSceJson: the firmware's JSON library, PCSB00672's hand pack)
+                  "SceLibJson": "libSceJson",   # (libSceJson: the firmware's JSON library, PCSB00672's hand pack)
+                  "ScePgf": "libpgf"}   # (libpgf: the PSP-style sceFont* API over PGF fonts; its sceFontOpenUserMemory as a
+                                        # stub returned no font and a game asserted on it)
 # a library the game ships itself in sce_module/ and the runtime runs as the game's code when imported (hand packs
 # SSD / P4G / PCSB00672 list libult; without it SceUlt's imports run as stubs and the game's user-level worker threads
 # never start): loaded when the game imports the library and its own sce_module/ holds the module
