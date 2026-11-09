@@ -66,10 +66,19 @@ class Fn:
 
     def table_targets(self, tab, size):
         """a tbb/tbh table's targets: entries read from the code at tab until the lowest target so far (the code
-        right after an inline table is its first case), each tab + 2 * entry. None when the bytes are not there or a
-        target is not an instruction of this function: the caller keeps the computed JUMP"""
+        right after an inline table is its first case), each tab + 2 * entry -- or until an instruction of this
+        function starts (a table never overlaps code: the code right after it can be another path's, with the cases
+        further on). None when the bytes are not there or a target is not an instruction of this function: the
+        caller keeps the computed JUMP"""
         targets, end, k = [], None, 0
+        if not hasattr(self, "_bt"):   # direct branch targets: (branch address, target) -- b / b.cond / cbz / cbnz
+            self._bt = [(i.address, i.operands[-1].imm & 0xffffffff) for i in self.insns
+                        if (lambda m: m in ("b", "cbz", "cbnz") or (m[:1] == "b" and m[1:] in COND))(i.mnemonic.split(".")[0])
+                        and i.operands and i.operands[-1].type == ARM_OP_IMM]
         while end is None or tab + (k + 1) * size <= end:
+            pos = tab + k * size
+            if targets and any(t == pos and not tab <= a < end for a, t in self._bt):
+                break   # the table ended: a branch of the function (not one decoded from the table's bytes) lands here
             b = CODE[0](tab + k * size, tab + (k + 1) * size) if CODE[0] else None
             if b is None or k >= 4096:
                 return None
