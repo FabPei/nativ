@@ -1026,6 +1026,9 @@ class Fn:
             if mn in ("vhadd", "vhsub") and two:   # halving: the exact sum or difference, then floor(x / 2)
                 op = "+" if mn == "vhadd" else "-"
                 return pack(lambda j: f"(uint32_t)(({wide}{sa(j)} {op} {wide}{sb(j)}) >> 1)")
+            if mn in ("vabd", "vaba") and two:   # |a - b| exact (64-bit), truncated to the element; vaba adds it to d
+                ad = lambda j: f"(uint32_t)({wide}{sa(j)} > {wide}{sb(j)} ? {wide}{sa(j)} - {wide}{sb(j)} : {wide}{sb(j)} - {wide}{sa(j)})"
+                return pack(ad if mn == "vabd" else (lambda j: f"({E(regs[0], j)} + {ad(j)})"))
             if mn in ("vqadd", "vqsub") and two:   # saturating to the element's range
                 op = "+" if mn == "vqadd" else "-"
                 sat = "SATS" if sg else "SATU"
