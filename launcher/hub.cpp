@@ -88,7 +88,8 @@ static const char *const SONY_FIRMWARE_PAGE = "https://www.playstation.com/en-us
 /* a screenshot run (ATIV_SHOT) does nothing for real: a task, a file dialog or a page a button would start is only noted
  * here (ATIV_SHOT_NAV's report: what ATIV_SHOT_KEYS pressed into) */
 static bool g_shot_mode;
-static bool g_shot_tasks;   /* ATIV_SHOT_TASKS=1: a screenshot run still runs its tasks (a test with a fake vitarecomp under ATIV_ROOT) */
+static bool g_shot_tasks;
+static std::vector<std::string> *g_nav_trace;   /* (ATIV_SHOT_NAV: the focus after each key -- UI-03's walk) */   /* ATIV_SHOT_TASKS=1: a screenshot run still runs its tasks (a test with a fake vitarecomp under ATIV_ROOT) */
 static std::vector<std::string> g_shot_done;
 static void open_url(const std::string &u) { if (g_shot_mode) { g_shot_done.push_back("open " + u); return; } SDL_OpenURL(u.c_str()); }
 
@@ -1664,7 +1665,7 @@ static void slider_row(const SetTarget &t, const char *label, const char *expl, 
 	ui::row(label, expl, fabsf(v - (float)def * shown) < 0.0005f * (shown > 1 ? shown : 1) ? "default" : nullptr);
 	ImGui::SetNextItemWidth(-FLT_MIN);
 	std::string id = std::string("##") + key;
-	if (ImGui::SliderFloat(id.c_str(), &v, lo, hi, fmt, fl)) ini_set(*t.x, key, fmt_g(v / shown));
+	if (ui::slider_float(id.c_str(), &v, lo, hi, fmt, fl)) ini_set(*t.x, key, fmt_g(v / shown));
 	if (ImGui::IsItemDeactivatedAfterEdit()) target_write(t, key, tget(t, key, ""));   /* (written once the drag ends) */
 }
 static bool g_settings_open; static int g_settings_tab; static Ini g_shared;
@@ -2074,11 +2075,16 @@ static void settings_modal(void) {
 	ImGui::PopStyleVar(2);
 	ui::heading("Settings", em * 1.4f);
 	static const char *const tabs[] = {"Display##st", "Controls##st", "Sound & online##st", "Library##st", "About##st"};
+	ImGuiID tab_ids[5]; for (int i = 0; i < 5; i++) tab_ids[i] = ImGui::GetID(tabs[i]);   /* (UI-03: B in a row comes back to its tab) */
+	ImGuiWindow *settings_win = ImGui::GetCurrentWindow(); ImGuiWindow *rows_win = nullptr;
 	ui::segmented(tabs, 5, &g_settings_tab); tab_hint();
 	g_settings_tab = (g_settings_tab + tab_step() + 5) % 5;
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
 	SetTarget t{&g_shared, shared_path(), SHARED_HEADER};
 	ImGui::BeginChild("settings_rows", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() - em * 0.4f - (hints_visible() ? ImGui::GetTextLineHeightWithSpacing() + em * 0.15f : 0)), ImGuiChildFlags_NavFlattened);
+	rows_win = ImGui::GetCurrentWindow();
+	static bool tabs_had_focus;
+	ui::tabs_down_enters(tabs_had_focus);   /* (UI-03: down from the tabs: the rows' first control) */
 	if (g_settings_tab <= 2) {   /* (what these settings are: at the top of the rows, scrolling with them -- a small window has no room for it above) */
 		ImGui::PushTextWrapPos(0);
 		ui::muted_wrapped("For every game. A game reads them when it starts; its own menu (F10) changes them too, for every game. A game's own options, and any value it keeps for itself, are on its page (its card's ...).");
@@ -2137,12 +2143,19 @@ static void settings_modal(void) {
 		}
 		ui::rows_end();
 	}
+	ui::nav_keep_visible();   /* (UI-03) */
 	ImGui::EndChild();
 	if (ImGui::Button("Use the recommended set")) { Ini r; recommended_into(r); for (auto &e : r.kv) target_write(t, e.first, e.second); }
 	if (g_touch || GImGui->NavCursorVisible) { char rs[160]; snprintf(rs, sizeof rs, "Fullscreen, %d× resolution, widescreen to the window, 60 fps, direct mouse aim, softer shadows", recommended_scale()); ImGui::SameLine(); info_text("##recinfo", ui::muted, "What it sets", rs); }
 	if (ImGui::IsItemHovered()) ImGui::SetTooltip("Fullscreen, %d× resolution, widescreen to the window, 60 fps, direct mouse aim, softer shadows", recommended_scale());
 	ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize("Done").x - ImGui::GetStyle().FramePadding.x * 2);
-	if (ui::primary_button("Done") || dialog_back()) { g_settings_open = false; ImGui::CloseCurrentPopup(); }
+	{	/* (UI-03) B goes up one level: from the rows to the tab in use, from the tabs out of Settings */
+		const bool back = dialog_back();
+		const ImGuiContext &g = *GImGui;
+		if (back && rows_win && g.NavWindow && ImGui::IsWindowChildOf(g.NavWindow, rows_win, false)) { ImGui::SetFocusID(tab_ids[g_settings_tab], settings_win); ImGui::SetNavCursorVisible(true); }
+		else if (ui::primary_button("Done") || back) { g_settings_open = false; ImGui::CloseCurrentPopup(); }
+		tabs_had_focus = false; for (ImGuiID id : tab_ids) tabs_had_focus |= GImGui->NavId == id;
+	}
 	dialog_hints();
 	child_dialogs();   /* (Library: Add a folder; the online name) */
 	bind_modal(SetTarget{&g_shared, shared_path(), SHARED_HEADER});
@@ -3710,6 +3723,13 @@ static int shot(SDL_Window *win, const char *path, int w, int h) {
 #endif
 		ImGui::NewFrame(); hub_ui(win); ImGui::Render();
 #ifdef IMGUI_ENABLE_TEST_ENGINE
+		if (g_nav_on && !keys.empty() && f >= settle && (f - settle) % per_key == per_key - 1 && (f - settle) / per_key < (int)keys.size()) {   /* (UI-03: the walk) */
+			ImGuiContext &g = *GImGui; static std::vector<std::string> *tr = nullptr; if (!tr) tr = new std::vector<std::string>();
+			auto it = g_nav_labels.find(g.NavId);
+			std::string open; for (const ImGuiPopupData &pp : g.OpenPopupStack) open += (open.empty() ? "" : ",") + (pp.Window ? fit_name(pp.Window) : std::string("?"));
+			tr->push_back("trace " + std::to_string((f - settle) / per_key) + " " + (g.NavWindow ? fit_name(g.NavWindow) : std::string("-")) + " | " + (it != g_nav_labels.end() ? it->second : std::string("-")) + " | open " + (open.empty() ? "none" : open));
+			g_nav_trace = tr;
+		}
 		if (g_fit_on) {
 			fit_check(); g_fit_on = false; GImGui->TestEngineHookItems = false;
 			if (FILE *fr = fopen(fit_path, "wb")) { for (const std::string &l : g_fit) fprintf(fr, "%s\n", l.c_str()); fclose(fr); }
@@ -3732,6 +3752,7 @@ static int shot(SDL_Window *win, const char *path, int w, int h) {
 				if (!rect.empty()) fprintf(fn, "%s\n", rect.c_str());
 				fprintf(fn, "pointer %d %d %s over %s\n", (int)io.MousePos.x, (int)io.MousePos.y, io.MouseSource == ImGuiMouseSource_TouchScreen ? "touch" : "mouse", g.HoveredWindow ? fit_name(g.HoveredWindow).c_str() : "-");
 				for (const std::string &d : g_shot_done) fprintf(fn, "did %s\n", d.c_str());
+				if (g_nav_trace) for (const std::string &l : *g_nav_trace) fprintf(fn, "%s\n", l.c_str());
 				if (g_export_open) fprintf(fn, "%s\n", g_export_report.c_str());
 				if (g_browse.open) fprintf(fn, "browse %s (%zu)\n", g_browse.dir.empty() ? "places" : g_browse.dir.c_str(), g_browse.items.size());
 				for (ImGuiWindow *sw : g.Windows) if (sw->WasActive && !sw->Hidden && sw->ScrollMax.y > 0.5f) fprintf(fn, "scroll %s %d/%d\n", fit_name(sw).c_str(), (int)sw->Scroll.y, (int)sw->ScrollMax.y);

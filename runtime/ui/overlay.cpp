@@ -58,11 +58,11 @@
 #include "ui_scale.h"
 #include "pad_family.h"   /* (UI-01e) the pad's own button names, shared with the launcher */
 #include "touch_controls.h"   /* (UI-01n) the on-screen buttons' layout, shared with window.c */
-#include "menu_sidebar.h"
-#include "menu_hint.h"
+#include "menu_shell.h"   /* (UI-03) the sections as tabs across the top, one pad flow (menu_walk_test) */
+#include "menu_hint.h"   /* (UI-02a) the start hint, per device */
 #include "device_pick.h"   /* (UI-02b) the chosen controller / camera, "not connected" */
 #include <string>
-#include <vector>   /* (UI-02a) the start hint, per device */   /* the sections' list (a controller reaches and chooses them: menu_sidebar_test) */
+#include <vector>
 #include "sysinfo.h"   /* the "Copy system info" text (U5) */
 #define STBI_NO_STDIO
 #include "third_party/stb/stb_image.h"   /* (its implementation: runtime/media/jpeg.c) */
@@ -374,7 +374,7 @@ static void volume_slider(void) {   /* (the bar's Game menu) */
 	prefs_load();
 	float pct = P.vol * 100.0f;
 	ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10);
-	if (ImGui::SliderFloat("##vol", &pct, 0.0f, 100.0f, "%.0f%%")) set_volume(pct / 100.0f);
+	if (ui::slider_float("##vol", &pct, 0.0f, 100.0f, "%.0f%%")) set_volume(pct / 100.0f);
 }
 /* render scale labels: "3x  2880 x 1632" (the 960x544 frame's size at n), and the scale that matches the
  * window: the smallest whose frame is at least the window's pixel height (Vita frames are 16:9-ish, so
@@ -393,7 +393,7 @@ static const char *const g_aspect_names[3] = {"aspect.fit", "aspect.stretch", "a
  * metrics.c, settings.c, or P above) and calls that owner's setter the moment the control changes. */
 static void slider_row(const char *id, float *v, float lo, float hi, const char *fmt, ImGuiSliderFlags fl = 0) {
 	ImGui::SetNextItemWidth(-FLT_MIN);
-	ImGui::SliderFloat(id, v, lo, hi, fmt, fl);
+	ui::slider_float(id, v, lo, hi, fmt, fl);
 }
 static void page_display(void) {
 	if (!ui::rows_begin("display")) return;
@@ -449,7 +449,7 @@ static void page_display(void) {
 		{	float st = (float)settings_float("ssao_strength", 1.0) * 100.0f;
 			ImGui::BeginDisabled(settings_int("ssao", 1) == 0);
 			ImGui::SetNextItemWidth(-FLT_MIN);
-			if (ImGui::SliderFloat("##ssaost", &st, 0.0f, 200.0f, "%.0f%%")) { settings_set_float("ssao_strength", st / 100.0f); save_settings(); }
+			if (ui::slider_float("##ssaost", &st, 0.0f, 200.0f, "%.0f%%")) { settings_set_float("ssao_strength", st / 100.0f); save_settings(); }
 			ImGui::EndDisabled();
 		}
 	}
@@ -487,7 +487,7 @@ static void page_display(void) {
 	ui::row(ui_tr("display.sharpening"), ui_tr("display.sharpening_help"), note_flt("sharpen", settings_float("sharpen", 0.35)));
 	{	float sh = (float)settings_float("sharpen", 0.35) * 100.0f;
 		ImGui::SetNextItemWidth(-FLT_MIN);
-		if (ImGui::SliderFloat("##sharp", &sh, 0.0f, 100.0f, sh <= 0.0f ? ui_tr("common.off") : "%.0f%%")) { settings_set_float("sharpen", sh / 100.0f); save_settings(); }
+		if (ui::slider_float("##sharp", &sh, 0.0f, 100.0f, sh <= 0.0f ? ui_tr("common.off") : "%.0f%%")) { settings_set_float("sharpen", sh / 100.0f); save_settings(); }
 	}
 	ui::row(ui_tr("display.aniso"), ui_tr("display.aniso_help"), note_int("anisotropy", settings_int("anisotropy", 16)));
 	{	static const int an[5] = {1, 2, 4, 8, 16};
@@ -528,19 +528,19 @@ static void page_game(void) {
 		if (ui::segmented(names, n, &v)) set_frame_rate(l[v]); }
 	if (game_option("fov")) {
 		ui::row(ui_tr("game.fov"), ui_tr("game.fov_help"));
-		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##fov", &P.fov, 0.75f, 1.5f, "%.2f×")) set_fov(P.fov);
+		ImGui::SetNextItemWidth(-FLT_MIN); if (ui::slider_float("##fov", &P.fov, 0.75f, 1.5f, "%.2f×")) set_fov(P.fov);
 	}
 	if (game_option("view_distance")) {
 		ui::row(ui_tr("game.view"), ui_tr("game.view_help"));
-		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##view", &P.view, 1.0f, 3.0f, "%.2f×")) set_view(P.view);
+		ImGui::SetNextItemWidth(-FLT_MIN); if (ui::slider_float("##view", &P.view, 1.0f, 3.0f, "%.2f×")) set_view(P.view);
 	}
 	if (game_option("scenery_detail")) {
 		ui::row(ui_tr("game.scen"), ui_tr("game.scen_help"));
-		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##scen", &P.scen, 1.0f, 8.0f, "%.1f×")) set_scen(P.scen);
+		ImGui::SetNextItemWidth(-FLT_MIN); if (ui::slider_float("##scen", &P.scen, 1.0f, 8.0f, "%.1f×")) set_scen(P.scen);
 	}
 	if (game_option("character_detail")) {
 		ui::row(ui_tr("game.chr"), ui_tr("game.chr_help"));
-		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##chr", &P.chr, 1.0f, 8.0f, "%.1f×")) set_chr(P.chr);
+		ImGui::SetNextItemWidth(-FLT_MIN); if (ui::slider_float("##chr", &P.chr, 1.0f, 8.0f, "%.1f×")) set_chr(P.chr);
 	}
 	if (display_pstv_looked()) {   /* (display.c's PS TV mode: a game with a PS TV layout of its own) */
 		ui::row(ui_tr("game.layout"), ui_tr("game.layout_help"), note_int("controller_layout", settings_int("controller_layout", 0), ui_tr("mark.after_restart")));
@@ -587,7 +587,7 @@ static void page_game(void) {
 		}
 	}
 	ui::row(ui_tr("game.volume"), nullptr, note_flt("volume", P.vol));
-	{ float pct = P.vol * 100.0f; ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##vol", &pct, 0.0f, 100.0f, "%.0f%%")) set_volume(pct / 100.0f); }
+	{ float pct = P.vol * 100.0f; ImGui::SetNextItemWidth(-FLT_MIN); if (ui::slider_float("##vol", &pct, 0.0f, 100.0f, "%.0f%%")) set_volume(pct / 100.0f); }
 	ui::rows_end();
 }
 extern "C" int camera_light(void); extern "C" void camera_light_set(int on);
@@ -629,7 +629,7 @@ static void page_controls(void) {
 			int v = window_raw_look() ? 0 : 1; if (ui::segmented(names, 2, &v)) window_set_raw_look(v == 0); }
 		ui::row(ui_tr("ctrl.mouse_sens"), nullptr, note_flt("mouse_sens", settings_float("mouse_sens", 1.0)));
 		{ static float sens = -1; static int epoch; if (sens < 0 || epoch != g_prefs_epoch) { sens = (float)settings_float("mouse_sens", 1.0); epoch = g_prefs_epoch; } ImGui::SetNextItemWidth(-FLT_MIN);
-		  if (ImGui::SliderFloat("##ms", &sens, 0.1f, 5.0f, "%.2f×", ImGuiSliderFlags_Logarithmic)) { settings_set_float("mouse_sens", sens); save_settings(); } }
+		  if (ui::slider_float("##ms", &sens, 0.1f, 5.0f, "%.2f×", ImGuiSliderFlags_Logarithmic)) { settings_set_float("mouse_sens", sens); save_settings(); } }
 		ui::row(ui_tr("ctrl.mouse_invert"), nullptr, note_int("mouse_invert", settings_int("mouse_invert", 0)));
 		{ bool inv = settings_int("mouse_invert", 0) != 0; if (ui::toggle("mi", &inv)) { settings_set_int("mouse_invert", inv ? 1 : 0); save_settings(); } }
 		ui::row(ui_tr("ctrl.shoulder"), ui_tr("ctrl.shoulder_help"), note_s("shoulder_buttons"));
@@ -638,7 +638,7 @@ static void page_controls(void) {
 			char cur[16]; int v = !strcmp(settings_str("shoulder_buttons", "triggers", cur, sizeof cur), "bumpers");
 			if (ui::segmented(names, 2, &v)) { settings_set_str("shoulder_buttons", v ? "bumpers" : "triggers"); save_settings(); } }
 		ui::row(ui_tr("ctrl.touch_speed"), ui_tr("ctrl.touch_speed_help"), note_flt("touch_cursor_speed", settings_float("touch_cursor_speed", 1.0)));
-		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##tcs", &P.tcs, 0.25f, 3.0f, "%.2f×")) set_tcs(P.tcs);
+		ImGui::SetNextItemWidth(-FLT_MIN); if (ui::slider_float("##tcs", &P.tcs, 0.25f, 3.0f, "%.2f×")) set_tcs(P.tcs);
 		ui::row(ui_tr("ctrl.osb"), ui_tr("ctrl.osb_help"), note_s("osb"));   /* (UI-01n) */
 		{ char t0[48], t1[48], t2[48];
 			const char *names[3] = {tr_suf(ui_tr("ctrl.osb_auto"), "##osb", t0, sizeof t0), tr_suf(ui_tr("ctrl.osb_on"), "##osb", t1, sizeof t1), tr_suf(ui_tr("ctrl.osb_off"), "##osb", t2, sizeof t2)};
@@ -646,7 +646,7 @@ static void page_controls(void) {
 			if (ui::segmented(names, 3, &v)) { settings_set_str("osb", v == 1 ? "on" : v == 2 ? "off" : "auto"); save_settings(); } }
 		ui::row(ui_tr("ctrl.osb_size"), nullptr, note_flt("osb_size", settings_float("osb_size", 1.0)));
 		{ static float sz = -1; static int epoch; if (sz < 0 || epoch != g_prefs_epoch) { sz = (float)settings_float("osb_size", 1.0); epoch = g_prefs_epoch; } ImGui::SetNextItemWidth(-FLT_MIN);
-		  if (ImGui::SliderFloat("##osbs", &sz, 0.75f, 1.5f, "%.2f×")) { settings_set_float("osb_size", sz); save_settings(); } }
+		  if (ui::slider_float("##osbs", &sz, 0.75f, 1.5f, "%.2f×")) { settings_set_float("osb_size", sz); save_settings(); } }
 		ui::rows_end();
 	}
 	section_label(ui_tr("ctrl.motion"));
@@ -658,7 +658,7 @@ static void page_controls(void) {
 			const char *names[2] = {tr_suf(ui_tr("ctrl.gyro_upright"), "##gp", t0, sizeof t0), tr_suf(ui_tr("ctrl.gyro_flat"), "##gp", t1, sizeof t1)};
 			int v = P.gyro_flat ? 1 : 0; if (ui::segmented(names, 2, &v)) set_gyro_pose(v); }
 		ui::row(ui_tr("ctrl.gyro_sens"), nullptr, note_flt("gyro_sens", settings_float("gyro_sens", 1.0)));
-		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##gs", &P.gyro_sens, 0.25f, 3.0f, "%.2f×")) set_gyro_sens(P.gyro_sens);
+		ImGui::SetNextItemWidth(-FLT_MIN); if (ui::slider_float("##gs", &P.gyro_sens, 0.25f, 3.0f, "%.2f×")) set_gyro_sens(P.gyro_sens);
 		ui::row(ui_tr("ctrl.recentre"), ui_tr("ctrl.recentre_help"));
 		if (ImGui::Button(ui_tr("ctrl.recentre_btn"))) motion_recenter();
 		ui::row(ui_tr("ctrl.camera"), ui_tr("ctrl.camera_help"), note_s("camera"));
@@ -840,31 +840,40 @@ static void build_ui(void) {
 	}
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
 	const float foot = ImGui::GetFrameHeightWithSpacing() + em * 0.9f;
-	/* the sections; a controller's L1 / R1 (or Ctrl+Tab, Ctrl+Shift+Tab) step them in the sidebar's order -- the sidebar and
-	 * the page are separate panels the D-pad doesn't cross -- and the new page's first row takes the focus */
+	/* the sections: tabs across the top (UI-03, menu_shell.h); a controller's L1 / R1 (or Ctrl+Tab, Ctrl+Shift+Tab) step them
+	 * and the new page's first row takes the focus; left / right on the tabs pick one; D-pad down from the tabs enters
+	 * the rows, up from the first row comes back */
 	static const int order[TAB_N] = {TAB_DISPLAY, TAB_GAME, TAB_CONTROLS, TAB_PERF, TAB_HELP};
 	static bool focus_page;
-	/* (U12c) Circle resumes the game, as Esc does -- unless it had something to cancel: an edited slider, a combo
-	 * or the reset dialog in the frame before (ImGui's nav took this frame's cancel before we look) */
+	/* (U12c) Circle goes up one level -- a row: to its tab; the tabs: resumes the game, as Esc does (UI-03) -- unless it had
+	 * something to cancel: an edited slider, a combo or the reset dialog in the frame before (ImGui's nav took this
+	 * frame's cancel before we look) */
 	static bool busy_before;
-	if (!busy_before && !g_modal_open && g_rebind < 0 && g_pad_rebind < 0 && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) overlay_close();
+	ImGuiWindow *menu_win = ImGui::GetCurrentWindow();
+	static int open_frames;
+	if (ImGui::IsWindowAppearing()) open_frames = 0;
 	if (!ImGui::IsAnyItemActive() && !g_modal_open) {   /* (U6) no page step under the reset dialog */
 		const bool ctrl = io.KeyCtrl, shift = io.KeyShift; int step = 0;
 		if (ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || (ctrl && shift && ImGui::IsKeyPressed(ImGuiKey_Tab, false))) step = -1;
 		if (ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) || (ctrl && !shift && ImGui::IsKeyPressed(ImGuiKey_Tab, false))) step = 1;
 		if (step) { int k = 0; while (k < TAB_N - 1 && order[k] != g_section) k++; g_section = order[(k + step + TAB_N) % TAB_N]; focus_page = true; }
 	}
-	/* (U12c) NavFlattened: the D-pad / arrow keys cross from the sidebar into the page and back */
+	ImGuiID tab_ids[MENU_TABS_MAX];
 	{	const char *labels[TAB_N]; for (int i = 0; i < TAB_N; i++) labels[i] = ui_tr(g_tab_ids[i]);
-		menu_sidebar(&g_section, order, TAB_N, labels, -foot); }
-	ImGui::SameLine(0, em * 0.8f);
-	/* the page */
+		menu_tabs(&g_section, order, TAB_N, labels, tab_ids); }
+	const ImGuiID tab_now = tab_ids[menu_tab_place(g_section, order, TAB_N)];
+	if (open_frames < 2) { ImGui::SetFocusID(tab_now, menu_win); ImGui::SetNavCursorVisible(true); open_frames++; }   /* (the menu opens on the tab in use: ImGui puts the focus on a new window's first item after its first frame) */
+	ImGui::Dummy(ImVec2(0, em * 0.15f));
+	/* the page: under the tabs, the window's full width (NavFlattened: the D-pad crosses between the tabs and the rows) */
 	ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::bg);
 	ImGui::BeginChild("page", ImVec2(0, -foot), ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding | ImGuiChildFlags_NavFlattened);
 	ImGui::PopStyleColor();
+	ImGuiWindow *page_win = ImGui::GetCurrentWindow();
+	static bool tabs_had_focus;
+	ui::tabs_down_enters(tabs_had_focus);   /* (UI-03: down from the tabs: the page's first control) */
 	ui::heading(ui_tr(g_tab_ids[g_section]), em * 1.25f);
 	ImGui::TextDisabled("%s", ui_tr(g_tab_blurb_ids[g_section]));
-	if (focus_page) { ImGui::SetKeyboardFocusHere(); focus_page = false; }   /* (the page's first control) */
+	if (focus_page) { ui::focus_next_item(); focus_page = false; }   /* (the page's first control -- not taken: UI-03) */
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
 	static void (*const pages[TAB_N])(void) = {page_display, page_performance, page_game, page_controls, page_help};
 	static int shown_section = -1;
@@ -881,7 +890,10 @@ static void build_ui(void) {
 		ui::help_pane();
 		ImGui::EndChild();
 	}
+	ui::nav_keep_visible();   /* (UI-03) */
 	ImGui::EndChild();
+	if (!busy_before && !g_modal_open && g_rebind < 0 && g_pad_rebind < 0 && menu_back(page_win, menu_win, tab_now)) overlay_close();   /* (UI-03) */
+	tabs_had_focus = menu_tab_focused(tab_ids, TAB_N);
 	/* the foot */
 	ImGui::Dummy(ImVec2(0, em * 0.15f));
 	if (ImGui::Button(ui_tr("foot.capture"))) g_want_capture = true;
@@ -968,10 +980,10 @@ static void menu_view(void) {
 	if (ImGui::MenuItem(ui_tr("display.fullscreen"), nullptr, &fs)) window_set_fullscreen(fs ? 1 : 0);
 	ImGui::Separator();
 	prefs_load();
-	if (game_option("fov")) { ImGui::TextDisabled("%s", ui_tr("game.fov")); ImGui::SetNextItemWidth(170 * g_ui_scale); if (ImGui::SliderFloat("##fov", &P.fov, 0.75f, 1.5f, "%.2fx")) set_fov(P.fov); }
-	if (game_option("view_distance")) { ImGui::TextDisabled("%s", ui_tr("game.view")); ImGui::SetNextItemWidth(170 * g_ui_scale); if (ImGui::SliderFloat("##view", &P.view, 1.0f, 3.0f, "%.2fx")) set_view(P.view); }
-	if (game_option("scenery_detail")) { ImGui::TextDisabled("%s", ui_tr("game.scen")); ImGui::SetNextItemWidth(170 * g_ui_scale); if (ImGui::SliderFloat("##scen", &P.scen, 1.0f, 8.0f, "%.1fx")) set_scen(P.scen); }
-	if (game_option("character_detail")) { ImGui::TextDisabled("%s", ui_tr("game.chr")); ImGui::SetNextItemWidth(170 * g_ui_scale); if (ImGui::SliderFloat("##chr", &P.chr, 1.0f, 8.0f, "%.1fx")) set_chr(P.chr); }
+	if (game_option("fov")) { ImGui::TextDisabled("%s", ui_tr("game.fov")); ImGui::SetNextItemWidth(170 * g_ui_scale); if (ui::slider_float("##fov", &P.fov, 0.75f, 1.5f, "%.2fx")) set_fov(P.fov); }
+	if (game_option("view_distance")) { ImGui::TextDisabled("%s", ui_tr("game.view")); ImGui::SetNextItemWidth(170 * g_ui_scale); if (ui::slider_float("##view", &P.view, 1.0f, 3.0f, "%.2fx")) set_view(P.view); }
+	if (game_option("scenery_detail")) { ImGui::TextDisabled("%s", ui_tr("game.scen")); ImGui::SetNextItemWidth(170 * g_ui_scale); if (ui::slider_float("##scen", &P.scen, 1.0f, 8.0f, "%.1fx")) set_scen(P.scen); }
+	if (game_option("character_detail")) { ImGui::TextDisabled("%s", ui_tr("game.chr")); ImGui::SetNextItemWidth(170 * g_ui_scale); if (ui::slider_float("##chr", &P.chr, 1.0f, 8.0f, "%.1fx")) set_chr(P.chr); }
 	if (ImGui::BeginMenu(ui_tr("game.fps"))) {
 		int l[3], n = fr_list(display_frame_rates_allowed(), l), cur = fr_effective(P.fr, display_frame_rates_allowed());
 		for (int i = 0; i < n; i++) if (ImGui::MenuItem(l[i] >= 120 ? ui_tr("bar.fps120") : l[i] >= 60 ? ui_tr("bar.fps60") : "30", nullptr, cur == l[i])) set_frame_rate(l[i]);
@@ -990,7 +1002,7 @@ static void menu_controls(void) {
 	prefs_load();
 	ImGui::TextDisabled("%s", ui_tr("bar.touch_speed"));
 	ImGui::SetNextItemWidth(170 * g_ui_scale);
-	if (ImGui::SliderFloat("##tcs", &P.tcs, 0.25f, 3.0f, "%.2fx")) set_tcs(P.tcs);
+	if (ui::slider_float("##tcs", &P.tcs, 0.25f, 3.0f, "%.2fx")) set_tcs(P.tcs);
 	ImGui::Separator();
 	bool gy = P.gyro != 0;
 	if (ImGui::MenuItem(ui_tr("bar.gyro_toggle"), nullptr, &gy)) set_gyro(gy);
@@ -1001,7 +1013,7 @@ static void menu_controls(void) {
 	}
 	ImGui::TextDisabled("%s", ui_tr("ctrl.gyro_sens"));
 	ImGui::SetNextItemWidth(170 * g_ui_scale);
-	if (ImGui::SliderFloat("##gs", &P.gyro_sens, 0.25f, 3.0f, "%.2fx")) set_gyro_sens(P.gyro_sens);
+	if (ui::slider_float("##gs", &P.gyro_sens, 0.25f, 3.0f, "%.2fx")) set_gyro_sens(P.gyro_sens);
 	if (ImGui::MenuItem(ui_tr("ctrl.recentre_btn"), "R3")) motion_recenter();
 	ImGui::Separator();
 	if (ImGui::MenuItem(ui_tr("bar.controls_ref"))) open_page(TAB_CONTROLS);   /* (the full menu: pauses) */

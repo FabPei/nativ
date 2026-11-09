@@ -9,6 +9,7 @@
 #ifndef ATIV_UI_THEME_H
 #define ATIV_UI_THEME_H
 #include "imgui.h"
+#include "imgui_internal.h"   /* (UI-03: SetFocusID, the nav state) */
 #include "ui_text.h"   /* (U12b) ui_tr for the toggle's Off/On */
 #include <cstdio>
 #include <initializer_list>
@@ -68,8 +69,18 @@ inline bool primary_button(const char *label, ImVec2 size = ImVec2(0, 0)) {   /*
 /* a choice of n as one joined control; true when it changes. ids: labels may carry "##" suffixes.
  * (2026-11-07: wraps to the next line when the row would overflow the column -- six widescreen
  * segments clipped at 1280x800's narrower settings column before this.) */
+/* (UI-03) one pad flow for every choice: up / down reach a choice ON its current value (a focus arriving from another row
+ * is moved there -- it never lands on, nor picks, a neighbour by where it came from), left / right (or up / down
+ * through a list that stacks) pick the value as they move, Cross on one picks it too; a mouse or a finger click as
+ * before. The focus a group had last frame is kept in ImGui's state storage, keyed by the group's first label. */
 inline bool segmented(const char *const *labels, int n, int *v) {
 	bool ch = false;
+	ImGuiContext &g = *GImGui;
+	const ImGuiID key = ImGui::GetID(labels[0]) ^ 0x5e6d0001u;
+	ImGuiStorage *st = ImGui::GetStateStorage();
+	const int prev = st->GetInt(key, -1);
+	const bool pad_nav = g.NavCursorVisible && (g.NavInputSource == ImGuiInputSource_Gamepad || g.NavInputSource == ImGuiInputSource_Keyboard);
+	int fi = -1; ImGuiID cur_id = 0;
 	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x * 0.25f, 0));
 	const float sp = ImGui::GetStyle().ItemSpacing.x, avail = ImGui::GetContentRegionAvail().x, x0 = ImGui::GetCursorPosX();
 	float xnext = x0;   /* where the next button would start on this line (after Button() the cursor is at the next line's start, so track it) */
@@ -85,10 +96,58 @@ inline bool segmented(const char *const *labels, int n, int *v) {
 		ImGui::PushStyleColor(ImGuiCol_ButtonActive, with_alpha(accent, 0.30f));
 		ImGui::PushStyleColor(ImGuiCol_Text, on ? accent : muted);
 		if (ImGui::Button(labels[i]) && !on) { *v = i; ch = true; }
+		if (ImGui::IsItemFocused()) fi = i;
+		if (i == *v) cur_id = ImGui::GetItemID();
 		ImGui::PopStyleColor(4);
 		xnext = placed + w + sp;
 	}
 	ImGui::PopStyleVar();
+	int keep = fi;
+	if (fi >= 0 && pad_nav && !ch) {
+		if (prev < 0) { if (fi != *v && cur_id) { ImGui::SetFocusID(cur_id, ImGui::GetCurrentWindow()); keep = *v; } }   /* (arrived: onto the value) */
+		else if (fi != prev && fi != *v) { *v = fi; ch = true; }   /* (moved within: that value) */
+	}
+	st->SetInt(key, keep);
+	return ch;
+}
+/* (UI-03) in a scrolling list of rows (call it last, inside its window): the focused control is kept in view with a margin
+ * of rows below and above it, so a D-pad press always moves to the next one -- with the next one out of view, ImGui
+ * spent the press scrolling to it first, and the player pressed twice (the walk test's "stalls") */
+inline void nav_keep_visible(float margin_rows = 2.5f) {
+	ImGuiContext &g = *GImGui; ImGuiWindow *w = ImGui::GetCurrentWindow();
+	if (!g.NavId || g.NavWindow != w || !g.NavCursorVisible) return;
+	const ImRect r = ImGui::WindowRectRelToAbs(w, w->NavRectRel[0]);
+	const float m = ImGui::GetFrameHeightWithSpacing() * margin_rows, top = w->InnerClipRect.Min.y, bot = w->InnerClipRect.Max.y;
+	if (r.Max.y + m > bot) ImGui::SetScrollY(w, ImMin(w->ScrollMax.y, w->Scroll.y + (r.Max.y + m - bot)));
+	else if (r.Min.y - m < top) ImGui::SetScrollY(w, ImMax(0.0f, w->Scroll.y - (top - (r.Min.y - m))));
+}
+/* (UI-03) the focus to the next control submitted, as SetKeyboardFocusHere() but without taking it: ImGui's own call
+ * activates what it lands on, and a slider landed on that way opened for typing (B then only left the typing) */
+inline void focus_next_item(void) {
+	ImGuiContext &g = *GImGui;
+	ImGui::SetNavWindow(g.CurrentWindow);
+	ImGui::NavMoveRequestSubmit(ImGuiDir_None, ImGuiDir_Down, ImGuiNavMoveFlags_IsTabbing | ImGuiNavMoveFlags_FocusApi, ImGuiScrollFlags_KeepVisibleEdgeX | ImGuiScrollFlags_KeepVisibleEdgeY);
+	g.NavTabbingDir = 1; g.NavTabbingCounter = 1;
+}
+/* (UI-03) down from the tabs enters the rows at their first control, whatever is in view (at the top of a list, before its
+ * first item): ImGui's nearest-below rule took a page whose first control was out of view straight to the foot */
+inline void tabs_down_enters(bool tab_had_focus) {
+	if (tab_had_focus && (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadDown, false) || ImGui::IsKeyPressed(ImGuiKey_DownArrow, false))) focus_next_item();
+}
+/* (UI-03) a slider the pad changes without taking it first: left / right (the arrow keys) step a focused slider by a
+ * twentieth of its range (a logarithmic one by 10 %); Cross still takes it for fine steps, as ImGui does */
+inline bool slider_float(const char *label, float *v, float lo, float hi, const char *fmt = "%.3f", ImGuiSliderFlags fl = 0) {
+	bool ch = ImGui::SliderFloat(label, v, lo, hi, fmt, fl);
+	if (ImGui::IsItemFocused() && !ImGui::IsItemActive()) {
+		int dir = 0;
+		if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft, true) || ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true)) dir = -1;
+		if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight, true) || ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) dir = 1;
+		if (dir) {
+			float nv = (fl & ImGuiSliderFlags_Logarithmic) && *v > 0 ? *v * (dir > 0 ? 1.1f : 1.0f / 1.1f) : *v + dir * (hi - lo) / 20.0f;
+			nv = nv < lo ? lo : nv > hi ? hi : nv;
+			if (nv != *v) { *v = nv; ch = true; }
+		}
+	}
 	return ch;
 }
 inline bool toggle(const char *id, bool *on) {   /* Off / On as a segmented pair (U12b: the catalog's words) */
