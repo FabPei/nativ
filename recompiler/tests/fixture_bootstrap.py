@@ -164,6 +164,31 @@ m, _ = bootstrap.modules(_d, {"ScePvf", "SceGxm"}, lambda m: True, lambda m: {"l
 check(m == ["libc", "libgxm_es4", "libgpu_es4", "libfios2", "libpvf", "libSceFt2"], f"modules: ScePvf -> libpvf -> libSceFt2 ({' '.join(m)})")
 m, _ = bootstrap.modules(_d, {"ScePvf"}, lambda m: m != "libSceFt2", lambda m: {"libpvf": ["SceFt2"]}.get(m, []))
 check(m[-1] == "libpvf" and "libSceFt2" not in m, "modules: a dependency this machine lacks is left out")
+# a library the game ships itself in sce_module/ (libult = SceUlt, the user-level thread library: its imports ran as
+# stubs and the game's worker threads never started) is loaded when the game imports it, even before import has made
+# its ELF (have_module false); a shipped module whose library nobody imports stays a note
+os.makedirs(os.path.join(_d, "sce_module")); [open(os.path.join(_d, "sce_module", f), "w").close() for f in ("libult.suprx", "libface.suprx")]
+m, left = bootstrap.modules(_d, {"SceUlt", "SceGxm"}, lambda m: False, lambda m: [])
+check("libult" in m and left == ["libface"], f"modules: shipped libult loaded for SceUlt imports ({' '.join(m)}; left {left})")
+m, left = bootstrap.modules(_d, {"SceGxm"}, lambda m: False, lambda m: [])
+check("libult" not in m and left == ["libface", "libult"], "modules: shipped libult without SceUlt imports stays a note")
+
+# ---- 5. LOAD_MODULES (MODLOAD-01): modules app0 ships outside sce_module/ and sce_sys/ are loaded on demand by the game
+# (sceKernelLoadStartModule "app0:bin/<name>.self"): pack-init names them as app0-relative globs, one per folder and
+# extension; their decrypted .elf twins, sce_module/ and sce_sys/ are not modules to load
+for rel in ("bin/god.self", "bin/god.self.elf", "bin/ui.self", "modules_psvita/libmd5.suprx", "sce_sys/about/right.suprx", "eboot.bin"):
+    os.makedirs(os.path.dirname(os.path.join(_d, rel)) or _d, exist_ok=True); open(os.path.join(_d, rel), "w").close()
+lm = bootstrap.load_modules(_d) if hasattr(bootstrap, "load_modules") else []
+check(lm == ["bin/*.self", "modules_psvita/*.suprx"], f"load_modules: app0 modules outside sce_module/ ({lm})")
+t = bootstrap.pack_text("PCSX00000", "x", "1.00", "0" * 64, "eboot.bin.elf", ["libc"], [], lm) if lm else ""
+check('LOAD_MODULES = "bin/*.self modules_psvita/*.suprx"' in t, "pack_text: writes LOAD_MODULES")
+# the firmware's JSON library: a game (or one of its on-demand modules) importing SceLibJson gets libSceJson, as the
+# PCSB00672 hand pack lists it -- else its sce::Json calls run as stubs
+m, _ = bootstrap.modules(_d, {"SceLibJson"}, lambda m: True, lambda m: [])
+check("libSceJson" in m, f"modules: SceLibJson -> libSceJson ({' '.join(m)})")
+lf = bootstrap.load_module_files(_d, lm) if hasattr(bootstrap, "load_module_files") else []
+check(sorted(os.path.relpath(f, _d).replace(os.sep, "/") for f in lf) == ["bin/god.self", "bin/ui.self", "modules_psvita/libmd5.suprx"],
+      f"load_module_files: the files LOAD_MODULES names ({lf})")
 
 print(f"all passed ({ok} ok)" if not bad else f"{bad} FAILED, {ok} ok")
 sys.exit(1 if bad else 0)

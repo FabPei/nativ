@@ -22,7 +22,12 @@ BASE_MODULES = ("libc", "libgxm_es4", "libgpu_es4", "libfios2")
 # a firmware module the runtime runs as Sony's code when the game imports its library (Uncharted / P4G / Killzone's
 # packs: libscemp4 for SceMp4, libsceavplayer for SceAvPlayer; P4G's / SSD's: libpvf for the ScePvf font library, which
 # itself imports SceFt2 from libSceFt2); the runtime's own HLE covers the rest
-IMPORT_MODULES = {"SceMp4": "libscemp4", "SceAvPlayer": "libsceavplayer", "ScePvf": "libpvf", "SceFt2": "libSceFt2"}
+IMPORT_MODULES = {"SceMp4": "libscemp4", "SceAvPlayer": "libsceavplayer", "ScePvf": "libpvf", "SceFt2": "libSceFt2",
+                  "SceLibJson": "libSceJson"}   # (libSceJson: the firmware's JSON library, PCSB00672's hand pack)
+# a library the game ships itself in sce_module/ and the runtime runs as the game's code when imported (hand packs
+# SSD / P4G / PCSB00672 list libult; without it SceUlt's imports run as stubs and the game's user-level worker threads
+# never start): loaded when the game imports the library and its own sce_module/ holds the module
+SHIPPED_MODULES = {"SceUlt": "libult"}
 
 STOPS = ("frame_reached", "missed_function", "missed_function_not_fixed", "unimplemented_instruction", "crash",
          "no_frame", "build_failed", "max_iterations")
@@ -65,19 +70,43 @@ def main_elf(app0, eboot_imports):
 
 def modules(app0, libraries, have_module=lambda m: True, module_libraries=lambda m: ()):
     """MODULES: the base four, then each firmware module whose library the game -- or a module already chosen (libpvf
-    imports SceFt2) -- imports (when this machine has it); and the shipped sce_module/ modules left out, for the notes.
+    imports SceFt2) -- imports (when this machine has it), and each SHIPPED_MODULES module the game's own sce_module/
+    holds when its library is imported; and the shipped sce_module/ modules left out, for the notes.
     module_libraries(m): the libraries module m imports"""
+    shipped = sorted({f.split(".")[0] for f in os.listdir(os.path.join(app0, "sce_module"))} if os.path.isdir(os.path.join(app0, "sce_module")) else [])
     mods, libs = list(BASE_MODULES), set(libraries)
     while True:
         add = [m for lib, m in IMPORT_MODULES.items() if lib in libs and m not in mods and have_module(m)]
+        add += [m for lib, m in SHIPPED_MODULES.items() if lib in libs and m not in mods and m not in add and m in shipped]
         if not add: break
         for m in add:
             mods.append(m); libs |= set(module_libraries(m))
-    shipped = sorted({f.split(".")[0] for f in os.listdir(os.path.join(app0, "sce_module"))} if os.path.isdir(os.path.join(app0, "sce_module")) else [])
     return mods, [s for s in shipped if s not in mods]
 
 
-def pack_text(title, name, version, sha, elf, mods, notes):
+def load_modules(app0):
+    """LOAD_MODULES (MODLOAD-01): the modules app0 ships outside sce_module/ (loaded at start) and sce_sys/ (the
+    system's), which the game loads itself while it runs (sceKernelLoadStartModule "app0:bin/<name>.self") -- as
+    app0-relative globs, one per folder and extension ("bin/*.self"); not the main program and not the .elf twins"""
+    pats = set()
+    for root, dirs, files in os.walk(app0):
+        rel = os.path.relpath(root, app0).replace(os.sep, "/")
+        if rel.split("/")[0] in ("sce_module", "sce_sys"): dirs[:] = []; continue
+        for f in files:
+            ext = os.path.splitext(f)[1].lower()
+            if ext in (".self", ".suprx", ".sprx") and f.lower() != "eboot.bin":
+                pats.add((f"{rel}/*{os.path.splitext(f)[1]}" if rel != "." else f"*{os.path.splitext(f)[1]}"))
+    return sorted(pats)
+
+
+def load_module_files(app0, pats):
+    """the files LOAD_MODULES' app0-relative globs name (their imports count for MODULES too: an on-demand module is
+    the game's code)"""
+    import glob
+    return sorted({f for p in pats for f in glob.glob(os.path.join(glob.escape(app0), p))})
+
+
+def pack_text(title, name, version, sha, elf, mods, notes, load_mods=()):
     """the generated pack.toml (packconf.read accepts it: NAME, one [versions] table with a sha256)"""
     q = lambda s: json.dumps(s, ensure_ascii=False)   # (a TOML basic string is a JSON string)
     lines = [
@@ -90,6 +119,8 @@ def pack_text(title, name, version, sha, elf, mods, notes):
         f"MODULES = {q(' '.join(mods))}",
         "TEST_FRAMES = 600         # bootstrap's headless run length (TEST_FRAMES=<n> for one run)",
     ]
+    if load_mods:   # (modules the game loads on demand: recompiled with it, loaded at its sceKernelLoadStartModule)
+        lines.insert(-1, f"LOAD_MODULES = {q(' '.join(load_mods))}")
     lines += [f"# note: {n}" for n in notes]
     lines += ["", f"[versions.{q(version)}]", f"sha256 = {q(sha)}", 'status = "supported"', ""]
     return "\n".join(lines)

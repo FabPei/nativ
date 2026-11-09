@@ -31,7 +31,7 @@ def t(*halfwords):
     return b"".join(struct.pack("<H", h) for h in halfwords)
 
 BX_LR = 0x4770
-FN_TBB, FN_TBH, FN_PLAIN = 0x81000000, 0x81000100, 0x81000200
+FN_TBB, FN_TBH, FN_PLAIN, FN_TBH2 = 0x81000000, 0x81000100, 0x81000200, 0x81000300
 # fn_tbb: cmp r0,#2 / bhi default / tbb [pc,r0] / table 2,4,6 (+pad) / r1 = 10, 20, 30 per case, 99 by default
 #   0x00 cmp  0x02 bhi->0x18  0x04 tbb  0x08 table  0x0c case0  0x10 case1  0x14 case2  0x18 default
 TBB = (t(0x2802, 0xD809, 0xE8DF, 0xF000) + bytes([2, 4, 6, 0])
@@ -41,9 +41,16 @@ TBB = (t(0x2802, 0xD809, 0xE8DF, 0xF000) + bytes([2, 4, 6, 0])
 TBH = (t(0x2801, 0xD807, 0xE8DF, 0xF010) + t(2, 4)
        + t(0x210B, BX_LR) + t(0x2115, BX_LR) + t(0x2162, BX_LR))
 PLAIN = t(0x2105, BX_LR)   # movs r1,#5 / bx lr: no computed jump at all
-CASES = {FN_TBB: ([10, 20, 30], 99, 4), FN_TBH: ([11, 21], 98, 3)}   # per index, default, indices to run
+# fn_tbh2: a table followed directly by code of the function (reached by its own branch), its cases further on -- the
+# table's lowest target lies past that code, so "entries until the lowest target" would read the code as entries
+# (a commercial module's 42k-line function kept its JUMP this way, BUILD-03 follow-up 2026-11-09)
+#   0x00 cmp r0,#9  0x02 beq->0x10  0x04 cmp r0,#1  0x06 bhi->0x1c  0x08 tbh  0x0c table 4,6
+#   0x10 r1 = 77 (the r0 == 9 path)  0x14 case0 r1 = 11  0x18 case1 r1 = 21  0x1c default r1 = 98
+TBH2 = (t(0x2809, 0xD005, 0x2801, 0xD809, 0xE8DF, 0xF010) + t(4, 6)
+        + t(0x214D, BX_LR) + t(0x210B, BX_LR) + t(0x2115, BX_LR) + t(0x2162, BX_LR))
+CASES = {FN_TBB: ([10, 20, 30], 99, 4), FN_TBH: ([11, 21], 98, 3), FN_TBH2: ([11, 21], 98, 3)}   # per index, default, indices to run
 
-code = {FN_TBB: TBB, FN_TBH: TBH, FN_PLAIN: PLAIN}
+code = {FN_TBB: TBB, FN_TBH: TBH, FN_PLAIN: PLAIN, FN_TBH2: TBH2}
 d = {"blocks": [], "functions": {}, "bodies": [], "relocs": [], "module": "fixture", "exports": [], "variables": [], "arm": []}
 for a, bs in code.items():
     d["blocks"].append({"start": a, "size": len(bs), "init": True, "bytes": bs.hex()})
@@ -72,9 +79,9 @@ def check(name, ok, detail=""):
     print(("PASS  " if ok else "FAIL  ") + name + (("  -- " + detail) if detail and not ok else ""))
     results.append(ok)
 
-for entry, n, kind in ((FN_TBB, 3, "tbb"), (FN_TBH, 2, "tbh")):
+for entry, n, kind, first in ((FN_TBB, 3, "tbb", 0x0c), (FN_TBH, 2, "tbh", 0x0c), (FN_TBH2, 2, "tbh followed by code", 0x14)):
     b = body(entry)
-    targets = [entry + 0x0c + 4 * k for k in range(n)]
+    targets = [entry + first + 4 * k for k in range(n)]
     want = sorted("case 0x%xu: goto L_%08x;" % (a, a) for a in targets)
     m = re.search(r"switch \(t\) \{(.*?)\} \}", b, re.S)
     got = sorted(re.findall(r"case 0x[0-9a-f]+u: goto L_[0-9a-f]+;", m.group(1))) if m else []

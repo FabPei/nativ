@@ -123,10 +123,12 @@ void host_summary(const char *why) { summary(why); }
  * main runs; their images are RECOMP_MODULES). An import goes to the module exporting it (as on
  * the console), except the plain memory/string functions the host does faster with the same result */
 typedef struct { const char *name; GuestFn (*lookup)(uint32_t); const char *(*import_name)(uint32_t); int (*is_arm)(uint32_t); } Module;
-static Module modules[16];
+#define MAX_MODULES 128   /* start-up MODULES + the ones a game loads on demand (LOAD_MODULES, modload.c) */
+static Module modules[MAX_MODULES];
 static int nmodules;
 void recomp_register_module(const char *name, GuestFn (*lookup)(uint32_t), const char *(*import_name)(uint32_t), int (*is_arm)(uint32_t)) {
-	if (nmodules < 16) modules[nmodules++] = (Module){name, lookup, import_name, is_arm};
+	if (nmodules < MAX_MODULES) modules[nmodules++] = (Module){name, lookup, import_name, is_arm};
+	else fprintf(stderr, "module %s: more than %d modules, not registered\n", name, MAX_MODULES);
 }
 GuestFn guest_lookup(uint32_t a) {
 	GuestFn f = recomp_lookup(a);
@@ -140,9 +142,15 @@ static const char *import_name_any(uint32_t a) {
 }
 static struct { uint32_t addr; char name[60]; } *exports;   /* every loaded module's (images' EXPT records) */
 static uint32_t nexports;
+/* (a module loaded on demand adds or drops exports while game threads resolve imports: the list is read and changed
+ * under this lock; resolution is cached, so it is taken once per import, not per call) */
+static pthread_mutex_t exports_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint32_t export_addr(const char *name) {
-	for (uint32_t i = 0; i < nexports; i++) if (!strcmp(exports[i].name, name)) return exports[i].addr;
-	return 0;
+	uint32_t a = 0;
+	pthread_mutex_lock(&exports_lock);
+	for (uint32_t i = 0; i < nexports; i++) if (exports[i].addr && !strcmp(exports[i].name, name)) { a = exports[i].addr; break; }
+	pthread_mutex_unlock(&exports_lock);
+	return a;
 }
 uint32_t module_export_addr(const char *name) { return export_addr(name); }   /* a loaded module's export by name (0: none) */
 /* GXM is Sony's own code (MODULES="... libgxm_es4 libgpu_es4"): every GXM call of the game goes to
@@ -488,18 +496,31 @@ void recomp_unimplemented(Cpu *c, uint32_t addr) {
 
 static uint32_t module_starts[16];
 static int nmodule_starts;
-static void load_image(const char *path) {
+/* an image file's segments into guest memory and its records registered. ondemand (modload.c): a game module loaded
+ * while the game runs -- errors are returned, not fatal, and its module_start / module_stop (0: none) and the range
+ * its segments cover go to the caller instead of the start-up list */
+static int load_image_ex(const char *path, int ondemand, uint32_t *start, uint32_t *stop, uint32_t *lo, uint32_t *hi) {
 	FILE *f = fopen(path, "rb");
-	if (!f) { perror(path); exit(1); }
+	if (!f) { perror(path); if (ondemand) return -1; exit(1); }
 	char magic[4]; uint32_t n;
-	if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "VRIM", 4) || fread(&n, 4, 1, f) != 1) { fprintf(stderr, "%s: not an image\n", path); exit(1); }
+	if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "VRIM", 4) || fread(&n, 4, 1, f) != 1) { fprintf(stderr, "%s: not an image\n", path); if (ondemand) { fclose(f); return -1; } exit(1); }
+	uint32_t l = 0xffffffffu, h_ = 0;
 	for (uint32_t i = 0; i < n; i++) {
 		uint32_t h[3];
-		if (fread(h, 4, 3, f) != 3) { fprintf(stderr, "%s: truncated\n", path); exit(1); }
-		if (h[2] && fread(G(h[0]), 1, h[1], f) != h[1]) { fprintf(stderr, "%s: truncated\n", path); exit(1); }
+		if (fread(h, 4, 3, f) != 3) { fprintf(stderr, "%s: truncated\n", path); if (ondemand) { fclose(f); return -1; } exit(1); }
+		if (h[2] && fread(G(h[0]), 1, h[1], f) != h[1]) { fprintf(stderr, "%s: truncated\n", path); if (ondemand) { fclose(f); return -1; } exit(1); }
+		if (!h[2] && ondemand) memset(G(h[0]), 0, h[1]);   /* (a reload starts from a zeroed .bss again) */
 		fprintf(stderr, "loaded %#010x %#9x%s\n", h[0], h[1], h[2] ? "" : " (zero)");
 		if (nseg < 64) { seg_lo[nseg] = h[0]; seg_hi[nseg] = h[0] + h[1]; nseg++; }
+		if (h[0] < 0xffe00000u) {   /* (the module's range: its segments, not its imported-variable slots up there) */
+			if (h[0] < l) l = h[0];
+			if (h[0] + h[1] > h_) h_ = h[0] + h[1];
+		}
 	}
+	if (start) *start = 0;
+	if (stop) *stop = 0;
+	if (lo) *lo = l;
+	if (hi) *hi = h_;
 	char tag[4];
 	while (fread(tag, 1, 4, f) == 4) {
 		if (!memcmp(tag, "TLS", 4)) {
@@ -507,16 +528,23 @@ static void load_image(const char *path) {
 				fprintf(stderr, "TLS template %#x, %#x bytes, block %#x\n", tls_template[0], tls_template[1], tls_template[2]);
 		} else if (!memcmp(tag, "EXPT", 4)) {   /* a module's exports: (address, name) */
 			if (fread(&n, 4, 1, f) != 1) break;
+			pthread_mutex_lock(&exports_lock);
 			exports = realloc(exports, (nexports + n) * sizeof *exports);
-			if (fread(exports + nexports, sizeof *exports, n, f) != n) break;
-			for (uint32_t i = 0; i < n; i++) exports[nexports + i].name[59] = 0;
-			nexports += n;
+			uint32_t got = (uint32_t)fread(exports + nexports, sizeof *exports, n, f);
+			for (uint32_t i = 0; i < got; i++) exports[nexports + i].name[59] = 0;
+			nexports += got;
+			pthread_mutex_unlock(&exports_lock);
+			if (got != n) break;
 		} else if (!memcmp(tag, "PPRM", 4)) {   /* the program's process parameters */
 			extern uint32_t process_param;
 			if (fread(&process_param, 4, 1, f) != 1) break;
 		} else if (!memcmp(tag, "MSTA", 4)) {   /* a module's module_start */
 			uint32_t a; if (fread(&a, 4, 1, f) != 1) break;
-			if (nmodule_starts < 16) module_starts[nmodule_starts++] = a;
+			if (ondemand) { if (start) *start = a; }
+			else if (nmodule_starts < 16) module_starts[nmodule_starts++] = a;
+		} else if (!memcmp(tag, "MSTO", 4)) {   /* a module's module_stop (run by modload.c's unload) */
+			uint32_t a; if (fread(&a, 4, 1, f) != 1) break;
+			if (ondemand && stop) *stop = a;
 		} else if (!memcmp(tag, "VARS", 4)) {   /* imported variables: (slot address, name) */
 			if (fread(&n, 4, 1, f) != 1) break;
 			for (uint32_t i = 0; i < n; i++) {
@@ -529,6 +557,20 @@ static void load_image(const char *path) {
 		} else break;
 	}
 	fclose(f);
+	return 0;
+}
+static void load_image(const char *path) { load_image_ex(path, 0, 0, 0, 0, 0); }
+/* modload.c's side of the loader (MODLOAD-01) */
+int image_load_module(const char *img, uint32_t *start, uint32_t *stop, uint32_t *lo, uint32_t *hi) {
+	return load_image_ex(img, 1, start, stop, lo, hi);
+}
+void image_drop_exports(uint32_t lo, uint32_t hi) {   /* an unloaded module's exports stop resolving (entries kept, address 0) */
+	pthread_mutex_lock(&exports_lock);
+	for (uint32_t i = 0; i < nexports; i++) if (exports[i].addr >= lo && exports[i].addr < hi) exports[i].addr = 0;
+	pthread_mutex_unlock(&exports_lock);
+}
+void imports_reset(void) {   /* every import resolves again at its next call (a module came or went) */
+	for (uint32_t h = 0; h < RESOLVE_SLOTS; h++) __atomic_store_n(&resolved[h].known, 0, __ATOMIC_RELEASE);
 }
 
 /* ---- guest profiler (a build with -DRECOMP_TRACE, see build.sh): every guest instruction

@@ -385,11 +385,26 @@ class Game:
         # 0x88000000; imports resolve to their exports. A name is the game's own sce_module/<name>.suprx
         # when it ships one, else the firmware's (dump/decrypted/us or sys/external: libgxm_es4, ...)
         self.MODS = (c.get("MODULES") or "").split()
+        # LOAD_MODULES="bin/*.self ...": app0 modules the game loads on demand (sceKernelLoadStartModule of
+        # "app0:bin/<name>.self"; MODLOAD-01). Each is recompiled at a base of its own after MODULES' and linked into
+        # the binary, but loaded and started only when the game asks (runtime/core/modload.c, RECOMP_LOAD_MODULES).
+        # Their names here: "lm_" + the app0-relative path's letters and digits (a C identifier)
+        self.LPATH = {}
+        for pat in (c.get("LOAD_MODULES") or "").split():
+            for f in sorted(glob.glob(os.path.join(glob.escape(os.path.join(self.W, "app0")), pat))):
+                rel = os.path.relpath(f, os.path.join(self.W, "app0")).replace(os.sep, "/")
+                self.LPATH["lm_" + re.sub(r"[^0-9A-Za-z]", "_", rel)] = rel
+        self.LMODS = list(self.LPATH)
+        self.ALL = self.MODS + self.LMODS
         if self.MODS:
-            ENV["RECOMP_MODULE_BASES"] = " ".join(os.path.join(self.OUT, "mod_" + m) for m in self.MODS)
+            ENV["RECOMP_MODULE_BASES"] = " ".join(os.path.join(self.OUT, "mod_" + m) for m in self.ALL)
             ENV["RECOMP_MODULES"] = ",".join(os.path.join(self.OUT, m + ".img") for m in self.MODS)
         else:
             ENV.pop("RECOMP_MODULE_BASES", None); ENV.pop("RECOMP_MODULES", None)
+        if self.LMODS:
+            ENV["RECOMP_LOAD_MODULES"] = ";".join(f"{self.LPATH[m]}={os.path.join(self.OUT, m + '.img')}" for m in self.LMODS)
+        else:
+            ENV.pop("RECOMP_LOAD_MODULES", None)
         # the analysis recompile reads: analyze.py's, else an earlier Ghidra export
         self.DATA = os.path.join(self.W, "analysis", "eboot.data.json")
         if not os.path.isfile(self.DATA): self.DATA = os.path.join(self.W, "ghidra", "eboot.data.json")
@@ -403,7 +418,11 @@ class Game:
     def mod_base(i):
         return 0x88000000 + 0x1000000 * i
 
+    def var_base(self, i):   # a module's imported-variable slots: MODULES' 32 KB each from 0xfff80000, LOAD_MODULES' 2 KB each from 0xffe00000
+        return 0xfff80000 + 0x8000 * i if i < len(self.MODS) else 0xffe00000 + 0x800 * (i - len(self.MODS))
+
     def modelf(self, m):
+        if m in self.__dict__.get("LPATH", {}): return os.path.join(self.W, "app0", self.LPATH[m] + ".elf")   # (add's tree: each ELF beside its SELF)
         # (a console dump's first, then a firmware update file's from vitarecomp firmware, the newest version
         # first: libgxm_es4/libgpu_es4 3.65 -> 3.74 differ only in a version constant and the module fingerprint)
         own = os.path.join(self.W, "elf", m + ".suprx.elf")
@@ -417,7 +436,7 @@ class Game:
     def links(self, skip):   # --link for every module but the one named (main: "")
         l = []
         if skip: l += ["--link", f"{os.path.join(self.W, 'elf', self.ELF)}@0x81000000"]
-        for i, m in enumerate(self.MODS):
+        for i, m in enumerate(self.ALL):
             if m != skip: l += ["--link", f"{self.modelf(m)}@{self.mod_base(i):#x}"]
         return l
 
@@ -489,21 +508,21 @@ def cmd_analyze(g):
         with open(os.path.join(A, "pack_seeds.txt"), "w") as f:
             for s in g.FUNCTION_SEEDS.split(): f.write(f"{s.split(':')[0]} {s.partition(':')[2]}\n")
         seeds += ["--seeds", os.path.join(A, "pack_seeds.txt")]
-    for i, m in enumerate(g.MODS):
+    for i, m in enumerate(g.ALL):
         # (recompiler/seeds/<module>.txt: the ones that ship -- a new install's firmware modules need them from the first build;
         # $SEEDS: what this machine's runs found since, merged into the shipped set by hand)
         fw = []
         for f in (os.path.join(RECOMPILER, "seeds", m + ".txt"), os.path.join(g.SEEDS, m + ".txt")):
             if os.path.isfile(f): fw += ["--seeds", f"{f}@{g.mod_base(i):#x}"]
         run([PY, os.path.join(RECOMPILER, "analyze.py"), g.modelf(m), os.path.join(A, m + ".data.json"), "--base", f"{g.mod_base(i):#x}"] + g.links(m) +
-            ["--var-base", f"{0xfff80000 + 0x8000 * i:#x}"] + seeds + fw)
+            ["--var-base", f"{g.var_base(i):#x}"] + seeds + fw)
     run([PY, os.path.join(RECOMPILER, "analyze.py"), os.path.join(W, "elf", g.ELF), os.path.join(A, "eboot.data.json")] + g.links("") + seeds)
 
 
 def cmd_recompile(g):
     W, OUT = g.W, g.OUT
     os.makedirs(OUT, exist_ok=True)
-    for i, m in enumerate(g.MODS):
+    for i, m in enumerate(g.ALL):
         # MOD_HOOKS / MOD_IHOOKS="addr:name ...": HOOKS / IHOOKS for the loaded modules' code (Sony's libraries), each going to
         # the module whose 16 MB slot holds its address (e.g. libgxm's shader patcher: the shader prebuild)
         lo = g.mod_base(i)
@@ -583,7 +602,7 @@ def cmd_build(g, mode):
     base = os.path.join(g.OUT, g.BASE)
     out, extra = {"verify": (base + "_verify", {"VERIFY": "1"}), "profile": (base + "_prof", {"PROFILE": "1"})}.get(mode, (os.path.join(g.OUT, g.EXE.removesuffix(".exe")), {}))
     if g.windows: extra["TARGET"] = "windows"
-    mods = [os.path.join(g.OUT, "mod_" + m) for m in g.MODS]
+    mods = [os.path.join(g.OUT, "mod_" + m) for m in g.ALL]
     run([PY, os.path.join(RUNTIME, "build.py"), base, out] + mods, env=env_with(e, extra))
     if mode not in ("verify", "profile") and not ENV.get("RECOMP_BIN"):   # (ready's: which tools built the play program)
         with open(os.path.join(g.OUT, ".built_version"), "w", newline="\n") as f: f.write(tools_version() + "\n")
@@ -710,9 +729,9 @@ def cmd_test(g):
             if not ln.split(): continue
             a, kind = ln.split()[0], " ".join(ln.split()[1:])
             f, line = os.path.join(W, "analysis", "seeds.txt"), f"{a} {kind}"
-            for i, m in enumerate(g.MODS):
+            for i, m in enumerate(g.ALL):
                 b = g.mod_base(i)
-                if b <= int(a, 0) < b + 0x1000000 and not g.modelf(m).startswith(os.path.join(W, "elf") + os.sep):
+                if b <= int(a, 0) < b + 0x1000000 and not g.modelf(m).startswith(W + os.sep):   # (the game's own modules: elf/ and app0/)
                     os.makedirs(g.SEEDS, exist_ok=True); f = os.path.join(g.SEEDS, m + ".txt"); line = f"{int(a, 0) - b:#x} {kind}"
             have = open(f).read().splitlines() if os.path.isfile(f) else []
             with open(f, "w") as o: o.write("".join(x + "\n" for x in sorted(set(have + [line]))))
@@ -972,6 +991,10 @@ def cmd_pack_init(T, force):
     elf, note = bootstrap.main_elf(edir, fns)
     if elf != "eboot.bin.elf":   # (the program it launches: its imports decide the modules)
         libs = {lib for lib, *_ in imp.imports(os.path.join(edir, elf))[1]}
+    lmods = bootstrap.load_modules(app0)   # (modules the game loads on demand: their imports choose MODULES too)
+    for f in bootstrap.load_module_files(app0, lmods):
+        try: libs |= {lib for lib, *_ in imp.imports(f + ".elf" if os.path.isfile(f + ".elf") else f)[1]}
+        except Exception: pass
     g = Game(T, "import")
     def mod_libs(m):   # (the libraries a chosen firmware module imports; one that isn't a readable ELF adds none)
         try: return {lib for lib, *_ in imp.imports(g.modelf(m))[1]}
@@ -980,7 +1003,7 @@ def cmd_pack_init(T, force):
     name, version = bootstrap.identity(app0, sfo.read_sfo_file)
     notes = ([note] if note else []) + ([f"shipped in sce_module/ but not loaded: {' '.join(left)} (add to MODULES if the run stubs their imports)"] if left else [])
     notes += [f"imports {lib}: {m} is not on this machine (vitarecomp firmware)" for lib, m in bootstrap.IMPORT_MODULES.items() if lib in libs and m not in mods]
-    text = bootstrap.pack_text(own, name, version, sha256(os.path.join(edir, elf)), elf, mods, notes)
+    text = bootstrap.pack_text(own, name, version, sha256(os.path.join(edir, elf)), elf, mods, notes, lmods)
     d = os.path.join(PACKS, own); os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, "pack.toml"), "w", encoding="utf-8", newline="\n") as f: f.write(text)
     packconf.read(os.path.join(d, "pack.toml"))   # (its shape checked as every pack's)

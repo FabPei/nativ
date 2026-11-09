@@ -287,7 +287,7 @@ def main(argv):
     # the guest addresses the game's hooks use for this build of it (vitarecomp: the pack's GAME_ADDRS; hooks.c game_addr)
     if ENV.get("RECOMP_GAME_ADDRS"): ENVDEF.append(f'-DRECOMP_GAME_ADDRS="{ENV["RECOMP_GAME_ADDRS"]}"')
     host = [part(f) for f in (
-        "main hle libc events io sysmem apputil trophy imedlg fios psarc gxp_index kernel gpu video display input_rec gesture gxm_sony usse usse_spirv gfx_soft gfx_gpu "
+        "main hle modload libc events io sysmem apputil trophy imedlg fios psarc gxp_index kernel gpu video display input_rec gesture gxm_sony usse usse_spirv gfx_soft gfx_gpu "
         "gfx_dispatch gfx_coverage gfx_capture guestwatch metrics settings hooks motion pad_bind window ui_text gpulock ngs audiodec stallprof waitstats memscan jpeg camera smart post "
         "ssao texpack fsr/fsr net np http sha1 ssl_local online/m2_server online/m2_wire online/m2_rooms online/m2_proxy online/discovery online/basic_msg online/stun online/overlay online/dht online/upnp online/aes128 online/status online/crypto").split()]
     # the game's own host code (vitarecomp: every .c in packs/<title>/), in this game's build alone
@@ -333,6 +333,13 @@ def main(argv):
     # (Linux links libm/pthread explicitly; zlib: PSARC archives) -- objects only: the code generation flags a link
     # needs (RECOMP_CFLAGS' -flto) and the libraries' link words
     link = [CC] + CPUFLAGS + extra + ["-w"] + hobjs + lwords + objs + sdl_libs + CXXLIB + LIBS + ["-o", OUT]
+    if sum(len(a) + 3 for a in link) > 30000:   # (Windows' command line holds 32 KiB: a game with its on-demand modules --
+        # LOAD_MODULES, ~90 modules' objects -- failed with WinError 206; the objects go into response files, in order)
+        def rsp(name, args):
+            p = f"{OUT}.{name}.rsp"
+            with open(p, "w", newline="\n") as f: f.write("".join('"' + a.replace("\\", "/").replace('"', '\\"') + '"\n' for a in args))
+            return "@" + p
+        link = [CC] + CPUFLAGS + extra + ["-w", rsp("game", hobjs)] + lwords + [rsp("runtime", objs)] + sdl_libs + CXXLIB + LIBS + ["-o", OUT]
     sys.stdout.flush()
     r = subprocess.run(link)
     if r.returncode: return r.returncode
