@@ -164,6 +164,14 @@ m, _ = bootstrap.modules(_d, {"ScePvf", "SceGxm"}, lambda m: True, lambda m: {"l
 check(m == ["libc", "libgxm_es4", "libgpu_es4", "libfios2", "libpvf", "libSceFt2"], f"modules: ScePvf -> libpvf -> libSceFt2 ({' '.join(m)})")
 m, _ = bootstrap.modules(_d, {"ScePvf"}, lambda m: m != "libSceFt2", lambda m: {"libpvf": ["SceFt2"]}.get(m, []))
 check(m[-1] == "libpvf" and "libSceFt2" not in m, "modules: a dependency this machine lacks is left out")
+# a library the game ships itself in sce_module/ (libult = SceUlt, the user-level thread library: its imports ran as
+# stubs and the game's worker threads never started) is loaded when the game imports it, even before import has made
+# its ELF (have_module false); a shipped module whose library nobody imports stays a note
+os.makedirs(os.path.join(_d, "sce_module")); [open(os.path.join(_d, "sce_module", f), "w").close() for f in ("libult.suprx", "libface.suprx")]
+m, left = bootstrap.modules(_d, {"SceUlt", "SceGxm"}, lambda m: False, lambda m: [])
+check("libult" in m and left == ["libface"], f"modules: shipped libult loaded for SceUlt imports ({' '.join(m)}; left {left})")
+m, left = bootstrap.modules(_d, {"SceGxm"}, lambda m: False, lambda m: [])
+check("libult" not in m and left == ["libface", "libult"], "modules: shipped libult without SceUlt imports stays a note")
 
 print(f"all passed ({ok} ok)" if not bad else f"{bad} FAILED, {ok} ok")
 sys.exit(1 if bad else 0)

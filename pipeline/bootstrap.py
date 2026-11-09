@@ -23,6 +23,10 @@ BASE_MODULES = ("libc", "libgxm_es4", "libgpu_es4", "libfios2")
 # packs: libscemp4 for SceMp4, libsceavplayer for SceAvPlayer; P4G's / SSD's: libpvf for the ScePvf font library, which
 # itself imports SceFt2 from libSceFt2); the runtime's own HLE covers the rest
 IMPORT_MODULES = {"SceMp4": "libscemp4", "SceAvPlayer": "libsceavplayer", "ScePvf": "libpvf", "SceFt2": "libSceFt2"}
+# a library the game ships itself in sce_module/ and the runtime runs as the game's code when imported (hand packs
+# SSD / P4G / PCSB00672 list libult; without it SceUlt's imports run as stubs and the game's user-level worker threads
+# never start): loaded when the game imports the library and its own sce_module/ holds the module
+SHIPPED_MODULES = {"SceUlt": "libult"}
 
 STOPS = ("frame_reached", "missed_function", "missed_function_not_fixed", "unimplemented_instruction", "crash",
          "no_frame", "build_failed", "max_iterations")
@@ -65,15 +69,17 @@ def main_elf(app0, eboot_imports):
 
 def modules(app0, libraries, have_module=lambda m: True, module_libraries=lambda m: ()):
     """MODULES: the base four, then each firmware module whose library the game -- or a module already chosen (libpvf
-    imports SceFt2) -- imports (when this machine has it); and the shipped sce_module/ modules left out, for the notes.
+    imports SceFt2) -- imports (when this machine has it), and each SHIPPED_MODULES module the game's own sce_module/
+    holds when its library is imported; and the shipped sce_module/ modules left out, for the notes.
     module_libraries(m): the libraries module m imports"""
+    shipped = sorted({f.split(".")[0] for f in os.listdir(os.path.join(app0, "sce_module"))} if os.path.isdir(os.path.join(app0, "sce_module")) else [])
     mods, libs = list(BASE_MODULES), set(libraries)
     while True:
         add = [m for lib, m in IMPORT_MODULES.items() if lib in libs and m not in mods and have_module(m)]
+        add += [m for lib, m in SHIPPED_MODULES.items() if lib in libs and m not in mods and m not in add and m in shipped]
         if not add: break
         for m in add:
             mods.append(m); libs |= set(module_libraries(m))
-    shipped = sorted({f.split(".")[0] for f in os.listdir(os.path.join(app0, "sce_module"))} if os.path.isdir(os.path.join(app0, "sce_module")) else [])
     return mods, [s for s in shipped if s not in mods]
 
 
