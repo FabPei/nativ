@@ -466,7 +466,12 @@ void recomp_call_external(Cpu *c, uint32_t addr) {
 		recomp_excl_drop_reason = 1;   /* P0b diag: this drop site's tag for rt.h's spurious-failure log */
 		imp_t0 = plat_now_us(); kernel_hle_in(name); fn(c); kernel_hle_in(0); imp_t1 = plat_now_us();
 	}
-	else c->r[0] = stub_ret;
+	else {
+		static int zero_w = -1; if (zero_w < 0) zero_w = getenv("RECOMP_STUB_ZERO") != 0;
+		const uint32_t wait = stub_wait_us(name, a3, zero_w);   /* stubret.h: a wait call waits out its timeout */
+		if (wait) { int b = sched_block_begin(); usleep((useconds_t)wait); if (b) sched_block_end(); }
+		c->r[0] = stub_ret;
+	}
 	watch_check(wv, name, c);
 	{	/* RECOMP_LOG_IMPORTS=name[,name...]: those imports (any whose name contains one of them) logged as they return -- the
 		 * thread, the arguments, the result, the caller and the frame -- without the millions of the rest (RECOMP_LOG) */

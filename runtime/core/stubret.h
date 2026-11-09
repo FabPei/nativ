@@ -35,4 +35,14 @@ static inline uint32_t stub_family_result(const char *name, int zero) {
 	for (int i = 0; stub_errs[i].prefix; i++) if (!strncmp(name, stub_errs[i].prefix, strlen(stub_errs[i].prefix))) return stub_errs[i].err;
 	return 0;
 }
+/* (AUTO-01 LBP-8) the microseconds an unimplemented import waits before it returns: a wait call whose console version
+ * blocks until its timeout when nothing is ready must not return at once -- the loop around it spins. Offline,
+ * sceNetEpollWait(eid, events, max, timeout_us) waits out r3 (an infinite or longer one: 1 s, then the family error);
+ * LittleBigPlanet's 'game host thread' (prio 84) called it 10000s of times in seconds and no frame was presented after.
+ * 0 for everything else, and with RECOMP_STUB_ZERO */
+#define STUB_WAIT_MAX_US 1000000u
+static inline uint32_t stub_wait_us(const char *name, uint32_t a3, int zero) {
+	if (zero || strcmp(name, "sceNetEpollWait")) return 0;
+	return (int32_t)a3 < 0 || a3 > STUB_WAIT_MAX_US ? STUB_WAIT_MAX_US : a3;
+}
 #endif

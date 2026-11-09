@@ -42,6 +42,12 @@ int main(void) {
 	check("sceImeUpdate", 0, 0);
 	check("sceNpManagerGetAccountRegion", 1, 0);
 
+	/* (AUTO-01 LBP-8) an offline sceNetEpollWait waits out its timeout (capped at 1 s); other stubs return at once */
+	{ struct { const char *n; uint32_t a3; int zero; uint32_t want; } w[] = {
+		{"sceNetEpollWait", 100000u, 0, 100000u}, {"sceNetEpollWait", 0xffffffffu, 0, 1000000u}, {"sceNetEpollWait", 5000000u, 0, 1000000u},
+		{"sceNetEpollWait", 0, 0, 0}, {"sceNetEpollWait", 100000u, 1, 0}, {"sceNetEpollControl", 100000u, 0, 0}, {"sceNetRecvfrom", 100000u, 0, 0} };
+	  for (unsigned i = 0; i < sizeof w / sizeof *w; i++) { uint32_t got = stub_wait_us(w[i].n, w[i].a3, w[i].zero);
+		printf("wait %-34s a3=%#010x zero=%d -> %u us %s\n", w[i].n, w[i].a3, w[i].zero, got, got == w[i].want ? "ok" : "FAILED"); if (got != w[i].want) fails++; } }
 	if (fails) { printf("%d checks FAILED\n", fails); return 1; }
 	printf("all passed\n");
 	return 0;
