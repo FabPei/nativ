@@ -332,6 +332,42 @@ static int8_t clamp8(int v) { return (int8_t)(v < -128 ? -128 : v > 127 ? 127 : 
 /* a diagnostic switch, read once: getenv walks the environment, and the draw observers called it on every draw (1.4% of
  * Uncharted's main thread, 2026-11-01) */
 static int env_flag(const char *name, int *v) { if (*v < 0) *v = getenv(name) != 0; return *v; }
+/* ---- deferred contexts' command lists (sceGxmBeginCommandList / EndCommandList / ExecuteCommandList). A draw on a
+ * context between Begin and End is the list's, not the frame's: it runs when an immediate context executes the list,
+ * in that context's scene, each time it is executed. Each recording keeps the draws' snapshots (GfxDraw: the state as
+ * the draw saw it, which the list's own buffers keep valid until it runs); End files them under the list's address,
+ * Execute replays them. Drawn at record time instead, Tearaway's lists landed in whatever scene was current, out of order
+ * with the frame's own draws -- its whole picture came out as blocky posterised rings (AUTO-01 TW-3). */
+typedef struct { uint32_t key; GfxDraw *d; int n, cap; } DrawList;
+#define MAX_RECORDING 16
+#define MAX_LISTS 512
+static DrawList recording[MAX_RECORDING], lists[MAX_LISTS];
+static DrawList *dl_find(DrawList *t, int n, uint32_t key, int make) {
+	for (int i = 0; i < n; i++) if (t[i].key == key) return &t[i];
+	if (!make) return 0;
+	for (int i = 0; i < n; i++) if (!t[i].key) { t[i].key = key; t[i].n = 0; return &t[i]; }
+	return 0;
+}
+static void dl_push(DrawList *l, const GfxDraw *d) {
+	if (l->n == l->cap) { int c = l->cap ? 2 * l->cap : 16; GfxDraw *v = realloc(l->d, sizeof *v * (size_t)c); if (!v) return; l->d = v; l->cap = c; }
+	l->d[l->n++] = *d;
+}
+static void o_begin_command_list(Cpu *c) {   /* (deferred context): its draws from here on are recorded */
+	DrawList *r = dl_find(recording, MAX_RECORDING, A0, 1);
+	if (r) r->n = 0;
+	else { static int warned; if (!warned++) fprintf(stderr, "    gxm: more than %d deferred contexts recording: drawn at once\n", MAX_RECORDING); }
+}
+static void o_end_command_list(Cpu *c) {   /* (deferred context, list): the recording becomes that list's (a list re-recorded is replaced) */
+	DrawList *r = dl_find(recording, MAX_RECORDING, A0, 0);
+	if (!r) return;
+	DrawList *l = dl_find(lists, MAX_LISTS, A1, 1);
+	if (l) { DrawList t = *l; *l = *r; l->key = A1; *r = t; r->key = 0; r->n = 0; }   /* (swap the buffers: no copy) */
+	else { static int warned; if (!warned++) fprintf(stderr, "    gxm: more than %d command lists: one dropped\n", MAX_LISTS); r->key = 0; r->n = 0; }
+}
+static void o_execute_command_list(Cpu *c) {   /* (immediate context, list): its draws, in order, in this scene */
+	DrawList *l = dl_find(lists, MAX_LISTS, A1, 0);
+	for (int i = 0; l && i < l->n; i++) gfx_draw(&l->d[i]);
+}
 static void draw(uint32_t cx, const uint32_t *stream, uint32_t prim, uint32_t index_format, uint32_t indices, uint32_t count) {
 	GfxDraw d;
 	memset(&d, 0, sizeof d);
@@ -440,7 +476,9 @@ static void draw(uint32_t cx, const uint32_t *stream, uint32_t prim, uint32_t in
 		static int stub = -1; if (stub < 0) { const char *e = getenv("RECOMP_VIS_SET"); stub = !(e && (!strcmp(e, "gpu") || !strcmp(e, "real"))); }
 		if (vis[i].set && stub) gfx_vis_write(vis[i].buf + 4u * vis[i].index, 1);
 		else { d.vis_addr = vis[i].buf + 4u * vis[i].index; d.vis_set = (uint8_t)vis[i].set; } } }
-	gfx_draw(&d);
+	DrawList *rec = dl_find(recording, MAX_RECORDING, cx, 0);
+	if (rec) dl_push(rec, &d);   /* a deferred context's draw: its command list's, run when the list is executed */
+	else gfx_draw(&d);
 	vis_record(cx, front);
 }
 
@@ -817,6 +855,7 @@ static const HleEntry observers[] = {
 	{"sceGxmBeginScene", o_begin_scene}, {"sceGxmBeginSceneEx", o_begin_scene_ex}, {"sceGxmSetRegionClip", o_set_region_clip}, {"sceGxmEndScene", o_end_scene},
 	{"sceGxmTransferCopy", o_transfer_copy}, {"sceGxmTransferDownscale", o_transfer_downscale}, {"sceGxmTransferFill", o_transfer_fill},
 	{"sceGxmDisplayQueueAddEntry", o_display_queue},
+	{"sceGxmBeginCommandList", o_begin_command_list}, {"sceGxmEndCommandList", o_end_command_list}, {"sceGxmExecuteCommandList", o_execute_command_list},
 	{"sceGxmSetVisibilityBuffer", o_vis_buffer}, {"sceGxmSetFrontVisibilityTestEnable", o_vis_enable}, {"sceGxmSetFrontVisibilityTestIndex", o_vis_index}, {"sceGxmSetFrontVisibilityTestOp", o_vis_op}, {"sceGxmSetFrontDepthBias", o_depth_bias},
 	{0, 0},
 };

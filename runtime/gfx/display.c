@@ -1150,6 +1150,23 @@ static void h_motion_state(Cpu *c) {
 	memcpy(G(p), b, sizeof b);
 	RET(0);
 }
+/* sceMotionGetSensorState(SceMotionSensorState *, numRecords): the raw sensors, numRecords records (the newest
+ * readings), from the same source as GetState: the live pad or a replay, else a device lying still face up -- gravity
+ * along -z, no rotation. The count filled is returned */
+static void h_motion_sensor(Cpu *c) {
+	if (!motion_on) { RET(0x80360206u); return; }   /* SCE_MOTION_ERROR_NOT_SAMPLING */
+	if (!A0 || (int32_t)A1 <= 0) { RET(0x80360200u); return; }   /* SCE_MOTION_ERROR_DATA_INVALID */
+	float a[3] = {0, 0, -1.0f}, g[3] = {0, 0, 0}, q[4];
+	if (!motion_now(a, g, q)) { a[0] = a[1] = 0; a[2] = -1.0f; g[0] = g[1] = g[2] = 0; }
+	static uint32_t counter; uint64_t t = guest_time_us();
+	uint32_t n = A1 > 64 ? 64 : A1;
+	for (uint32_t i = 0; i < n; i++) {
+		uint8_t r[HLE_MOTION_SENSOR_SIZE];
+		hle_motion_sensor_record(r, a, g, (uint32_t)t, counter++, t);
+		memcpy(G(A0 + HLE_MOTION_SENSOR_SIZE * i), r, sizeof r);
+	}
+	RET(n);
+}
 static void h_motion_basic(Cpu *c) {   /* (SceFVector3 *) */
 	if (!motion_on) { RET(0x80360206u); return; }
 	float a[3], g[3], q[4];
@@ -1195,6 +1212,7 @@ const HleEntry hle_display[] = {
 	{"sceDisplayGetRefreshRate", h_refresh_rate}, {"sceDisplayGetVcount", h_vcount},
 	{"sceCtrlSetSamplingMode", h_ctrl_mode}, {"sceCtrlSetSamplingModeExt", h_ctrl_mode}, {"sceTouchSetSamplingState", h_touch_sampling}, {"sceTouchGetSamplingState", h_touch_get_sampling},
 	{"sceMotionStartSampling", h_motion_start}, {"sceMotionStopSampling", h_motion_stop}, {"sceMotionGetState", h_motion_state},
+	{"sceMotionGetSensorState", h_motion_sensor},
 	{"sceMotionGetBasicOrientation", h_motion_basic}, {"sceMotionReset", h_motion_reset}, {"sceMotionSetDeadband", h_motion_set_deadband}, {"sceMotionSetTiltCorrection", h_motion_set_tilt},
 	{"sceMotionGetDeadband", h_motion_get_deadband}, {"sceMotionGetTiltCorrection", h_motion_get_tilt},   /* (HLE-LIB-03) */
 	{"sceMotionRotateYaw", h_motion_rotate_yaw},   /* (HLE-LIB-06) */

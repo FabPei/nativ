@@ -512,6 +512,9 @@ def cmd_recompile(g):
         # every game's: libgxm's sceGxmShaderPatcherRegisterProgram (firmware 3.65/3.74 libgxm_es4, +0x15c38) -> runtime/core/hooks.c
         # gxm_register: each program the game registers, for the shader recipes (gfx_gpu.c)
         if m == "libgxm_es4" and ":gxm_register" not in f" {g.MOD_HOOKS} ": mh.append(f"{lo + 0x15c38:#x}:gxm_register")
+        # ... and its sceGxmShaderPatcherCreateFragmentProgram (+0x16ce0) -> gxm_fp_create: each variant's output register
+        # format, which a NATIVECOLOR program's colour is in (gfx/usse.h usse_set_fp_output_format)
+        if m == "libgxm_es4" and ":gxm_fp_create" not in f" {g.MOD_HOOKS} ": mh.append(f"{lo + 0x16ce0:#x}:gxm_fp_create")
         mih = [h for h in g.MOD_IHOOKS.split() if inside(h)]
         mhk = (["--hooks", " ".join(mh)] if mh else []) + (["--insn-hooks", " ".join(mih)] if mih else [])
         run_filtered([PY, os.path.join(RECOMPILER, "recomp.py"), os.path.join(W, "analysis", m + ".data.json"), os.path.join(OUT, f"mod_{m}.c"), "--split", "2", "--module", m] + mhk, "functions,")

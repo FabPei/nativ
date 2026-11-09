@@ -100,7 +100,20 @@ void (*hook_stall_long)(uint64_t stall_us);
  * premise) or at first draw. sceGxmShaderPatcherCreateFragmentProgram(patcher, id, output format, multisample, blend,
  * vertex program, out); sceGxmShaderPatcherCreateVertexProgram(patcher, id, attributes, n, streams, n, out). */
 static int gxm_patcher_log(void) { static int on = -1; if (on < 0) on = getenv("RECOMP_GXM_PATCHER_LOG") != 0; return on; }
+/* the registered program behind a patcher id: the first of its leading words that points at a GXP ("GXP\0") */
+static uint32_t gxm_id_gxp(uint32_t id) {
+	if (id < 0x81000000u || id >= 0xF0000000u) return 0;
+	for (uint32_t k = 0; k < 0x20; k += 4) {
+		uint32_t p = RD32(id + k);
+		if (p >= 0x81000000u && p < 0xF0000000u && !(p & 3) && RD32(p) == 0x00505847u) return p;
+	}
+	return 0;
+}
 void recomp_hook_gxm_fp_create(Cpu *c) {
+	/* every game (vitarecomp): the variant's output register format, by its GXP -- a NATIVECOLOR program's colour reaches
+	 * the surface in that format, not the GXP's declared one (gfx/usse.h usse_set_fp_output_format) */
+	{ extern void usse_set_fp_output_format(uint32_t gxp, int fmt);
+	  uint32_t g = gxm_id_gxp(c->r[1]); if (g) usse_set_fp_output_format(g, (int)c->r[2]); }
 	if (!gxm_patcher_log()) return;
 	static unsigned n; n++;
 	fprintf(stderr, "    gxm patcher: frame %llu fragment program #%u: id %#x format %u msaa %u blend %#x vertex %#x\n", (unsigned long long)display_frames(), n, c->r[1], c->r[2], c->r[3], RD32(c->r[13]), RD32(c->r[13] + 4));

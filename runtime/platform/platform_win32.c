@@ -51,7 +51,26 @@ size_t plat_page_size(void) { static size_t ps; if (!ps) { SYSTEM_INFO si; GetSy
 #define MAX_HOOKS 4
 static PlatFaultHook hooks[MAX_HOOKS]; static int nhooks;
 static PlatCrashFn crash_fn;
+/* RECOMP_LOG_EXCEPTIONS=1: every exception other than an access violation (which lazy commits and the hooks raise all the
+ * time), the first time its code is seen from an address: code, host address, parameters, the guest thread and the last
+ * guest pc (profile builds). An exception that ends the process before any filter runs -- a guard-page violation
+ * (0x80000001) on a stack whose bounds the dispatcher distrusts -- leaves no report otherwise: LBP's host just exited
+ * with that code (AUTO-01). Logged here, the vectored handler being the first code to see it. */
+static void log_exception(const EXCEPTION_RECORD *r) {
+	static int on = -1; if (on < 0) on = getenv("RECOMP_LOG_EXCEPTIONS") != 0;
+	if (!on) return;
+	static struct { DWORD code; void *at; } seen[64]; static volatile LONG nseen;
+	for (LONG i = 0; i < nseen && i < 64; i++) if (seen[i].code == r->ExceptionCode && seen[i].at == r->ExceptionAddress) return;
+	LONG k = InterlockedIncrement(&nseen) - 1; if (k < 64) { seen[k].code = r->ExceptionCode; seen[k].at = r->ExceptionAddress; }
+	extern uint32_t kernel_current_tid(void) __attribute__((weak)); extern uint32_t recomp_last_pc_now(void) __attribute__((weak));   /* (a function: a weak TLS variable does not link where it is absent -- SECREL) */
+	char line[320]; int n = snprintf(line, sizeof line, "    exception %#lx at host %p (params", (unsigned long)r->ExceptionCode, r->ExceptionAddress);
+	for (DWORD i = 0; i < r->NumberParameters && i < 4 && n < (int)sizeof line - 24; i++) n += snprintf(line + n, sizeof line - (size_t)n, " %#llx", (unsigned long long)r->ExceptionInformation[i]);
+	n += snprintf(line + n, sizeof line - (size_t)n, ") guest thread %#x last pc %#x host thread %lu\n", kernel_current_tid ? kernel_current_tid() : 0,
+	              recomp_last_pc_now ? recomp_last_pc_now() : 0, (unsigned long)GetCurrentThreadId());
+	DWORD w; WriteFile(GetStdHandle(STD_ERROR_HANDLE), line, (DWORD)n, &w, 0);   /* (no stdio: this may run on a nearly full stack) */
+}
 static LONG CALLBACK on_vectored(EXCEPTION_POINTERS *ep) {
+	if (ep->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION) log_exception(ep->ExceptionRecord);
 	if (ep->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || ep->ExceptionRecord->NumberParameters < 2) return EXCEPTION_CONTINUE_SEARCH;
 	void *addr = (void *)ep->ExceptionRecord->ExceptionInformation[1];
 	DWORD saved = GetLastError();
