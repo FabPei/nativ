@@ -22,6 +22,7 @@ has none) -- for a constant a function builds mid-body (a pack's IHOOKS).
 barriers (lock-free code) gets ordered loads (rt.h RD32A...); see SYNC_MN.
 """
 import bisect, json, os, re, struct, sys
+from array import array
 from capstone import Cs, CS_ARCH_ARM, CS_MODE_THUMB, CS_MODE_ARM
 from capstone.arm import (ARM_OP_REG, ARM_OP_IMM, ARM_OP_MEM, ARM_OP_FP, ARM_SFT_INVALID)
 
@@ -51,14 +52,55 @@ class Unsupported(Exception):
     pass
 
 
+class Lite:
+    """an instruction from Capstone's light decode (no operand details): address, size, mnemonic, op_str"""
+    __slots__ = ("address", "size", "mnemonic", "op_str")
+
+    def __init__(self, t):
+        self.address, self.size, self.mnemonic, self.op_str = t
+
+
+def decode(spans, arm_mode, detail=False, limit=None):
+    """linear decode of a function's spans; undecodable bytes (literal pools) are skipped. detail=False: Lite
+    instructions (the light decode, ~40 bytes each); detail=True: Capstone's full instructions with operands (~1.5 KB
+    each: a 17 MB game kept all of them, 11-12 GB, BUILD-02) -- Fn.build decodes them for one function at a time.
+    Both decodes stop and skip at the same bytes (what decodes does not depend on the details)"""
+    dis, step = (md_arm, 4) if arm_mode else (md, 2)
+    insns = []
+    for lo, hi in spans:
+        c = CODE[0](lo, hi + 1)
+        pos = 0
+        while c and pos < len(c):
+            got = list(dis.disasm(c[pos:], lo + pos)) if detail else [Lite(t) for t in dis.disasm_lite(c[pos:], lo + pos)]
+            insns += got
+            pos = (got[-1].address + got[-1].size - lo) if got else pos
+            if pos < len(c) and (not got or got[-1].address + got[-1].size - lo == pos):
+                pos += step
+    return insns if limit is None else insns[:limit]
+
+
+def lite_imm(i):
+    """the immediate target of a light-decoded branch ("#0x8100abcd"), or None for a register operand"""
+    return int(i.op_str[1:], 0) & 0xffffffff if i.op_str.startswith("#") else None
+
+
 class Fn:
-    def __init__(self, entry, insns, entries, arm=False):
-        self.entry, self.insns, self.entries, self.arm = entry, insns, entries, arm
+    """a guest function: its code is (spans, ARM mode, instruction limit), decoded again in full only in build()
+    (BUILD-02: the full instructions of all functions at once took 11-12 GB). Until then it holds what main()'s passes
+    need from the light decode: its instruction addresses, its bl / blx immediate targets, whether it is lock-free code"""
+    def __init__(self, entry, src, entries, arm=False, lite=None, share=None):
+        self.entry, self.src, self.entries, self.arm = entry, src, entries, arm
         self.pc_off = 8 if arm else 4     # a PC read sees the instruction's address + 8 (ARM) or + 4 (Thumb)
         self.tbit = 0 if arm else 1       # what a call's return address carries
-        self.addrs = {i.address for i in insns}
         self.lines, self.unimpl = [], []
-        self.ordered = ORDERED_LOADS[0] and any(i.mnemonic in SYNC_MN for i in insns)
+        if share is not None:   # another entry into share's code: the same instructions
+            self.iaddrs, self.calls, self.ordered = share.iaddrs, share.calls, share.ordered
+            return
+        if lite is None:
+            lite = decode(*src)
+        self.iaddrs = array("I", (i.address for i in lite))
+        self.calls = [(i.mnemonic, t) for i in lite if i.mnemonic in ("bl", "blx") and (t := lite_imm(i)) is not None]
+        self.ordered = ORDERED_LOADS[0] and any(i.mnemonic in SYNC_MN for i in lite)
 
     def reg(self, rid):
         n = md.reg_name(rid)
@@ -1365,6 +1407,16 @@ class Fn:
 
     # ------------------------------------------------------------------ whole function
     def build(self):
+        """the function's C lines; its full instructions exist only while they are built"""
+        self.insns = decode(self.src[0], self.src[1], True, self.src[2])
+        self.addrs = set(self.iaddrs)
+        try:
+            return self._build()
+        finally:
+            del self.insns, self.addrs
+            self.__dict__.pop("_bt", None)
+
+    def _build(self):
         lines = [f"void fn_{self.entry:08x}(Cpu *c) {{"]
         lines.append(f"\tENTER(c, 0x{self.entry:x}u);")
         hook = HOOKS.get(self.entry)
@@ -1448,22 +1500,7 @@ def main():
     entries = [e for e in entries if e not in stubs]
     bodies = [b for b in bodies if b[0] not in stubs]
     SETJMP_STUBS.update(a for a in stubs if names[a] in ("setjmp", "_setjmp"))
-    eset, chunks, fspans = set(entries), {}, {}
-
-    def decode(spans, arm_mode):
-        """linear decode of a function's spans; undecodable bytes (literal pools) are skipped"""
-        dis, step = (md_arm, 4) if arm_mode else (md, 2)
-        insns = []
-        for lo, hi in spans:
-            c = code(lo, hi + 1)
-            pos = 0
-            while c and pos < len(c):
-                got = list(dis.disasm(c[pos:], lo + pos))
-                insns += got
-                pos = (got[-1].address + got[-1].size - lo) if got else pos
-                if pos < len(c) and (not got or got[-1].address + got[-1].size - lo == pos):
-                    pos += step
-        return insns
+    eset, chunks, fspans, maybe_arm = set(entries), {}, {}, []
 
     def junk(insns):
         for i in insns[:64]:
@@ -1500,7 +1537,10 @@ def main():
                 spans.append([spans[-1][1] + 1, lo - 1])   # the hole
             spans.append([lo, hi])
         fspans[entry] = spans
-        fns.append(Fn(entry, decode(spans, False), eset))
+        lite = decode(spans, False)
+        fns.append(Fn(entry, (spans, False, None), eset, lite=lite))
+        if junk(lite):
+            maybe_arm.append(entry)
     # ARM-mode functions: a Thumb "blx #imm" always switches to ARM, so its targets are ARM; from
     # ARM code, "bl" stays ARM and "blx #imm" goes back to Thumb (propagated to a fixed point); a
     # function only reached through pointers is ARM when its Thumb decode holds instructions no Vita
@@ -1520,20 +1560,18 @@ def main():
                 thumb_refs.add(v & ~1)
     arm = set()
     def calls(f, mnem):
-        for i in f.insns:
-            if i.mnemonic == mnem and i.operands and i.operands[0].type == ARM_OP_IMM:
-                yield i.operands[0].imm & 0xffffffff
+        return (t for m, t in f.calls if m == mnem)
     todo = [t for f in fns for t in calls(f, "blx") if t in by_entry and t not in thumb_refs]
     todo += [a for a in d.get("arm", []) if a in by_entry]   # the analysis decoded these as ARM (its exports and calls say so)
-    for f in fns:
-        if junk(f.insns) and not junk(decode(fspans[f.entry], True)):
-            todo.append(f.entry)
+    for e in maybe_arm:
+        if not junk(decode(fspans[e], True)):
+            todo.append(e)
     while todo:
         e = todo.pop()
         if e in arm or e not in by_entry:
             continue
         arm.add(e)
-        f = Fn(e, decode(fspans[e], True), eset, arm=True)
+        f = Fn(e, (fspans[e], True, None), eset, arm=True)
         by_entry[e] = f
         todo += [t for t in calls(f, "bl") if t in by_entry]
     fns = [by_entry[f.entry] for f in fns]
@@ -1542,7 +1580,7 @@ def main():
     # code reached only through a pointer (a callback the module installs for itself) can sit inside
     # what Ghidra made one function: any Thumb code pointer in the image's words that lands on an
     # instruction of a function, not at its entry, gets its own entry (that function, entered there)
-    starts = {i.address: f for f in fns for i in f.insns}
+    starts = {a: f for f in fns for a in f.iaddrs}
     arm_starts = {a for a, f in starts.items() if f.arm}
     alt = set()
     # a word that is itself a decoded ARM instruction holds no pointer, however it looks: an ARM
@@ -1559,7 +1597,7 @@ def main():
                 alt.add(a)
     for a in sorted(alt):
         eset.add(a)
-        fns.append(Fn(a, starts[a].insns, eset, arm=starts[a].arm))
+        fns.append(Fn(a, starts[a].src, eset, arm=starts[a].arm, share=starts[a]))
     # small functions only reached through a pointer (a virtual method in a .rodata vtable) can sit
     # in a gap no Ghidra body covers: a Thumb pointer into such a gap gets a function decoded from
     # there to the next body, when that decodes cleanly to a return
@@ -1587,12 +1625,12 @@ def main():
         if not insns or insns[0].address != a or end is None or junk(insns[:end + 1]):
             continue
         eset.add(a); ngap += 1
-        fns.append(Fn(a, insns[:end + 1], eset))
+        fns.append(Fn(a, ([(a, min(nxt, a + 0x400) - 1)], False, end + 1), eset, lite=insns[:end + 1]))
     if ngap:
         print(f"{ngap} functions in gaps between Ghidra's bodies (reached through pointers)")
     for a in sorted(set(HOOKS) - {f.entry for f in fns}):   # a typo, or an address that moved: say so now, not after a run shows nothing changed
         print(f"warning: --hooks {a:#x}:{HOOKS[a]} is not a function entry; that hook will never run")
-    insn_addrs = {i.address for f in fns for i in f.insns}
+    insn_addrs = {a for f in fns for a in f.iaddrs} if IHOOKS else set()
     for a in sorted(set(IHOOKS) - insn_addrs):
         print(f"warning: --insn-hooks {a:#x}:{IHOOKS[a]} is not an instruction of any function; that hook will never run")
     decls = [f"extern void recomp_hook_{n}(Cpu *c);" for n in sorted(set(HOOKS.values()))]
@@ -1610,22 +1648,33 @@ def main():
         out += decls
     # parts balanced by lines of C (the compile cost), not by guest instructions: a NEON-heavy function is many more
     # lines per instruction than integer code (BUILD-03)
-    bodies = []
-    for f in fns:
-        body = f.build()
-        total += len(f.insns)
-        bad += f.unimpl
-        if nsplit: bodies.append(body)
-        else: out += body
-    per = sum(len(b) for b in bodies) // max(nsplit, 1) + 1
-    k = acc = 0
-    for body in bodies:
-        parts[k] += body
-        acc += len(body)
-        if acc >= per and k < nsplit - 1:
-            k, acc = k + 1, 0
-    for n, part in enumerate(parts):
-        write_if_changed(f"{base}_part{n}.c", "\n".join([f'#include "{os.path.basename(base)}.h"'] + part) + "\n")
+    # (BUILD-02) with --split each body goes to a scratch file as it is built, its byte offset and line count noted:
+    # all bodies' C at once was gigabytes of strings on a big game; a part is read back, one part in memory at a time
+    sizes, offs = [], [0]
+    scratch = base + ".bodies.tmp" if nsplit else None
+    with (open(scratch, "w+b") if nsplit else open(os.devnull, "wb")) as tmp:
+        for f in fns:
+            body = f.build()
+            total += len(f.iaddrs)
+            bad += f.unimpl
+            if nsplit:
+                tmp.write(("\n".join(body) + "\n").encode())
+                sizes.append(len(body)); offs.append(tmp.tell())
+            else: out += body
+        per = sum(sizes) // max(nsplit, 1) + 1
+        k = acc = 0
+        for j, n in enumerate(sizes):   # parts[k]: the indices of its bodies, consecutive
+            parts[k].append(j)
+            acc += n
+            if acc >= per and k < nsplit - 1:
+                k, acc = k + 1, 0
+        for n, part in enumerate(parts):
+            text = ""
+            if part:
+                tmp.seek(offs[part[0]])
+                text = tmp.read(offs[part[-1] + 1] - offs[part[0]]).decode()
+            write_if_changed(f"{base}_part{n}.c", f'#include "{os.path.basename(base)}.h"\n' + text)
+    if scratch: os.remove(scratch)
     # --module NAME: a module loaded with the main program (a .suprx): its tables are suffixed and
     # register themselves with the host (main.c's module registry) before main() runs
     mod = sys.argv[sys.argv.index("--module") + 1] if "--module" in sys.argv else None
