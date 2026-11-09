@@ -38,7 +38,7 @@ static const Str catalog[] = {
 	{"foot.capture", "Capture frame (F12)", "Bild aufnehmen (F12)"},
 	{"foot.hint", "Ctrl+Tab: sections   Esc or F10 closes this menu", "Strg+Tab: Seiten   Esc oder F10 schließt dieses Menü"},
 	/* (UI-01e: the pad's own names, pad_family.h: shoulder L, shoulder R, back, menu, menu, view -- "LB / RB: sections   B, Menu or Menu+View ...") */
-	{"foot.hint_pad", "%s / %s: sections   %s, %s or %s+%s closes this menu", "%s / %s: Seiten   %s, %s oder %s+%s schließt dieses Menü"},
+	{"foot.hint_pad", "%s / %s: sections   %s, %s or %s with %s closes this menu", "%s / %s: Seiten   %s, %s oder %s mit %s schließt dieses Menü"},
 	{"foot.save_failed", "Settings could not be saved", "Einstellungen konnten nicht gespeichert werden"},
 	{"foot.quit_game", "Quit game", "Spiel beenden"},
 	{"foot.quit_launcher", "Back to the library", "Zurück zur Bibliothek"},
