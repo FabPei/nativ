@@ -66,5 +66,35 @@ caller = bytes.fromhex("10b5") + thumb_bl(CALLER + 2, 0x81000004) + bytes.fromhe
 run("Thumb bl target", [(0x81000004, CODE), (CALLER, caller)],
     {"FUN_81000004": 0x81000004, "FUN_81000100": CALLER}, 0x81000004)
 
+# case 3: a plain Thumb function T whose only "blx" reference is noise: the Thumb decode of a function the analysis
+# lists as ARM (its first word, read as Thumb, is `blx #T`; as ARM it is some instruction, then `bx lr`)
+def thumb_blx(at, to):
+    off = to - ((at + 4) & ~3)
+    s, i1, i2 = (off >> 24) & 1, (off >> 23) & 1, (off >> 22) & 1
+    j1, j2 = (~i1 ^ s) & 1, (~i2 ^ s) & 1
+    hw1 = 0xF000 | s << 10 | (off >> 12) & 0x3FF
+    hw2 = 0xC000 | j1 << 13 | j2 << 11 | ((off >> 2) & 0x3FF) << 1
+    return hw1.to_bytes(2, "little") + hw2.to_bytes(2, "little")
+ARMF, T = 0x81000200, 0x81000300
+armf = thumb_blx(ARMF, T) + bytes.fromhex("1eff2fe1")    # (as ARM: <word>; bx lr)
+tcode = bytes.fromhex("10b510bd")                       # push {r4, lr}; pop {r4, pc}
+d3 = [(ARMF, armf), (T, tcode)]
+def run3():
+    global checks, failed
+    d = {"blocks": [{"start": a, "size": len(b), "init": True, "bytes": b.hex()} for a, b in d3],
+         "functions": {"FUN_81000200": ARMF, "FUN_81000300": T}, "bodies": [[a, a + len(b) - 1] for a, b in d3],
+         "relocs": [], "module": "fixture", "exports": [], "variables": [], "arm": [ARMF]}
+    with tempfile.TemporaryDirectory() as tmp:
+        js = os.path.join(tmp, "m.json")
+        with open(js, "w") as f: json.dump(d, f)
+        r = subprocess.run([sys.executable, RECOMP, js, os.path.join(tmp, "out.c"), "--split", "2"], capture_output=True, text=True)
+        ck(r.returncode == 0, "[ARM function's Thumb noise] recomp.py ran")
+        src = "".join(open(os.path.join(tmp, n)).read() for n in os.listdir(tmp) if n.endswith((".c", ".h")))
+    m = re.search(r"L_%08x: /\* ([^*]+) \*/" % T, src)
+    first = m.group(1).strip() if m else "(no label)"
+    ck(first.startswith("push"), f"[ARM function's Thumb noise] 0x{T:08x} emitted in Thumb: first instruction '{first}'")
+    ck("1 ARM-mode functions" in r.stdout, "[ARM function's Thumb noise] only the listed ARM function is ARM ('1 ARM-mode functions')")
+run3()
+
 print(f"\n{checks - failed}/{checks} checks passed")
 sys.exit(1 if failed else 0)

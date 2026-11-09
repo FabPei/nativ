@@ -1587,7 +1587,10 @@ def main():
     arm = set()
     def calls(f, mnem):
         return (t for m, t in f.calls if m == mnem)
-    todo = [t for f in fns for t in calls(f, "blx") if t in by_entry and t not in thumb_refs]
+    # (only Thumb code's blx: the Thumb decode of a function the analysis knows as ARM is noise, and its "blx #imm"
+    # read that way turned a Thumb function ARM, NIGHT-01; its real calls come from its ARM decode below)
+    known_arm = set(d.get("arm", []))
+    todo = [t for f in fns if f.entry not in known_arm for t in calls(f, "blx") if t in by_entry and t not in thumb_refs]
     todo += [a for a in d.get("arm", []) if a in by_entry]   # the analysis decoded these as ARM (its exports and calls say so)
     # a Thumb "bl" keeps the state: an entry that a function of certain Thumb code (no ARM candidate of any kind) calls
     # with "bl" is Thumb, whatever its own decode looks like -- the guess below yields to it (NIGHT-01: Thumb functions
