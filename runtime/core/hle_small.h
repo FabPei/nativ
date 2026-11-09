@@ -15,6 +15,7 @@
 #define RECOMP_HLE_SMALL_H
 #include <stdint.h>
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define HLE_KERNEL_MODEL_VITA   0x10000u
@@ -71,6 +72,26 @@ static inline uint32_t hle_audio_in_open_check(uint32_t type, uint32_t grain, ui
 }
 /* the microseconds one grain takes to capture */
 static inline uint64_t hle_audio_in_grain_us(uint32_t grain, uint32_t freq) { return freq ? (uint64_t)grain * 1000000u / freq : 0; }
+
+/* (AUTO-01 TW-27) RECOMP_MOTION="from-to:ax,ay,az[/p];...": the accelerometer (g, Vita axes) a headless run reports in
+ * those frames -- the motion counterpart of RECOMP_TOUCH. With /p, x and y flip sign every p frames: a shake (Tearaway
+ * asks "Shake the PlayStation Vita system" and waits). 1 with acc filled when a range covers frame, 0 otherwise */
+static inline int hle_motion_script(const char *q, uint64_t frame, float acc[3]) {
+	while (q && *q) {
+		char *e; unsigned long a = strtoul(q, &e, 10), z = a; q = e;
+		float v[3] = {0, 0, -1.0f}; unsigned long per = 0;
+		if (*q == '-') { z = strtoul(q + 1, &e, 10); q = e; }
+		if (*q == ':') { for (int i = 0; i < 3; i++) { v[i] = strtof(q + 1, &e); q = e; if (*q != ',') break; } }
+		if (*q == '/') { per = strtoul(q + 1, &e, 10); q = e; }
+		if (frame >= a && frame <= z) {
+			const float sg = per && ((frame - a) / per) & 1 ? -1.0f : 1.0f;
+			acc[0] = v[0] * sg; acc[1] = v[1] * sg; acc[2] = v[2];
+			return 1;
+		}
+		if (*q == ';') q++; else break;
+	}
+	return 0;
+}
 
 /* NGS: one patch's source side, as the host keeps it */
 typedef struct { uint32_t src; int32_t out, sub; int active; } HleNgsPatchSrc;

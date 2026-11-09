@@ -37,6 +37,13 @@ int main(void) {
 	for (int k = 0; k < HLE_AUDIO_PORTS; k++) { int s = hle_audio_port_free_slot(len); ok &= s == k; if (s >= 0) len[s] = 256; }
 	check("audio: 8 opens take slots 0..7", ok);
 	check("audio: a 9th open finds no slot (PORT_FULL)", hle_audio_port_free_slot(len) == -1);
+	/* (AUTO-01 TW-27) RECOMP_MOTION: scripted accelerometer ranges, a /p shake flips x and y every p frames */
+	{ float a[3] = {9, 9, 9}; const char *sc = "100-200:2.5,2.5,-1/4;300:0,-1,0";
+	  check("motion script: before any range, nothing", !hle_motion_script(sc, 99, a) && a[0] == 9);
+	  check("motion script: a shake's first p frames +x +y", hle_motion_script(sc, 103, a) && a[0] == 2.5f && a[1] == 2.5f && a[2] == -1.0f);
+	  check("motion script: the next p frames -x -y, z kept", hle_motion_script(sc, 104, a) && a[0] == -2.5f && a[1] == -2.5f && a[2] == -1.0f);
+	  check("motion script: a one-frame range without /p", hle_motion_script(sc, 300, a) && a[0] == 0 && a[1] == -1.0f && a[2] == 0);
+	  check("motion script: between and after ranges, nothing", !hle_motion_script(sc, 250, a) && !hle_motion_script(sc, 301, a) && !hle_motion_script(0, 100, a)); }
 	/* (AUTO-01 LBP-7) audio input: LittleBigPlanet opens a voice port (type 0, grain 256, 16 kHz) */
 	check("audio in: a voice port, 256 samples at 16 kHz, opens", hle_audio_in_open_check(0, 256, 16000) == 0);
 	check("audio in: raw ports at 16 and 48 kHz open", hle_audio_in_open_check(2, 256, 16000) == 0 && hle_audio_in_open_check(2, 768, 48000) == 0);

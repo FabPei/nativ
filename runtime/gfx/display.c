@@ -1129,6 +1129,14 @@ static int motion_now(float a[3], float g[3], float q[4]) {
 		if (logm) { static unsigned n; if (n++ % 60 == 0) fprintf(stderr, "    motion: frame %llu (replay) acc %.3f %.3f %.3f gyro %.3f %.3f %.3f quat %.3f %.3f %.3f %.3f\n", (unsigned long long)frames, a[0], a[1], a[2], g[0], g[1], g[2], q[0], q[1], q[2], q[3]); }
 		return 1;
 	}
+	{	/* RECOMP_MOTION (hle_small.h): the scripted accelerometer of a headless run, gyro still, level */
+		static const char *ms = (const char *)1; if (ms == (const char *)1) ms = getenv("RECOMP_MOTION");
+		if (ms && hle_motion_script(ms, frames, a)) {
+			g[0] = g[1] = g[2] = 0; q[0] = 1; q[1] = q[2] = q[3] = 0;
+			if (logm) { static unsigned n; if (n++ % 60 == 0) fprintf(stderr, "    motion: frame %llu (script) acc %.3f %.3f %.3f\n", (unsigned long long)frames, a[0], a[1], a[2]); }
+			return 1;
+		}
+	}
 	if (!motion_live(a, g, q)) return 0;
 	if (logm) { static unsigned n; if (n++ % 60 == 0) fprintf(stderr, "    motion: frame %llu (live) acc %.3f %.3f %.3f gyro %.3f %.3f %.3f quat %.3f %.3f %.3f %.3f\n", (unsigned long long)frames, a[0], a[1], a[2], g[0], g[1], g[2], q[0], q[1], q[2], q[3]); }
 	if (rec_file) fprintf(rec_file, "M %llu %g %g %g %g %g %g %g %g %g %g\n", (unsigned long long)frames, a[0], a[1], a[2], g[0], g[1], g[2], q[0], q[1], q[2], q[3]);
