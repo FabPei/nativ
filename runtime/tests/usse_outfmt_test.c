@@ -49,6 +49,28 @@ int main(int argc, char **argv) {
 	check("raw 32-bit register formats: UCHAR4 CHAR4 USHORT2 SHORT2 HALF2 FLOAT",
 	      usse_output_format_raw32(1) && usse_output_format_raw32(2) && usse_output_format_raw32(3) && usse_output_format_raw32(4) && usse_output_format_raw32(6) && usse_output_format_raw32(8));
 	check("not raw 32-bit: DECLARED HALF4 FLOAT2", !usse_output_format_raw32(0) && !usse_output_format_raw32(5) && !usse_output_format_raw32(7));
+	/* usse_fragment_colour_packed8: synthetic micro-op programs (NATIVECOLOR, colour at O0) */
+	{
+		static UOp code[4]; UsseProgram p;
+		#define OPW(i, o, b, n, t, m, sb, sn, st) do { memset(&code[i], 0, sizeof code[i]); code[i].op = o; code[i].dst.bank = b; code[i].dst.num = n; code[i].dst.type = t; code[i].mask = m; code[i].reps = 1; \
+			code[i].s1.bank = sb; code[i].s1.num = sn; code[i].s1.type = st; for (int q = 0; q < 4; q++) code[i].s1.swiz[q] = (uint8_t)q; } while (0)
+		#define PROG(n) do { memset(&p, 0, sizeof p); p.is_fragment = 1; p.fl.native_color = 1; p.fl.color_pa_start = 0; p.prim = code; p.nprim = n; } while (0)
+		/* Tearaway's scene programs: VPCK U8 <- F16 into PA0, then F16 x4 moved PA0-1 -> O0-1 */
+		OPW(0, OP_VPCK, BK_PA, 0, TY_U8, 0xf, BK_PA, 2, TY_F16); OPW(1, OP_VMOV, BK_O, 0, TY_F16, 0xf, BK_PA, 0, TY_F16); PROG(2);
+		check("an 8-bit pack moved into O0: packed (written raw)", usse_fragment_colour_packed8(&p) == 1);
+		/* the same with lane 2 rewritten (F16 mask 4 lands in the second word): still packed */
+		OPW(1, OP_VNMAD, BK_PA, 0, TY_F16, 0x4, BK_PA, 8, TY_F16); OPW(2, OP_VMOV, BK_O, 0, TY_F16, 0xf, BK_PA, 0, TY_F16); PROG(3);
+		check("a later F16 write to the second word only: the colour word stays packed", usse_fragment_colour_packed8(&p) == 1);
+		/* lane 0 rewritten after the pack: not packed */
+		OPW(1, OP_VNMAD, BK_PA, 0, TY_F16, 0x1, BK_PA, 8, TY_F16); PROG(3);
+		check("an F16 write over the packed word before the move: not packed", usse_fragment_colour_packed8(&p) == 0);
+		/* Tearaway's post pass: VPCK F16 <- U8 straight into O0 */
+		OPW(0, OP_VPCK, BK_O, 0, TY_F16, 0xf, BK_TEMP, 0, TY_U8); PROG(1);
+		check("a pack into F16 lanes (the post pass): not packed (declared type)", usse_fragment_colour_packed8(&p) == 0);
+		/* not NATIVECOLOR: never packed */
+		OPW(0, OP_VPCK, BK_O, 0, TY_U8, 0xf, BK_PA, 2, TY_F16); PROG(1); p.fl.native_color = 0;
+		check("a program without NATIVECOLOR: not packed", usse_fragment_colour_packed8(&p) == 0);
+	}
 	fflush(stdout);
 	char cmd[512]; snprintf(cmd, sizeof cmd, "RECOMP_FP_OUTFMT='81234570:1,*:5' '%s' env", argv[0]);
 	check("(the override's checks, in a child started with RECOMP_FP_OUTFMT set)", system(cmd) == 0);

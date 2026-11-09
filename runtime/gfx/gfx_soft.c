@@ -1960,7 +1960,7 @@ static void shade_interp(const Tri *t, const DrawRec *r, int x, int y, float b0,
 		}
 	}
 	*nraw = 0;
-	if (!probed && fl->native_color && target_bpp_of(&target) <= 4 && usse_output_format_raw32(usse_fp_output_format(r->d.fprog))) {
+	if (!probed && fl->native_color && target_bpp_of(&target) <= 4 && usse_native_raw32(r->fprog, r->d.fprog)) {
 		raw[0] = finst.o[0].u; *nraw = 1;   /* NATIVECOLOR in a 32-bit register format: O0 is the surface's word (usse.h) */
 	} else if (!probed && (fl->color_type == 8 /* TY_U32 */ || fl->color_type == 9 /* TY_S32 */)) {   /* a probe shows as floats even on a raw-word target */
 		const UWord *bank = fl->native_color ? finst.o : finst.pa;

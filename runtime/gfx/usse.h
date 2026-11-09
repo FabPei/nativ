@@ -166,6 +166,15 @@ void usse_preload_color(UsseInst *inst, const UsseFragLayout *fl, const float in
  * usse_fp_output_format: the format, 0 (DECLARED) when unknown. usse_output_format_raw32: one 32-bit register,
  * written to the surface as it is (UCHAR4, CHAR4, USHORT2, SHORT2, HALF2, FLOAT). */
 enum { USSE_OUT_DECLARED, USSE_OUT_UCHAR4, USSE_OUT_CHAR4, USSE_OUT_USHORT2, USSE_OUT_SHORT2, USSE_OUT_HALF4, USSE_OUT_HALF2, USSE_OUT_FLOAT2, USSE_OUT_FLOAT };
+/* usse_fragment_colour_packed8: a NATIVECOLOR program that packs its colour into 8-bit lanes itself (its colour word's
+ * last producer, through plain moves, is a VPCK into U8/S8/O8) -- that word is the surface's, written as it is. The
+ * deciding signal in practice: Tearaway's scene programs and its post pass declare the same output type (F16 x4) and
+ * are all created UCHAR4, yet only the scene programs pack (the post pass writes F16 lanes the surface converts).
+ * RECOMP_FP_OUTFMT, when it names the GXP (or '*'), overrides it (usse_fp_output_format below). */
+int usse_fragment_colour_packed8(const UsseProgram *p);
+/* the renderers' question: does this NATIVECOLOR program (at GXP gxp) write its surface word raw? RECOMP_FP_OUTFMT set:
+ * its format for gxp is a raw 32-bit one; else usse_fragment_colour_packed8 */
+int usse_native_raw32(const UsseProgram *p, uint32_t gxp);
 void usse_set_fp_output_format(uint32_t gxp, int fmt);
 int usse_fp_output_format(uint32_t gxp);
 /* the GPU translator's colour kind for a NATIVECOLOR program (gfx_gpu.c get_shader -> usse_spirv_translate): the

@@ -52,7 +52,7 @@ size_t plat_page_size(void) { static size_t ps; if (!ps) { SYSTEM_INFO si; GetSy
 static PlatFaultHook hooks[MAX_HOOKS]; static int nhooks;
 static PlatCrashFn crash_fn;
 /* RECOMP_LOG_EXCEPTIONS=1: every exception other than an access violation (which lazy commits and the hooks raise all the
- * time), the first time its code is seen from an address: code, host address, parameters, the guest thread and the last
+ * time) and every access violation they do not resolve, the first time its code is seen from an address: code, host address, parameters, the guest thread and the last
  * guest pc (profile builds). An exception that ends the process before any filter runs -- a guard-page violation
  * (0x80000001) on a stack whose bounds the dispatcher distrusts -- leaves no report otherwise: LBP's host just exited
  * with that code (AUTO-01). Logged here, the vectored handler being the first code to see it. */
@@ -76,6 +76,7 @@ static LONG CALLBACK on_vectored(EXCEPTION_POINTERS *ep) {
 	DWORD saved = GetLastError();
 	for (int i = nhooks - 1; i >= 0; i--) if (hooks[i](addr)) { SetLastError(saved); return EXCEPTION_CONTINUE_EXECUTION; }
 	if (lazy_commit(addr)) { SetLastError(saved); return EXCEPTION_CONTINUE_EXECUTION; }
+	log_exception(ep->ExceptionRecord);   /* (RECOMP_LOG_EXCEPTIONS: an access violation neither a hook nor the lazy commit took -- params: 0 read / 1 write / 8 execute, the address) */
 	SetLastError(saved);
 	return EXCEPTION_CONTINUE_SEARCH;
 }
