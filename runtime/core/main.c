@@ -502,18 +502,14 @@ static int load_image_ex(const char *path, int ondemand, uint32_t *start, uint32
 	FILE *f = fopen(path, "rb");
 	if (!f) { perror(path); if (ondemand) return -1; exit(1); }
 	char magic[4]; uint32_t n;
-	if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "VRIM", 4) || fread(&n, 4, 1, f) != 1) { fprintf(stderr, "%s: not an image
-", path); if (ondemand) { fclose(f); return -1; } exit(1); }
+	if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "VRIM", 4) || fread(&n, 4, 1, f) != 1) { fprintf(stderr, "%s: not an image\n", path); if (ondemand) { fclose(f); return -1; } exit(1); }
 	uint32_t l = 0xffffffffu, h_ = 0;
 	for (uint32_t i = 0; i < n; i++) {
 		uint32_t h[3];
-		if (fread(h, 4, 3, f) != 3) { fprintf(stderr, "%s: truncated
-", path); if (ondemand) { fclose(f); return -1; } exit(1); }
-		if (h[2] && fread(G(h[0]), 1, h[1], f) != h[1]) { fprintf(stderr, "%s: truncated
-", path); if (ondemand) { fclose(f); return -1; } exit(1); }
+		if (fread(h, 4, 3, f) != 3) { fprintf(stderr, "%s: truncated\n", path); if (ondemand) { fclose(f); return -1; } exit(1); }
+		if (h[2] && fread(G(h[0]), 1, h[1], f) != h[1]) { fprintf(stderr, "%s: truncated\n", path); if (ondemand) { fclose(f); return -1; } exit(1); }
 		if (!h[2] && ondemand) memset(G(h[0]), 0, h[1]);   /* (a reload starts from a zeroed .bss again) */
-		fprintf(stderr, "loaded %#010x %#9x%s
-", h[0], h[1], h[2] ? "" : " (zero)");
+		fprintf(stderr, "loaded %#010x %#9x%s\n", h[0], h[1], h[2] ? "" : " (zero)");
 		if (nseg < 64) { seg_lo[nseg] = h[0]; seg_hi[nseg] = h[0] + h[1]; nseg++; }
 		if (h[0] < l) l = h[0];
 		if (h[0] + h[1] > h_) h_ = h[0] + h[1];
@@ -526,8 +522,7 @@ static int load_image_ex(const char *path, int ondemand, uint32_t *start, uint32
 	while (fread(tag, 1, 4, f) == 4) {
 		if (!memcmp(tag, "TLS", 4)) {
 			if (fread(tls_template, 4, 3, f) == 3)
-				fprintf(stderr, "TLS template %#x, %#x bytes, block %#x
-", tls_template[0], tls_template[1], tls_template[2]);
+				fprintf(stderr, "TLS template %#x, %#x bytes, block %#x\n", tls_template[0], tls_template[1], tls_template[2]);
 		} else if (!memcmp(tag, "EXPT", 4)) {   /* a module's exports: (address, name) */
 			if (fread(&n, 4, 1, f) != 1) break;
 			pthread_mutex_lock(&exports_lock);
