@@ -1726,7 +1726,7 @@ static void about_tab(void) {   /* (UI-01i) the version, the launcher's own wind
  * "south" / "east" / ... names, "" the default, "none" unbound; bind_<x> with SDL key names), and the same rule: a button
  * another action had is taken from it. Change: press the new button or key (a controller's press is taken for
  * 6 seconds; Esc leaves a key as it was), or pick it from the list (touch and a mouse can map a controller too).
- * Touch: the game's touch rules; on-screen buttons come with UI-01n */
+ * Touch: the on-screen buttons (UI-01n: "osb", "osb_size", the same keys as the game's menu) and the game's touch rules */
 struct BindRow { const char *key, *label, *def; };
 static const BindRow k_pad_rows[] = {   /* (window.c pad_binds, in its order; def: pad_bind.c's defaults) */
 	{"pad_bind_cross", "Cross", "south"}, {"pad_bind_circle", "Circle", "east"}, {"pad_bind_square", "Square", "west"}, {"pad_bind_triangle", "Triangle", "north"},
@@ -1830,10 +1830,16 @@ static void mapping_rows(const SetTarget &t) {   /* (Controls tab, after its row
 	{	static const char *const types[] = {"Controller##mt", "Keyboard & mouse##mt", "Touch##mt"}; ui::segmented(types, 3, &g_map_type); }
 	ui::rows_end();
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
-	if (g_map_type == 2) {
+	if (g_map_type == 2) {   /* (UI-01n) the on-screen buttons: when they show, how big; the rest of the screen is the Vita's front touch screen */
+		if (ui::rows_begin("map_touch")) {
+			seg_row(t, "On-screen buttons", "For playing by touch alone: the Vita's buttons and sticks on the screen. Automatic shows them once you touch the screen and hides them when you use a controller or the keyboard.",
+			        "osb", "auto", {{"auto", "Automatic"}, {"on", "Always"}, {"off", "Off"}});
+			slider_row(t, "Button size", "Bigger buttons are easier to hit; smaller ones cover less of the game.", "osb_size", 1.0, 0.75f, 1.5f, "%.2f×");
+			ui::rows_end();
+		}
+		ImGui::Dummy(ImVec2(0, em * 0.2f));
 		ImGui::PushTextWrapPos(0);
-		ui::muted_wrapped("Your touch screen is the Vita's front touch screen. The rear touch pad: hold the shoulder pair that isn't L and R and move a stick, or Alt and the mouse (see Touch cursor speed above).");
-		ui::muted_wrapped("On-screen buttons, for playing by touch alone, come with the next update of the in-game controls (UI-01n): this is where their layout will be set.");
+		ui::muted_wrapped("Where they sit: L and R in the top corners, the D-pad and the left stick on the left, the face buttons and the right stick on the right, Select and Start at the bottom. A touch anywhere else is the Vita's front touch screen; the rear touch pad: hold the shoulder pair that isn't L and R and move a stick, or Alt and the mouse (see Touch cursor speed above).");
 		ImGui::PopTextWrapPos();
 		ui::rows_begin("map_rest");
 		return;
@@ -3603,7 +3609,8 @@ int main(int argc, char **argv) {
 		if (ui_sel.rfind("game:", 0) == 0) g_game_settings = ui_sel.substr(5);
 		if (ui_sel.rfind("more:", 0) == 0) g_game_page = ui_sel.substr(5);
 		if (ui_sel.rfind("name:", 0) == 0) g_name_game = ui_sel.substr(5);
-		if (ui_sel.rfind("map:", 0) == 0) {   /* (map:pad|key:<row>: Settings > Controls with that row's Change dialog open) */
+		if (ui_sel == "map:touch") { g_settings_open = true; g_settings_tab = 1; g_map_type = 2; }   /* (UI-01n: Settings > Controls, the touch mapping) */
+		else if (ui_sel.rfind("map:", 0) == 0) {   /* (map:pad|key:<row>: Settings > Controls with that row's Change dialog open) */
 			g_settings_open = true; g_settings_tab = 1; g_map_type = ui_sel.compare(4, 3, "pad") == 0 ? 0 : 1;
 			g_bind.open = true; g_bind.pad = g_map_type == 0; g_bind.row = atoi(ui_sel.c_str() + 8); g_bind.until = 6.0;   /* (a screenshot run's clock starts at 0: the real 6 seconds) */
 		}

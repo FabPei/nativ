@@ -24,7 +24,7 @@
  *       RECOMP_OVERLAY_DUMP=f.ppm  headless: renders the in-game menu once, open, over the next
  *                           presented frame, into an offscreen texture, and writes it to f -- so the
  *                           menu can be looked at without a screen (see overlay_dump_maybe below)
- *       RECOMP_OVERLAY_DUMP_UI=menu|menu:<tab>|bar|Game|View|Controls|Help|toast|intro[:pad|:touch][@<s>]|quit|layout[,...]  what that dump
+ *       RECOMP_OVERLAY_DUMP_UI=menu|menu:<tab>|bar|Game|View|Controls|Help|toast|osb|intro[:pad|:touch][@<s>]|quit|layout[,...]  what that dump
  *                           shows (overlay.h: overlay_render_forced); several, comma-separated, write
  *                           one file each, f_<name>.ppm (':' in a name written as '-')
  *       RECOMP_OVERLAY_DUMP_SIZE=WxH  that dump as in a window of W x H: the frame fitted (dump_fit.h), the menu at W x H
@@ -45,6 +45,7 @@
 #include "overlay.h"
 #include "audio_pace.h"
 #include "dump_fit.h"
+#include "touch_controls.h"
 
 enum { SELECT = 0x1, START = 0x8, UP = 0x10, RIGHT = 0x20, DOWN = 0x40, LEFT = 0x80, LTRIG = 0x100, RTRIG = 0x200,
        TRIANGLE = 0x1000, CIRCLE = 0x2000, CROSS = 0x4000, SQUARE = 0x8000,
@@ -161,6 +162,42 @@ static void tilt_section_update(void) {
 	}
 	tilt_section = on;
 }
+/* (UI-01n) on-screen buttons for playing by touch alone (touch_controls.h): "osb" auto|on|off, "osb_size". A touchscreen
+ * finger that lands on one while they show presses it (the D-pad by direction, a stick by how far from its centre) until
+ * it lifts -- sliding across the face buttons presses the one under it; every other finger stays the front touch panel.
+ * auto: they show once a finger touches the screen, and hide at the next controller or key press. */
+static int osb_mode = OSB_AUTO; static float osb_size = 1.0f;
+static volatile int osb_touch_last;   /* (auto) the last input was a finger on the screen */
+static int osb_fdown[ST_FINGERS], osb_fctl[ST_FINGERS]; static SDL_FingerID osb_fid[ST_FINGERS]; static float osb_fx[ST_FINGERS], osb_fy[ST_FINGERS];
+static volatile unsigned osb_buttons, osb_held;   /* the Vita buttons they press; which controls a finger holds (1 << OSB_*) */
+static volatile int osb_stick_on[2]; static volatile uint8_t osb_sv[4]; static volatile float osb_knob[4];
+static OsbLayout osb_L;
+static void osb_reload(void) {
+	char b[8]; osb_mode = getenv("RECOMP_OSB") ? osb_mode_parse(getenv("RECOMP_OSB")) : osb_mode_parse(settings_str("osb", "auto", b, sizeof b));
+	osb_size = (float)settings_float("osb_size", 1.0);
+}
+static void osb_update(void) {   /* the fingers on them -> the buttons, the sticks, what's drawn pressed */
+	unsigned bits = 0, held = 0; int on[2] = {0, 0};
+	for (int i = 0; i < ST_FINGERS; i++) {
+		if (!osb_fdown[i]) continue;
+		const int c = osb_fctl[i]; held |= 1u << c;
+		if (c == OSB_LSTICK || c == OSB_RSTICK) {
+			const int k = c == OSB_RSTICK; uint8_t sx, sy; osb_stick(&osb_L.c[c], osb_fx[i], osb_fy[i], &sx, &sy);
+			osb_sv[2 * k] = sx; osb_sv[2 * k + 1] = sy; osb_knob[2 * k] = osb_fx[i]; osb_knob[2 * k + 1] = osb_fy[i]; on[k] = 1;
+		} else bits |= osb_bits(&osb_L, c, osb_fx[i], osb_fy[i]);
+	}
+	osb_buttons = bits; osb_held = held; osb_stick_on[0] = on[0]; osb_stick_on[1] = on[1];
+}
+static void osb_release(void) { for (int i = 0; i < ST_FINGERS; i++) osb_fdown[i] = 0; osb_update(); }
+int window_osb_shown(void) { return osb_visible(osb_mode, osb_touch_last); }
+/* for overlay.cpp's drawing: shown now; the size setting, which controls a finger holds, the D-pad's directions, the stick
+ * fingers (window points) */
+int window_osb_state(float *size, unsigned *held, unsigned *bits, float knob[4]) {
+	*size = osb_size; *held = osb_held; *bits = osb_buttons; for (int i = 0; i < 4; i++) knob[i] = osb_knob[i];
+	return window_osb_shown();
+}
+/* a controller or the keyboard took over: auto hides them, and what a finger held on them lets go */
+static void osb_other_input(void) { if (osb_touch_last) { osb_touch_last = 0; if (osb_mode == OSB_AUTO) osb_release(); } }
 static void kb_reload(void) {   /* the bindings from settings (at start, and when the menu closes: a rebind may have changed them) */
 	for (int i = 0; i < KB_N; i++) {
 		char b[48]; const char *name = settings_str(kb_binds[i].key, kb_binds[i].def, b, sizeof b);
@@ -168,6 +205,7 @@ static void kb_reload(void) {   /* the bindings from settings (at start, and whe
 		kb_binds[i].kc = k != SDLK_UNKNOWN ? k : SDL_GetKeyFromName(kb_binds[i].def);
 	}
 	char sb[16]; shoulders_swapped = !strcmp(settings_str("shoulder_buttons", "triggers", sb, sizeof sb), "bumpers");
+	osb_reload();
 }
 int window_kb_count(void) { return KB_N; }
 const char *window_kb_label(int i) { return i >= 0 && i < KB_N ? kb_binds[i].label : ""; }
@@ -459,6 +497,7 @@ static void gamepad_touch_release(void) {
 	for (int i = 0; i < TP_FINGERS; i++) tp_down[i] = 0;
 	cur_down = 0; cur_mode = 0; lb_held = rb_held = 0; ltrig_on = rtrig_on = 0; ptrig[0] = ptrig[1] = 0;
 	cur2_on = 0; cur_used_l = cur_used_r = 0; cur_cross = cur_trig[0] = cur_trig[1] = 0; trig_touch[0] = trig_touch[1] = 0;
+	osb_release();   /* (and a finger on an on-screen button) */
 	twist_pad = 0; twist_down = twist_drag;
 	mouse_rear_down = 0;
 	for (int i = 0; i < ST_FINGERS; i++) st_down[i] = 0;   /* (and the screen's fingers: the menu takes the screen) */
@@ -492,6 +531,26 @@ static void screen_finger(const SDL_Event *e) {
 	if (!touch_any() && e->tfinger.touchID != SCRIPT_TOUCH_ID && SDL_GetTouchDeviceType(e->tfinger.touchID) != SDL_TOUCH_DEVICE_DIRECT) return;
 	int w = 0, h = 0; SDL_GetWindowSize(win, &w, &h);
 	const float mx = e->tfinger.x * (float)w, my = e->tfinger.y * (float)h;   /* (SDL's finger positions: 0-1 across the window) */
+	{	/* (UI-01n) a finger on an on-screen button: held there until it lifts, never a touch on the panel */
+		const int shown = window_osb_shown();
+		if (e->type == SDL_EVENT_FINGER_DOWN) osb_touch_last = 1;   /* (auto: from the next frame on they show; this finger is the game's) */
+		for (int j = 0; j < ST_FINGERS; j++) if (osb_fdown[j] && osb_fid[j] == e->tfinger.fingerID) {
+			if (e->type == SDL_EVENT_FINGER_UP || e->type == SDL_EVENT_FINGER_CANCELED) osb_fdown[j] = 0;
+			else {
+				osb_fx[j] = mx; osb_fy[j] = my;
+				if (osb_fctl[j] >= OSB_TRIANGLE && osb_fctl[j] <= OSB_SQUARE) { const int c = osb_hit(&osb_L, mx, my); if (c >= OSB_TRIANGLE && c <= OSB_SQUARE) osb_fctl[j] = c; }   /* (slid onto another face button) */
+			}
+			osb_update(); return;
+		}
+		if (e->type == SDL_EVENT_FINGER_DOWN && shown) {
+			osb_layout(&osb_L, (float)w, (float)h, osb_size);
+			const int c = osb_hit(&osb_L, mx, my);
+			if (c >= 0) for (int j = 0; j < ST_FINGERS; j++) if (!osb_fdown[j]) {
+				osb_fdown[j] = 1; osb_fid[j] = e->tfinger.fingerID; osb_fctl[j] = c; osb_fx[j] = mx; osb_fy[j] = my;
+				osb_update(); return;
+			}
+		}
+	}
 	int k = -1, free_k = -1;
 	for (int i = 0; i < ST_FINGERS; i++) { if (st_down[i] && st_id[i] == e->tfinger.fingerID) k = i; else if (!st_down[i] && free_k < 0) free_k = i; }
 	if (e->type == SDL_EVENT_FINGER_UP || e->type == SDL_EVENT_FINGER_CANCELED) { if (k >= 0) st_down[k] = 0; return; }
@@ -891,6 +950,8 @@ void window_input(uint32_t *b, uint8_t s[4]) {
 	if (gesture_wanted()) s[2] = s[3] = 128;   /* a gesture window: the right stick flicks a swipe (window_touch_gesture_hint) */
 	if (twist_wanted() && !kbm_on) s[0] = s[1] = s[2] = s[3] = 128;   /* a twist: the sticks are its fingers (window_touch_twist_hint) */
 	if (tilt_section && (kbm_on || !pad_gyro)) s[0] = 128;   /* a tilt section: left/right is the tilt (A / D, a gyro-less pad's stick), not a step or a steer */
+	*b |= osb_buttons;   /* (UI-01n) the on-screen buttons: pressed with whatever else is */
+	for (int k = 0; k < 2; k++) if (osb_stick_on[k]) { s[2 * k] = osb_sv[2 * k]; s[2 * k + 1] = osb_sv[2 * k + 1]; }
 }
 /* a PS TV's pad (display.c: the "2" reads of port 1): the handheld's L and R are its L1 and R1, as a PS TV gives them to a
  * game that never asks; the other shoulder pair is its L2 and R2, and the stick clicks are there */
@@ -1133,6 +1194,7 @@ void window_run(void *(*fn)(void *), void *arg) {
 				if (e.gsensor.sensor == SDL_SENSOR_ACCEL) motion_feed_accel(e.gsensor.data, e.gsensor.sensor_timestamp);
 				else if (e.gsensor.sensor == SDL_SENSOR_GYRO) motion_feed_gyro(e.gsensor.data, e.gsensor.sensor_timestamp);
 			}
+			if ((e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) || e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || (e.type == SDL_EVENT_GAMEPAD_AXIS_MOTION && (e.gaxis.value > 16000 || e.gaxis.value < -16000))) osb_other_input();   /* (UI-01n: auto hides the on-screen buttons) */
 			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || (e.type == SDL_EVENT_GAMEPAD_AXIS_MOTION && (e.gaxis.value > 16000 || e.gaxis.value < -16000))) {
 				kbm_auto = 0; snprintf(kbm_why, sizeof kbm_why, e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ? "pad button %d" : "pad axis %d", e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ? e.gbutton.button : e.gaxis.axis);
 			}   /* the pad in hand: auto's choice */

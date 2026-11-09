@@ -57,6 +57,7 @@
 #include "frame_rates.h"        /* the allowed rates the frame-rate rows offer */
 #include "ui_scale.h"
 #include "pad_family.h"   /* (UI-01e) the pad's own button names, shared with the launcher */
+#include "touch_controls.h"   /* (UI-01n) the on-screen buttons' layout, shared with window.c */
 #include "sysinfo.h"   /* the "Copy system info" text (U5) */
 #define STBI_NO_STDIO
 #include "third_party/stb/stb_image.h"   /* (its implementation: runtime/media/jpeg.c) */
@@ -598,6 +599,14 @@ static void page_controls(void) {
 			if (ui::segmented(names, 2, &v)) { settings_set_str("shoulder_buttons", v ? "bumpers" : "triggers"); save_settings(); } }
 		ui::row(ui_tr("ctrl.touch_speed"), ui_tr("ctrl.touch_speed_help"), note_flt("touch_cursor_speed", settings_float("touch_cursor_speed", 1.0)));
 		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##tcs", &P.tcs, 0.25f, 3.0f, "%.2f×")) set_tcs(P.tcs);
+		ui::row(ui_tr("ctrl.osb"), ui_tr("ctrl.osb_help"), note_s("osb"));   /* (UI-01n) */
+		{ char t0[48], t1[48], t2[48];
+			const char *names[3] = {tr_suf(ui_tr("ctrl.osb_auto"), "##osb", t0, sizeof t0), tr_suf(ui_tr("ctrl.osb_on"), "##osb", t1, sizeof t1), tr_suf(ui_tr("ctrl.osb_off"), "##osb", t2, sizeof t2)};
+			char cur[8]; settings_str("osb", "auto", cur, sizeof cur); int v = !strcmp(cur, "on") ? 1 : !strcmp(cur, "off") ? 2 : 0;
+			if (ui::segmented(names, 3, &v)) { settings_set_str("osb", v == 1 ? "on" : v == 2 ? "off" : "auto"); save_settings(); } }
+		ui::row(ui_tr("ctrl.osb_size"), nullptr, note_flt("osb_size", settings_float("osb_size", 1.0)));
+		{ static float sz = -1; static int epoch; if (sz < 0 || epoch != g_prefs_epoch) { sz = (float)settings_float("osb_size", 1.0); epoch = g_prefs_epoch; } ImGui::SetNextItemWidth(-FLT_MIN);
+		  if (ImGui::SliderFloat("##osbs", &sz, 0.75f, 1.5f, "%.2f×")) { settings_set_float("osb_size", sz); save_settings(); } }
 		ui::rows_end();
 	}
 	section_label(ui_tr("ctrl.motion"));
@@ -1233,6 +1242,62 @@ static void build_perf_full(ImDrawList *dl) {
 	dl->AddText(font, fs, ImVec2(xl, y), c_mut, m.gpu_name[0] ? m.gpu_name : "GPU: -"); y += lh;
 	dl->AddText(font, fs, ImVec2(xl, y), c_mut, m.cpu_name[0] ? m.cpu_name : "CPU: -");
 }
+/* (UI-01n) the on-screen buttons (touch_controls.h, the layout window.c presses by): translucent, a held one lit; the
+ * face buttons as the Vita's shapes, the D-pad's arms lit by direction, a stick's knob under its finger */
+extern "C" int window_osb_state(float *size, unsigned *held, unsigned *bits, float knob[4]);
+static bool g_force_osb;   /* RECOMP_OVERLAY_DUMP_UI=osb: shown, nothing held */
+static void build_osb(ImDrawList *dl) {
+	float size = 1.0f, knob[4] = {0, 0, 0, 0}; unsigned held = 0, bits = 0;
+	bool shown = window_osb_state(&size, &held, &bits, knob) != 0;
+	if (g_force_osb) { shown = true; held = bits = 0; size = (float)settings_float("osb_size", 1.0); }
+	if (!shown || g_intro) return;
+	const ImVec2 ds = ImGui::GetIO().DisplaySize;
+	OsbLayout L; osb_layout(&L, ds.x, ds.y, size);
+	const float u = L.unit, lw = u * 0.045f > 1.5f ? u * 0.045f : 1.5f;
+	const ImU32 fill = IM_COL32(16, 18, 24, 96), lit = IM_COL32(255, 255, 255, 120), edge = IM_COL32(255, 255, 255, 150), ink = IM_COL32(255, 255, 255, 215);
+	ImFont *font = ImGui::GetFont(); const float fs = u * 0.38f;
+	auto label = [&](const OsbCtrl &c) {
+		const ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, c.label);
+		dl->AddText(font, fs, ImVec2(c.x + (c.w - ts.x) * 0.5f, c.y + (c.h - ts.y) * 0.5f), ink, c.label);
+	};
+	for (int i = 0; i < OSB_N; i++) {
+		const OsbCtrl &c = L.c[i]; const bool on = (held >> i) & 1u;
+		const ImVec2 mid(c.x + c.w * 0.5f, c.y + c.h * 0.5f);
+		if (i == OSB_DPAD) {   /* a plus of four arms, each lit by its direction */
+			const float a = u * 0.5f;
+			const struct { float x0, y0, x1, y1; unsigned bit; } arm[4] = {
+				{mid.x - a, c.y, mid.x + a, mid.y - a, OSB_BIT_UP}, {mid.x - a, mid.y + a, mid.x + a, c.y + c.h, OSB_BIT_DOWN},
+				{c.x, mid.y - a, mid.x - a, mid.y + a, OSB_BIT_LEFT}, {mid.x + a, mid.y - a, c.x + c.w, mid.y + a, OSB_BIT_RIGHT}};
+			dl->AddRectFilled(ImVec2(mid.x - a, mid.y - a), ImVec2(mid.x + a, mid.y + a), fill);
+			for (const auto &r : arm) {
+				dl->AddRectFilled(ImVec2(r.x0, r.y0), ImVec2(r.x1, r.y1), (bits & r.bit) ? lit : fill, u * 0.12f);
+				dl->AddRect(ImVec2(r.x0, r.y0), ImVec2(r.x1, r.y1), edge, u * 0.12f, 0, lw);
+				const ImVec2 cm((r.x0 + r.x1) * 0.5f, (r.y0 + r.y1) * 0.5f); const float s = u * 0.16f;   /* the arrow */
+				if (r.bit == OSB_BIT_UP) dl->AddTriangleFilled(ImVec2(cm.x, cm.y - s), ImVec2(cm.x - s, cm.y + s * 0.6f), ImVec2(cm.x + s, cm.y + s * 0.6f), ink);
+				if (r.bit == OSB_BIT_DOWN) dl->AddTriangleFilled(ImVec2(cm.x, cm.y + s), ImVec2(cm.x + s, cm.y - s * 0.6f), ImVec2(cm.x - s, cm.y - s * 0.6f), ink);
+				if (r.bit == OSB_BIT_LEFT) dl->AddTriangleFilled(ImVec2(cm.x - s, cm.y), ImVec2(cm.x + s * 0.6f, cm.y + s), ImVec2(cm.x + s * 0.6f, cm.y - s), ink);
+				if (r.bit == OSB_BIT_RIGHT) dl->AddTriangleFilled(ImVec2(cm.x + s, cm.y), ImVec2(cm.x - s * 0.6f, cm.y - s), ImVec2(cm.x - s * 0.6f, cm.y + s), ink);
+			}
+		} else if (i == OSB_LSTICK || i == OSB_RSTICK) {   /* the ring, and the knob where the finger is (clamped to the ring) */
+			const float r = c.w * 0.5f; const int k = i == OSB_RSTICK;
+			dl->AddCircleFilled(mid, r, fill, 48); dl->AddCircle(mid, r, edge, 48, lw);
+			ImVec2 kp = mid;
+			if (on) { float dx = knob[2 * k] - mid.x, dy = knob[2 * k + 1] - mid.y; const float d = std::sqrt(dx * dx + dy * dy), lim = r - u * 0.55f; if (d > lim && d > 0) { dx *= lim / d; dy *= lim / d; } kp = ImVec2(mid.x + dx, mid.y + dy); }
+			dl->AddCircleFilled(kp, u * 0.55f, on ? lit : IM_COL32(255, 255, 255, 60), 32); dl->AddCircle(kp, u * 0.55f, edge, 32, lw);
+		} else if (c.round) {   /* a face button: a circle with its shape */
+			const float r = c.w * 0.5f, s = u * 0.2f;
+			dl->AddCircleFilled(mid, r, on ? lit : fill, 32); dl->AddCircle(mid, r, edge, 32, lw);
+			if (i == OSB_TRIANGLE) dl->AddTriangle(ImVec2(mid.x, mid.y - s * 1.1f), ImVec2(mid.x - s * 1.1f, mid.y + s * 0.8f), ImVec2(mid.x + s * 1.1f, mid.y + s * 0.8f), ink, lw * 1.4f);
+			if (i == OSB_CIRCLE) dl->AddCircle(mid, s, ink, 24, lw * 1.4f);
+			if (i == OSB_CROSS) { dl->AddLine(ImVec2(mid.x - s, mid.y - s), ImVec2(mid.x + s, mid.y + s), ink, lw * 1.4f); dl->AddLine(ImVec2(mid.x + s, mid.y - s), ImVec2(mid.x - s, mid.y + s), ink, lw * 1.4f); }
+			if (i == OSB_SQUARE) dl->AddRect(ImVec2(mid.x - s * 0.9f, mid.y - s * 0.9f), ImVec2(mid.x + s * 0.9f, mid.y + s * 0.9f), ink, 0.0f, 0, lw * 1.4f);
+		} else {   /* L, R, Select, Start: a rounded box with its name */
+			dl->AddRectFilled(ImVec2(c.x, c.y), ImVec2(c.x + c.w, c.y + c.h), on ? lit : fill, c.h * 0.45f);
+			dl->AddRect(ImVec2(c.x, c.y), ImVec2(c.x + c.w, c.y + c.h), edge, c.h * 0.45f, 0, lw);
+			label(c);
+		}
+	}
+}
 static void build_marks(void) {
 	ImDrawList *dl = g_intro ? ImGui::GetForegroundDrawList() : ImGui::GetBackgroundDrawList();   /* over the game's frame (LOAD), under the bar and its menus; over the touch card */
 	if (g_full) build_perf_full(dl);
@@ -1258,6 +1323,7 @@ static void build_marks(void) {
 			dl->AddPolyline(pts, g_nft, IM_COL32(120, 230, 120, 255), ImDrawFlags_None, 1.5f);
 		}
 	}
+	build_osb(dl);   /* (under the touch markers) */
 	if (g_rear[2] > 0) dl->AddRect(ImVec2(g_rear[0], g_rear[1]), ImVec2(g_rear[0] + g_rear[2], g_rear[1] + g_rear[3]), IM_COL32(255, 170, 60, 140), 0.0f, 2.0f);   /* (rounding 0, thickness 2: ImGui 1.92.8+ argument order -- the old (0, 0, 2.0f) put 2 in `flags`, an ImGui user-error assert) */
 	for (int i = 0; i < g_nmarks; i++) {
 		const OverlayMark &m = g_marks[i];
@@ -1777,6 +1843,7 @@ void overlay_render_forced(SDL_GPUDevice *device, SDL_GPUTexture *target, uint32
 		g_intro_dev = -1; g_intro_at = -1;
 		return;
 	}
+	if (!strcmp(ui, "osb")) { g_force_osb = true; for (int i = 0; i < 3; i++) forced_frame(device, target, w, h, i == 2, build_closed); g_force_osb = false; return; }   /* (UI-01n) the on-screen buttons */
 	if (!strcmp(ui, "toast")) g_force_toast = true;
 	else { g_force_bar = true; if (strcmp(ui, "bar")) {
 		const char *colon = strrchr(ui, ':');   /* (U12b fix) "bar:Game" (ui_shots' page names) or bare "Game" (window.c's list): the menu key is the part after the last ':' */
