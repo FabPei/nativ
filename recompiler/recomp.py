@@ -1589,8 +1589,13 @@ def main():
         return (t for m, t in f.calls if m == mnem)
     todo = [t for f in fns for t in calls(f, "blx") if t in by_entry and t not in thumb_refs]
     todo += [a for a in d.get("arm", []) if a in by_entry]   # the analysis decoded these as ARM (its exports and calls say so)
+    # a Thumb "bl" keeps the state: an entry that a function of certain Thumb code (no ARM candidate of any kind) calls
+    # with "bl" is Thumb, whatever its own decode looks like -- the guess below yields to it (NIGHT-01: Thumb functions
+    # whose data read as a coprocessor instruction went ARM; blx targets and the analysis' list stay facts)
+    cand = set(todo) | set(maybe_arm)
+    thumb_bl = {t for f in fns if f.entry not in cand for t in calls(f, "bl")}
     for e in maybe_arm:
-        if not junk(decode(fspans[e], True)):
+        if e not in thumb_bl and not junk(decode(fspans[e], True)):
             todo.append(e)
     while todo:
         e = todo.pop()
