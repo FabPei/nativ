@@ -295,8 +295,19 @@ static void h_np_basic_check_callback(Cpu *c) {
 	RET(0);
 }
 
+/* sceNpCmpNpId(const SceNpId *a, const SceNpId *b): a pure comparison, answered online and offline alike. 0 when the two
+ * name the same account -- the online id (data[16]) and opt (the shard, region and platform, +0x14) equal --, else
+ * SCE_NP_UTIL_ERROR_NOT_MATCH (0x80550605), the code games test for (one title's wrapper: 0 -> equal, 0x80550605 ->
+ * compares the raw ids itself, anything else -> different). Unimplemented offline it answered "not initialised"
+ * (0x80550002): every id compared as different. A null id: invalid argument. */
+static void h_np_cmp_npid(Cpu *c) {
+	if (!A0 || !A1) { RET(0x80550003u); return; }
+	const int same = !strncmp((const char *)G(A0), (const char *)G(A1), 16) && !memcmp(G(A0 + 0x14), G(A1 + 0x14), 8);
+	RET(same ? 0 : 0x80550605u);
+}
 static void h_np_one(Cpu *c) { RET(1); }
 const HleEntry hle_np[] = {
+	{"sceNpCmpNpId", h_np_cmp_npid},
 	{"vshSblAimgrIsCEX", h_np_one},
 	{"SceNpManager_8D7981D4", h_np_ticket_create}, {"SceNpManager_7CE94530", h_np_ticket_get}, {"SceNpManager_80036A44", h_np_zero}, {"SceNpManager_29C9B8A5", h_np_zero},   /* np_common: a retail console (its debug settings then keep their defaults, never the registry) */
 	{"sceNpCommonGetNpEnviroment", h_np_environment}, {"SceNpCommon_E426FEE8", h_np_comm_id_string}, {"SceNpCommon_256670D6", h_np_service_platform},
@@ -337,6 +348,7 @@ static void h_np_off_check_callback(Cpu *c) {
 	RET(0);
 }
 const HleEntry hle_np_offline[] = {
+	{"sceNpCmpNpId", h_np_cmp_npid},
 	{"sceNpGetServiceState", h_np_off_state},
 	{"sceNpRegisterServiceStateCallback", h_np_off_register_state}, {"sceNpUnregisterServiceStateCallback", h_np_off_unregister_state},
 	{"sceNpCheckCallback", h_np_off_check_callback},

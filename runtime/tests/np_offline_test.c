@@ -73,6 +73,22 @@ int main(void) {
 
 	check("online's table still answers ONLINE (3), unchanged", ({ *(uint32_t *)G(STATE) = 0; memset(&cpu, 0, sizeof cpu); cpu.r[0] = STATE; h_np_state(&cpu); *(uint32_t *)G(STATE) == 3; }));
 
+	/* sceNpCmpNpId: a pure comparison, in both tables -- 0 for the same account, NOT_MATCH (0x80550605) otherwise */
+	{
+		uint32_t A = 0x21000, B = 0x21100;
+		memset(G(A), 0, 0x24); memset(G(B), 0, 0x24);
+		memcpy(G(A), "lbp_player", 10); memcpy(G(A + 0x14), "a1uspsp2", 8);
+		memcpy(G(B), G(A), 0x24);
+		check("sceNpCmpNpId(same id) -> 0", call("sceNpCmpNpId", A, B) == 0);
+		memcpy(G(B), "lbp_other", 9);
+		check("sceNpCmpNpId(another online id) -> NOT_MATCH 0x80550605", call("sceNpCmpNpId", A, B) == 0x80550605u);
+		memcpy(G(B), G(A), 0x24); memcpy(G(B + 0x14), "a1eupsp2", 8);
+		check("sceNpCmpNpId(same name, other opt) -> NOT_MATCH", call("sceNpCmpNpId", A, B) == 0x80550605u);
+		check("sceNpCmpNpId(null) -> invalid argument 0x80550003", call("sceNpCmpNpId", A, 0) == 0x80550003u);
+		int online_has = 0; for (const HleEntry *e = hle_np; e->name; e++) if (!strcmp(e->name, "sceNpCmpNpId")) online_has = 1;
+		check("the online table answers sceNpCmpNpId too", online_has);
+	}
+
 	if (fails) { printf("%d FAILED\n", fails); return 1; }
 	printf("all passed\n");
 	return 0;
