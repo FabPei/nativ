@@ -1304,12 +1304,12 @@ static bool touch_screen_present(void) {
 	SDL_free(t);
 	return any;
 }
+extern "C" int window_osb_mode(void);   /* (UI-02e: the hint names the off switch while they can show) */
 /* (UI-02a) the game's first hint: every way to open the menu this player has (menu_hint.h) */
 static void menu_hint_toast(void) {
 	char body[224];
 	const bool dump = !g_has_window;   /* (a dump: as a desktop with a keyboard and a mouse) */
 	const bool pad = SDL_HasGamepad(), touch = touch_screen_present();
-	extern "C" int window_osb_mode(void);
 	menu_hint_text(body, sizeof body, dump || SDL_HasKeyboard(), dump || SDL_HasMouse(), pad ? player_pad_type() : -1, steam_deck(), touch, touch && !pad && window_osb_mode() != OSB_OFF);
 	overlay_toast_titled("Menu", body, TOAST_S);
 }
