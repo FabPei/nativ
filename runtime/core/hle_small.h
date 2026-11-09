@@ -52,6 +52,10 @@ static inline int hle_audio_port_slot(const uint32_t len[HLE_AUDIO_PORTS], uint3
 	const uint32_t i = handle - 1;
 	return i < HLE_AUDIO_PORTS && len[i] ? (int)i : -1;
 }
+/* sceAudioOutOutput's result on an open port: the samples it registered -- the port's length for a buffer, 0 for a NULL
+ * buffer (a wait for the output to drain). It returned 0 always; a sound thread that checks for its grain (one game's
+ * `cmp r0, #0x200; bne exit`) quit after its first buffer, and with it the game's audio and its movie player */
+static inline uint32_t hle_audio_output_result(uint32_t port_len, uint32_t buf) { return buf ? port_len : 0; }
 
 /* (AUTO-01 LBP-7) audio input: sceAudioInOpenPort(type, grain, freq, param). Types: 0 VOICE (16 kHz), 2 RAW (16 or 48 kHz);
  * one port per type; the handle is 1-based like an output port's. sceAudioInInput(port, dest) hands one grain of 16-bit mono

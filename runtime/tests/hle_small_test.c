@@ -73,6 +73,11 @@ int main(void) {
 	/* the open/release cycle a game runs per scene: 100 cycles never run out */
 	ok = 1; for (int k = 0; k < 100; k++) { int f = hle_audio_port_free_slot(len); ok &= f >= 0; if (f >= 0) { len[f] = 256; len[f] = 0; } }
 	check("audio: 100 open/release cycles never run out", ok);
+	/* sceAudioOutOutput returns the samples registered (Vita3K: the port's length), not 0: a sound thread that checks
+	 * for its grain of 512 quit after the first buffer */
+	check("audio: Output with a buffer returns the port length (512)", hle_audio_output_result(512, 0x81000000u) == 512);
+	check("audio: Output with a buffer returns the port length (256)", hle_audio_output_result(256, 0x81000000u) == 256);
+	check("audio: Output with a NULL buffer (drain wait) returns 0", hle_audio_output_result(512, 0) == 0);
 
 	HleNgsPatchSrc p[4] = {{0}};
 	int n = 0;

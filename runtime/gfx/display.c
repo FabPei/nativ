@@ -587,15 +587,15 @@ static void h_audio_output(Cpu *c) {   /* (port, buffer) */
 			}
 		}
 		if (clock_fixed()) audio_wait_guest(i, (uint64_t)port_len[i] * 1000000 / port_freq[i]);
-		RET(0); return;
+		RET(hle_audio_output_result(port_len[i], A1)); return;
 	}
 	uint64_t len = (uint64_t)port_len[i] * 1000000 / port_freq[i];
-	if (clock_fixed()) { audio_wait_guest(i, len); RET(0); return; }
+	if (clock_fixed()) { audio_wait_guest(i, len); RET(hle_audio_output_result(port_len[i], A1)); return; }
 	uint64_t t = now_us();
 	if (!port_next[i] || port_next[i] + len < t) port_next[i] = t;
 	if (port_next[i] > t) { int b = sched_block_begin(); usleep((useconds_t)(port_next[i] - t)); if (b) sched_block_end(); }
 	port_next[i] += len;
-	RET(0);
+	RET(hle_audio_output_result(port_len[i], A1));
 }
 
 /* ---- audio input (AUTO-01 LBP-7): a microphone that hears silence. Input hands one grain of zero samples and returns
