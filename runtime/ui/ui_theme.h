@@ -84,6 +84,18 @@ inline bool segmented(const char *const *labels, int n, int *v) {
 	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x * 0.25f, 0));
 	const float sp = ImGui::GetStyle().ItemSpacing.x, avail = ImGui::GetContentRegionAvail().x, x0 = ImGui::GetCursorPosX();
 	float xnext = x0;   /* where the next button would start on this line (after Button() the cursor is at the next line's start, so track it) */
+	/* (2026-11-10) a list with every value on a line of its own (a device list) keeps up / down through its values; a row of
+	 * values -- also one that wraps part of it to a second line -- is one D-pad stop: left / right pick, up / down leave */
+	bool one_per_line = n > 1;
+	{	float xs = x0;
+		for (int i = 0; i < n; i++) {
+			const float w = ImGui::CalcTextSize(labels[i]).x + 2.0f * ImGui::GetStyle().FramePadding.x;
+			const bool same = i && (xs + w <= x0 + avail + 0.5f);
+			if (same) one_per_line = false;
+			xs = (same ? xs : x0) + w + sp;
+		}
+	}
+	const bool row_stop = pad_nav && !one_per_line;
 	for (int i = 0; i < n; i++) {
 		ImVec2 ts = ImGui::CalcTextSize(labels[i]);
 		float w = ts.x + 2.0f * ImGui::GetStyle().FramePadding.x;
@@ -95,7 +107,13 @@ inline bool segmented(const char *const *labels, int n, int *v) {
 		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, on ? with_alpha(accent, 0.24f) : card_hi);
 		ImGui::PushStyleColor(ImGuiCol_ButtonActive, with_alpha(accent, 0.30f));
 		ImGui::PushStyleColor(ImGuiCol_Text, on ? accent : muted);
+		/* (2026-11-10, NIGHT-02) only the current value is a D-pad stop: up / down always leave the choice, also when it
+		 * stacks over two lines (a wrapped "Controller | Keyboard & mouse / Touch" took down onto Touch, picked it, and the
+		 * drawn controller below became unreachable); left / right pick (below). A click or a tap reaches every segment. */
+		const bool nonav = row_stop && !on;
+		if (nonav) ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
 		if (ImGui::Button(labels[i]) && !on) { *v = i; ch = true; }
+		if (nonav) ImGui::PopItemFlag();
 		if (ImGui::IsItemFocused()) fi = i;
 		if (i == *v) cur_id = ImGui::GetItemID();
 		ImGui::PopStyleColor(4);
@@ -103,9 +121,18 @@ inline bool segmented(const char *const *labels, int n, int *v) {
 	}
 	ImGui::PopStyleVar();
 	int keep = fi;
-	if (fi >= 0 && pad_nav && !ch) {
+	const bool following = prev == -2 && cur_id && row_stop;   /* (the frame after a left / right pick: the focus follows the value) */
+	if (following) { ImGui::SetFocusID(cur_id, ImGui::GetCurrentWindow()); ImGui::SetNavCursorVisible(true); keep = *v; }   /* (SetFocusID hides the nav cursor: the next press would no longer count as a pad press) */
+	else if (fi >= 0 && pad_nav && !ch) {
 		if (prev < 0) { if (fi != *v && cur_id) { ImGui::SetFocusID(cur_id, ImGui::GetCurrentWindow()); keep = *v; } }   /* (arrived: onto the value) */
 		else if (fi != prev && fi != *v) { *v = fi; ch = true; }   /* (moved within: that value) */
+	}
+	if (row_stop && !ch && (following || (fi >= 0 && fi == *v))) {   /* left / right on the value: the next / previous one (no wrap), the focus stays on the choice -- also in the frame the focus is still following (a quick second press is not lost) */
+		int dir = 0;
+		if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft, true) || ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true)) dir = -1;
+		if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight, true) || ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) dir = 1;
+		if (dir && *v + dir >= 0 && *v + dir < n) { *v += dir; ch = true; keep = -2; ImGui::NavMoveRequestCancel(); }
+		else if (dir) ImGui::NavMoveRequestCancel();   /* (at an end: stay, not off to a neighbour row) */
 	}
 	st->SetInt(key, keep);
 	return ch;
