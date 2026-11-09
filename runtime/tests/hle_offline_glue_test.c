@@ -41,6 +41,7 @@ int settings_save(void) { return 1; }
 #define ARG 0x1234u
 static uint32_t ev_ids[16], ev_caret[16], ev_str[16], ev_change[16], ev_arg; static int n_ev, close_in_handler;
 static uint32_t call(const char *name, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t s0);
+int sched_block_begin(void) { return 0; } void sched_block_end(void) {}   /* (NIGHT-01: a save keeps its minimum duration with the run slot released) */
 uint32_t guest_call(Cpu *parent, uint32_t fn, uint32_t a0, uint32_t a1) {
 	(void)parent;
 	if (fn != HANDLER || n_ev >= 16) return 0;
@@ -131,6 +132,20 @@ int main(void) {
 	check("loadexec: a SELF app0 doesn't ship is INVALID_SELF_PATH", call("sceAppMgrLoadExec", gstr(s, "app0:cardgame.self"), s + 0x300, 0, 0, 0) == HLE_APPMGR_ERR_INVALID_SELF_PATH);
 	check("loadexec: an existing SELF is NOEXEC (loud)", call("sceAppMgrLoadExec", gstr(s, "app0:other.self"), s + 0x300, 0, 0, 0) == HLE_APPMGR_ERR_NOEXEC);
 	check("loadexec: with an option parameter is INVALID; NULL path NULL_POINTER", call("sceAppMgrLoadExec", gstr(s, "app0:other.self"), s + 0x300, s + 0x400, 0, 0) == HLE_APPMGR_ERR_INVALID && call("sceAppMgrLoadExec", 0, 0, 0, 0, 0) == HLE_APPMGR_ERR_NULL_POINTER);
+	/* (NIGHT-01) a save keeps the console's minimum duration: a worker that saved instantly finished before its starter
+	 * marked it busy (a game waited forever on "Preparing save data...") */
+	{
+		uint32_t fl = s + 0x500; memset(G(fl), 0, 64);
+		WR32(fl, gstr(s + 0x600, "t.bin")); WR32(fl + 4, gstr(s + 0x640, "data")); WR32(fl + 8, 4); WR32(fl + 24, 1);
+		struct timespec t0, t1; clock_gettime(CLOCK_MONOTONIC, &t0);
+		uint32_t r = call("sceAppUtilSaveDataDataSave", 0, fl, 1, 0, 0);
+		clock_gettime(CLOCK_MONOTONIC, &t1);
+		double ms = (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
+		char q[300]; snprintf(q, sizeof q, "%s/savedata0/t.bin", dir); struct stat st;
+		printf("     DataSave took %.1f ms\n", ms);
+		check("save: DataSave writes the file and takes >= HLE_SAVE_LATENCY_MS (30 ms)", r == 0 && stat(q, &st) == 0 && st.st_size == 4 && ms >= HLE_SAVE_LATENCY_MS - 0.5);
+		remove(q); snprintf(q, sizeof q, "%s/savedata0", dir); rmdir(q);
+	}
 	remove(p); snprintf(p, sizeof p, "%s/app0", dir); rmdir(p); rmdir(dir);
 
 	if (fails) { printf("%d FAILED\n", fails); return 1; }

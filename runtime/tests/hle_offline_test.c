@@ -115,6 +115,9 @@ int main(void) {
 	hle_ime_event_bytes(ev, HLE_IME_EVENT_OPEN, 5, 0x81002000u, 3);
 	check("ime: OPEN bytes: id 0, an empty rectangle", le32(ev) == 0 && le32(ev + 4) == 0 && le32(ev + 12) == 0 && le32(ev + 16) == 0);
 
+	check("save latency: unset/empty/junk -> 30 ms, \"0\" -> 0, \"75\" -> 75, huge -> 1000", hle_save_latency_ms(0) == 30 && hle_save_latency_ms("") == 30 && hle_save_latency_ms("x") == 30 && hle_save_latency_ms("0") == 0 && hle_save_latency_ms("75") == 75 && hle_save_latency_ms("99999") == 1000);
+	check("save latency: wait = rest of the minimum, 0 once it passed", hle_save_wait_ns(30, 0) == 30000000 && hle_save_wait_ns(30, 12000000) == 18000000 && hle_save_wait_ns(30, 31000000) == 0 && hle_save_wait_ns(0, 0) == 0);
+
 	if (fails) { printf("%d FAILED\n", fails); return 1; }
 	printf("all passed\n");
 	return 0;

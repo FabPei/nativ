@@ -203,7 +203,22 @@ static void h_save_slot_param(Cpu *c) {   /* (slot id, SceAppUtilSaveDataSlotPar
 static void h_save_slot_set_param(Cpu *c) { RET(slot_write(A0, A1) == 0 ? 0 : 0x80100600u); }   /* (slot id, param, mount point): a slot not yet created is created */
 /* (SceAppUtilSaveDataFileSlot * (id +0, slotParam +4), SceAppUtilSaveDataFile[], count, mount point, *required KB)
  * file: path +0, buf +4, size +8, offset +16 (64-bit), mode +24; 64 bytes each */
+/* (NIGHT-01) the save keeps the console's minimum duration (hle_offline.h hle_save_latency_ms): a game whose worker
+ * finished before the starter marked it busy waited for it forever ("Preparing save data..."); the run slot is free
+ * meanwhile, as during any blocking call */
+static void save_io_time(const struct timespec *t0) {
+	static int ms = -1;
+	if (ms < 0) ms = hle_save_latency_ms(getenv("RECOMP_SAVE_LATENCY_MS"));
+	struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
+	int64_t left = hle_save_wait_ns(ms, (int64_t)(now.tv_sec - t0->tv_sec) * 1000000000 + (now.tv_nsec - t0->tv_nsec));
+	if (!left) return;
+	int b = sched_block_begin();
+	struct timespec d = { (time_t)(left / 1000000000), (long)(left % 1000000000) };
+	nanosleep(&d, 0);
+	if (b) sched_block_end();
+}
 static void h_save_data_save(Cpu *c) {
+	struct timespec t0; clock_gettime(CLOCK_MONOTONIC, &t0);
 	char dir[1024]; snprintf(dir, sizeof dir, "%s/savedata0", fs_root()); mkdir(dir, 0755);
 	for (uint32_t i = 0; i < A2; i++) {
 		uint32_t f = A1 + 64 * i, path = RD32(f), buf = RD32(f + 4), size = RD32(f + 8), mode = RD32(f + 24);
@@ -222,6 +237,7 @@ static void h_save_data_save(Cpu *c) {
 	}
 	if (A0) slot_write(RD32(A0), RD32(A0 + 4));   /* the slot: created or updated, its param replaced when one is given */
 	if (STK(0)) WR32(STK(0), 0);
+	save_io_time(&t0);
 	RET(0);
 }
 static void h_save_data_remove(Cpu *c) {   /* (slot, SceAppUtilSaveDataRemoveItem[] (44 bytes: path +0), count, mount) */

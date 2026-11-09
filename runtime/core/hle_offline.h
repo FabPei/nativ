@@ -255,4 +255,21 @@ static inline void hle_ime_event_bytes(uint8_t b[HLE_IME_EVENT_SIZE], uint32_t i
 	hle_put32(b, id);
 	if (id == HLE_IME_EVENT_UPDATE_TEXT) { hle_put32(b + 4, len); hle_put32(b + 12, len); hle_put32(b + 16, str); hle_put32(b + 24, (uint32_t)change); }
 }
+/* ---- save-data I/O time (NIGHT-01): on the console sceAppUtilSaveDataDataSave writes the memory card and commits
+ * it -- milliseconds. Games start a save worker and only afterwards mark it busy (store the thread, set a flag the
+ * worker clears when done); a worker that finishes before the starter's next instructions leaves the flag set for
+ * good. The host's write is instant, so under load the worker can win: the call keeps a minimum duration.
+ * RECOMP_SAVE_LATENCY_MS: unset = HLE_SAVE_LATENCY_MS, "0" = none, otherwise the value (at most 1000). */
+#define HLE_SAVE_LATENCY_MS 30
+static inline int hle_save_latency_ms(const char *env) {
+	if (!env || !*env) return HLE_SAVE_LATENCY_MS;
+	long v = 0;
+	for (const char *p = env; *p; p++) { if (*p < '0' || *p > '9') return HLE_SAVE_LATENCY_MS; v = v * 10 + (*p - '0'); if (v > 1000) v = 1000; }
+	return (int)v;
+}
+/* the nanoseconds still to wait once `elapsed_ns` have passed since the call began (0: none) */
+static inline int64_t hle_save_wait_ns(int latency_ms, int64_t elapsed_ns) {
+	int64_t left = (int64_t)latency_ms * 1000000 - elapsed_ns;
+	return left > 0 ? left : 0;
+}
 #endif
