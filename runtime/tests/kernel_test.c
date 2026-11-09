@@ -11,6 +11,7 @@
 #include <stdarg.h>
 #include "../core/kernel.c"
 __thread uint32_t recomp_last_pc;   /* (main.c defines it in the runtime: the write watch names the last guest pc) */
+void plat_thread_guard(void) {}   /* (platform_*.c defines it in the runtime: AUTO-01 LBP-9 stack guarantee; nothing here) */
 
 /* ---- the runtime kernel.c expects */
 uint8_t *recomp_mem;

@@ -19,6 +19,7 @@
 #include <stdarg.h>
 #include "../core/kernel.c"
 __thread uint32_t recomp_last_pc;   /* (main.c defines it in the runtime: the write watch names the last guest pc) */
+void plat_thread_guard(void) {}   /* (platform_*.c defines it in the runtime: AUTO-01 LBP-9 stack guarantee; nothing here) */
 void ev_log(const char *kind, const char *fmt, ...) { (void)kind; (void)fmt; }   /* events.c: not linked here */
 
 /* ---- the runtime kernel.c expects (same shim set as kernel_test.c) */
