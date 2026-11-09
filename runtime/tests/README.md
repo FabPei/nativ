@@ -429,3 +429,14 @@ module (`SPIRV_TMP=.` for a Windows spirv-val from WSL):
     cc -O1 -g -Wall -D_GNU_SOURCE -I ../gfx -I ../core -I ../../recompiler -I ../.. usse_iterraw_test.c ../gfx/usse.c ../gfx/usse_spirv.c -o /tmp/usse_iterraw_test -lm && /tmp/usse_iterraw_test
 
 It prints `11 checks, 0 failed` / `all passed` and exits 0 (fail-before: "+0 FToU"; with fa401fc's translator the sRGB check fails, 6 pow: it decoded a gamma texture before the pack).
+## NP service state offline: `np_offline_test.c`
+
+A game run offline (net_online() off, the default) is a Vita that is not signed in to PSN: np.c's `hle_np_offline`
+answers sceNpGetServiceState with SIGNED_OUT (1) and calls a callback registered with
+sceNpRegisterServiceStateCallback once, as cb(SIGNED_OUT, arg), at the next sceNpCheckCallback (not again while the
+state stays; not after Unregister). Before, these were generic stubs offline: the callback was never called. The test
+includes np.c with guest_call4 recorded (WSL):
+
+    cc -O1 -g -Wall -Wno-unused-function -D_GNU_SOURCE -I ../core -I ../net -I ../platform -I ../../recompiler -I ../.. np_offline_test.c -o /tmp/np_offline_test -lpthread -Wl,--unresolved-symbols=ignore-all && /tmp/np_offline_test
+
+It prints `all passed` and exits 0 (fail-before: hle_np_offline does not exist).

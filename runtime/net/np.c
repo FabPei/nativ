@@ -318,3 +318,27 @@ const HleEntry hle_np[] = {
 	{"sceNpLookupUserProfileAsync", h_np_lookup_profile}, {"sceNpLookupPollAsync", h_np_lookup_poll},
 	{0, 0},
 };
+
+/* ---- offline (net_online() off, the default): a Vita that is not signed in to PSN. Its service state is
+ * SCE_NP_SERVICE_STATE_SIGNED_OUT (1): sceNpGetServiceState answers it, and a registered state callback hears it once, at
+ * the next sceNpCheckCallback -- the same delivery as online's ONLINE above. Without it the import stubs never called the
+ * callback, and a game whose start-up waits to learn the NP state (signed in or not) before it decides on its offline path
+ * waited for ever behind a cleared screen. Every other NP call keeps stubret.h's "not initialised" answer. */
+static pthread_mutex_t np_off_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint32_t off_cb, off_arg; static int off_pending;
+static void h_np_off_state(Cpu *c) { if (A0) WR32(A0, 1); RET(0); }   /* SCE_NP_SERVICE_STATE_SIGNED_OUT */
+static void h_np_off_register_state(Cpu *c) { pthread_mutex_lock(&np_off_lock); off_cb = A0; off_arg = A1; off_pending = A0 != 0; pthread_mutex_unlock(&np_off_lock); RET(0); }
+static void h_np_off_unregister_state(Cpu *c) { pthread_mutex_lock(&np_off_lock); off_cb = 0; off_pending = 0; pthread_mutex_unlock(&np_off_lock); RET(0); }
+static void h_np_off_check_callback(Cpu *c) {
+	pthread_mutex_lock(&np_off_lock);
+	uint32_t cb = off_pending ? off_cb : 0, arg = off_arg; off_pending = 0;
+	pthread_mutex_unlock(&np_off_lock);
+	if (cb) { if (np_log()) fprintf(stderr, "    np (offline): service state SIGNED_OUT -> callback %#x\n", cb); guest_call4(c, cb, 1, arg, 0, 0); }
+	RET(0);
+}
+const HleEntry hle_np_offline[] = {
+	{"sceNpGetServiceState", h_np_off_state},
+	{"sceNpRegisterServiceStateCallback", h_np_off_register_state}, {"sceNpUnregisterServiceStateCallback", h_np_off_unregister_state},
+	{"sceNpCheckCallback", h_np_off_check_callback},
+	{0, 0},
+};
