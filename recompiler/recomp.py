@@ -1408,14 +1408,14 @@ class Fn:
                     else:
                         out.append(f" memcpy(G(ea + {es * k}), {p_} + {lane * es}, {es});")
                 post = [o for o in ops if o.type == ARM_OP_REG and md.reg_name(o.reg) in GPR and o is not ops[0]]
-                if i.writeback:   # one element transferred either way
+                if i.writeback or post:   # one element transferred either way; a post-increment register: capstone leaves writeback unset for [rN], rM
                     out.append(f" c->r[{base}] = ea + {es if alld else es * len(ds)};" if not post else f" c->r[{base}] = ea + {self.r(post[-1].reg, i)};")
                 out.append(" }")
                 return ["".join(out)]
             for k, dn in enumerate(ds):
                 out.append(f" c->vfp.d[{dn}] = RD64(ea + {8 * k});" if mn == "vld1" else f" WR64(ea + {8 * k}, c->vfp.d[{dn}]);")
             post = [o for o in ops if o.type == ARM_OP_REG and md.reg_name(o.reg) in GPR and o is not ops[0]]
-            if i.writeback:
+            if i.writeback or post:   # (capstone leaves writeback unset for a post-increment register: [rN], rM)
                 out.append(f" c->r[{base}] = ea + {8 * len(ds)};" if not post else f" c->r[{base}] = ea + {self.r(post[-1].reg, i)};")
             out.append(" }")
             return ["".join(out)]
