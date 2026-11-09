@@ -12,7 +12,8 @@
  * iterator, unit 0, into PA0. The translator emits SPIR-V, which this host can't execute, so the check is on what
  * the module does: result format 0 must pack the sample -- four float->uint conversions, three shifts and three ORs
  * more than the F32 module -- and a cube unit must translate exactly as F32 does. With SPIRV_VAL every module is
- * validated. fail-before: the result-format-0 module equals the F32 one (0 extra conversions).
+ * validated. fail-before: the result-format-0 module equals the F32 one (0 extra conversions); and (sRGB) the raw module
+ * decoding a gamma texture before the pack (6 pow, fa401fc).
  *
  *     cc -O1 -g -Wall -D_GNU_SOURCE -I ../gfx -I ../core -I ../../recompiler -I ../.. usse_iterraw_test.c ../gfx/usse.c ../gfx/usse_spirv.c -o /tmp/usse_iterraw_test -lm && /tmp/usse_iterraw_test
  *     (SPIRV_VAL=<spirv-val> also validates every module; SPIRV_TMP=<dir> for the module files, default /tmp)
@@ -60,6 +61,13 @@ static int count_op(const SpirvModule *m, uint32_t op) {
 	for (int i = 5; i < m->nwords; ) { uint32_t wc = m->words[i] >> 16; if ((m->words[i] & 0xFFFF) == op) c++; if (!wc) break; i += (int)wc; }
 	return c;
 }
+/* how many GLSL.std.450 Pow (26) the module computes: srgb_fixup's two curves (decode, encode) take one each per colour
+ * channel -- the raw-word module must carry only the encode (a gamma texture is NOT decoded on that path) */
+static int count_pow(const SpirvModule *m) {
+	int c = 0;
+	for (int i = 5; i < m->nwords; ) { uint32_t wc = m->words[i] >> 16; if ((m->words[i] & 0xFFFF) == 12 && wc >= 5 && m->words[i + 4] == 26) c++; if (!wc) break; i += (int)wc; }
+	return c;
+}
 static int validate(const SpirvModule *m, const char *name) {
 	const char *val = getenv("SPIRV_VAL"); if (!val || !*val) return 1;
 	const char *dir = getenv("SPIRV_TMP") ? getenv("SPIRV_TMP") : "/tmp";
@@ -72,7 +80,7 @@ static int validate(const SpirvModule *m, const char *name) {
 	remove(path);
 	return rc == 0;
 }
-typedef struct { int ok, ftou, shl, bor, words; } Shape;
+typedef struct { int ok, ftou, shl, bor, pw, words; } Shape;
 static Shape translate(const char *name, int result_fmt, uint32_t cube_mask) {
 	UsseProgram *p = load_nop_fragment();
 	UsseFragLayout fl; memset(&fl, 0, sizeof fl);
@@ -82,13 +90,13 @@ static Shape translate(const char *name, int result_fmt, uint32_t cube_mask) {
 	usse_spirv_set_canonical_varyings(1);
 	uint32_t sa[256] = {0}; int units[16] = {0}, nsmp = 0;
 	SpirvModule m = usse_spirv_translate(p, 0, &fl, sa, 16, units, &nsmp, 0, cube_mask, 0, 0);
-	Shape r = { m.ok, 0, 0, 0, m.nwords };
+	Shape r = { m.ok, 0, 0, 0, 0, m.nwords };
 	char what[160];
 	snprintf(what, sizeof what, "[%s] translates (%d sampler slot%s)", name, nsmp, nsmp == 1 ? "" : "s");
 	ck(m.ok && nsmp == 1, what);
 	if (!m.ok) printf("     err: %s\n", m.err);
 	else {
-		r.ftou = count_op(&m, 109); r.shl = count_op(&m, 196); r.bor = count_op(&m, 197);
+		r.pw = count_pow(&m); r.ftou = count_op(&m, 109); r.shl = count_op(&m, 196); r.bor = count_op(&m, 197);
 		snprintf(what, sizeof what, "[%s] spirv-val accepts the module%s", name, getenv("SPIRV_VAL") ? "" : " (SPIRV_VAL unset: skipped)");
 		ck(validate(&m, name), what);
 	}
@@ -109,8 +117,13 @@ int main(void) {
 	snprintf(what, sizeof what, "format 0 packs one unorm8x4 word: +%d FToU (4), +%d shifts (3), +%d ORs (3)",
 	         raw.ftou - f32.ftou, raw.shl - f32.shl, raw.bor - f32.bor);
 	ck(raw.ok && f32.ok && raw.ftou - f32.ftou == 4 && raw.shl - f32.shl == 3 && raw.bor - f32.bor == 3, what);
+	/* sRGB: the interpreter's raw texel (gfx_soft.c usse_texfn_raw) is the stored bytes -- no tex_gamma -- so a gamma
+	 * texture over plain data must not be decoded before the packing (srgb_fixup's decode half); a non-gamma texture
+	 * over an sRGB target is still re-encoded (its encode half: the GPU decoded the target's stored bytes) */
+	snprintf(what, sizeof what, "format 0: sRGB encode only, no decode (%d pow; F32 %d = both curves)", raw.pw, f32.pw);
+	ck(raw.ok && f32.ok && f32.pw == 6 && raw.pw == 3, what);
 	snprintf(what, sizeof what, "a cube unit keeps the float path (%d words, F32 cube %d)", cube.words, cubef.words);
-	ck(cube.ok && cubef.ok && cube.words == cubef.words && cube.ftou == cubef.ftou && cube.shl == cubef.shl, what);
+	ck(cube.ok && cubef.ok && cube.words == cubef.words && cube.ftou == cubef.ftou && cube.shl == cubef.shl && cube.pw == cubef.pw, what);
 
 	printf("%d checks, %d failed\n", checks, failed);
 	if (failed) { printf("FAILED\n"); return 1; }
