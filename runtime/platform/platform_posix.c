@@ -30,6 +30,7 @@ void *plat_reserve(size_t bytes) {
 	void *p = mmap(0, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
 	return p == MAP_FAILED ? 0 : p;
 }
+void plat_thread_guard(void) {}   /* (the signal handlers run on their own sigaltstack where one is set) */
 void plat_thread_name(char *buf, size_t n) { if (!n) return; buf[0] = 0; pthread_getname_np(pthread_self(), buf, n); }
 int plat_protect(void *p, size_t bytes, int writable) { return mprotect(p, bytes, writable < 0 ? PROT_NONE : writable ? PROT_READ | PROT_WRITE : PROT_READ); }
 size_t plat_page_size(void) { long ps = sysconf(_SC_PAGESIZE); return ps > 0 ? (size_t)ps : 4096; }

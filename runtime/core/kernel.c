@@ -566,6 +566,7 @@ static void *thread_main(void *p) {
 #endif
 		if (waitstats_on()) waitstats_name(t->name);
 	}
+	plat_thread_guard();   /* room for the fault handlers on a stack overflow (platform.h) */
 	recomp_runfast();   /* FPCR is per host thread */
 	cur_tid = t->uid; cur_thread = t;
 	extern uint32_t tls_block(void);
@@ -1806,6 +1807,7 @@ static void *fiber_main(void *p) {
 #endif
 	  if (waitstats_on()) waitstats_name(f->name);
 	}
+	plat_thread_guard();
 	recomp_runfast();
 	pthread_mutex_lock(&flock);
 	fiber_identity(f);

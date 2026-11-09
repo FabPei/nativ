@@ -101,6 +101,10 @@ static void install(void) {
 	                                     PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION, 0};
 	SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &pt, sizeof pt);
 }
+/* (AUTO-01 LBP-9) a guest thread's host thread keeps 64 KB for the vectored handler when its stack overflows: without it
+ * the handler of the first STATUS_STACK_OVERFLOW faulted again (its own frame on the last few KB) and the process ended
+ * with a bare 0xc0000005 -- no handler, no report (LittleBigPlanet, three runs). The main thread's is set in install() */
+void plat_thread_guard(void) { ULONG guarantee = 1 << 16; SetThreadStackGuarantee(&guarantee); }
 void plat_add_fault_hook(PlatFaultHook hook) { install(); if (nhooks < MAX_HOOKS) hooks[nhooks++] = hook; }
 void plat_set_crash_handler(PlatCrashFn fn) { crash_fn = fn; install(); }
 void plat_backtrace(FILE *f) {   /* addresses as module+offset: llvm-addr2line / llvm-symbolizer on the .exe (built with -g) names them */
