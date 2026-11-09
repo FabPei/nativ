@@ -1692,6 +1692,26 @@ static void emit_sample_nondep(Gen *g, const UsseIter *it, const uint32_t sa_tex
 	} else coord = result2(s, &s->func, SpvOpCompositeConstruct, t_vec(s, t_float(s), 2), u, v);
 	uint32_t texel = srgb_fixup(g, it->tex_unit, (g->snap_mask >> (it->tex_unit & 15) & 1) && !slot_is_cube(g, slot) ? snap_fetch(g, slot, it->tex_unit, u, v)
 	                                               : sample_lod(g, slot, it->tex_unit, coord, 0, 0, grad));
+	if (it->result_fmt == 0 && !slot_is_cube(g, slot)) {
+		/* result format 0 asks for no conversion: the texture unit hands over the texel's native packed
+		 * word, a U8U8U8U8 (or block-decoded) texel as ONE word, bytes R G B A from the low end -- what
+		 * usse_pack_iter_raw / gfx_soft.c's usse_texfn_raw give the interpreter. Writing four F32 words
+		 * instead left a program that moves PA0 bit for bit (a VBW copy to the U8 output) showing the
+		 * float bits of red as its colour: a full-screen menu background of yellow/blue noise.
+		 * The translator does not see texture formats: packing to unorm8 covers the 8-bit families and
+		 * BC (the interpreter's 1-word cases); wider texels are not covered (open: the 2-word raw case). */
+		uint32_t word = 0;
+		for (int c = 0; c < 4; c++) {
+			uint32_t f = composite_extract1(s, t_float(s), texel, (uint32_t)c);
+			f = glsl2(s, GLSLFMin, glsl2(s, GLSLFMax, f, c_float(s, 0.0f)), c_float(s, 1.0f));
+			uint32_t q = result1(s, &s->func, SpvOpConvertFToU, t_uint(s), glsl1(s, GLSLFloor, fop2(s, SpvOpFAdd, fop2(s, SpvOpFMul, f, c_float(s, 255.0f)), c_float(s, 0.5f))));
+			if (c) q = uop2(s, SpvOpShiftLeftLogical, q, c_uint(s, 8u * (uint32_t)c));
+			word = c ? uop2(s, SpvOpBitwiseOr, word, q) : q;
+		}
+		UOperand rd = dst; rd.type = TY_F32;   /* one whole 32-bit word */
+		write_raw_comp(g, &rd, 0, 0, word, ok);
+		return;
+	}
 	for (int c = 0; c < 4; c++) write_comp_f(g, &dst, 0, c, composite_extract1(s, t_float(s), texel, (uint32_t)c), ok);
 }
 /* fragment-shader prologue: pack every iterator (usse_fragment_layout) into PA exactly like

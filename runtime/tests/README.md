@@ -355,3 +355,17 @@ clamps, and an unknown (0) display scale. No SDL:
     cc -O1 -g -Wall -I ../ui overlay_scale_test.c -o /tmp/overlay_scale_test -lm && /tmp/overlay_scale_test
 
 It prints `all passed (11 ok)` and exits 0.
+
+## A texture iterator's native word on the GPU: `usse_iterraw_test.c`
+
+A fragment program's non-dependent texture read with result format 0 (no conversion) gets the texel's native packed
+word -- a U8U8U8U8 or block-decoded texel as one 32-bit word, R in the low byte -- as the interpreter gives it
+(gfx_soft.c `usse_texfn_raw` / usse.c `usse_pack_iter_raw`). usse_spirv.c's iterator prologue wrote four F32 words, so a
+program copying PA0 bit for bit to its U8 colour drew noise. The test translates a NOP fragment program with one such
+iterator for result format 1 (F32), 0, and 0 on a cube unit: format 0 must pack one unorm8x4 word (4 float->uint
+conversions, 3 shifts, 3 ORs more than F32), a cube unit keeps the float path; `SPIRV_VAL=<spirv-val>` validates every
+module (`SPIRV_TMP=.` for a Windows spirv-val from WSL):
+
+    cc -O1 -g -Wall -D_GNU_SOURCE -I ../gfx -I ../core -I ../../recompiler -I ../.. usse_iterraw_test.c ../gfx/usse.c ../gfx/usse_spirv.c -o /tmp/usse_iterraw_test -lm && /tmp/usse_iterraw_test
+
+It prints `10 checks, 0 failed` / `all passed` and exits 0 (fail-before: "+0 FToU").
