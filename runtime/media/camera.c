@@ -25,6 +25,7 @@
 #include "gfx.h"
 #include "settings.h"
 #include "overlay.h"
+#include "device_pick.h"   /* (UI-02b) settings "camera_device": the chosen camera by name, else the first */
 
 #define CAM_ERR_PARAM 0x802E0000u
 #define CAM_ERR_ALREADY_OPEN 0x802E0003u
@@ -83,12 +84,21 @@ static int res_dims(uint32_t res, uint32_t *w, uint32_t *h) {
 /* ---- the computer's camera (SDL3), opened on first use and kept open */
 static SDL_Camera *webcam; static int webcam_tried;
 static SDL_Surface *webcam_frame(void) {   /* the newest frame, or 0 (caller destroys it) */
+	{	/* (UI-02b) another camera chosen in the menu since it opened: that one from the next frame */
+		static char opened_for[128] = "\1"; char want[128]; settings_str("camera_device", "", want, sizeof want);
+		if (strcmp(want, opened_for)) { if (webcam) { SDL_CloseCamera(webcam); webcam = 0; } webcam_tried = 0; snprintf(opened_for, sizeof opened_for, "%s", want); }
+	}
 	if (!webcam && !webcam_tried) {
 		webcam_tried = 1;
 		if (!SDL_WasInit(SDL_INIT_CAMERA) && !SDL_InitSubSystem(SDL_INIT_CAMERA)) { fprintf(stderr, "camera: no camera subsystem (%s): using the light\n", SDL_GetError()); return 0; }
 		int n = 0; SDL_CameraID *ids = SDL_GetCameras(&n);
-		if (ids && n > 0) webcam = SDL_OpenCamera(ids[0], 0);
-		fprintf(stderr, "camera: %s\n", webcam ? "this computer's camera is the Vita's" : "no camera opened: using the light");
+		const char *names[16]; const int m = n < 16 ? n : 16;
+		for (int i = 0; i < m; i++) { const char *nm = SDL_GetCameraName(ids[i]); names[i] = nm ? nm : ""; }
+		char want[128]; settings_str("camera_device", "", want, sizeof want);
+		const int k = device_pick(names, m, want);
+		if (k >= 0) webcam = SDL_OpenCamera(ids[k], 0);
+		if (webcam) fprintf(stderr, "camera: this computer's camera is the Vita's: %s%s\n", names[k], want[0] && !device_present(names, m, want) ? " (the chosen one isn't connected: the first one instead)" : "");
+		else fprintf(stderr, "camera: no camera opened: using the light\n");
 		SDL_free(ids);
 	}
 	if (!webcam) return 0;

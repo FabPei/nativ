@@ -59,7 +59,10 @@
 #include "pad_family.h"   /* (UI-01e) the pad's own button names, shared with the launcher */
 #include "touch_controls.h"   /* (UI-01n) the on-screen buttons' layout, shared with window.c */
 #include "menu_sidebar.h"
-#include "menu_hint.h"   /* (UI-02a) the start hint, per device */   /* the sections' list (a controller reaches and chooses them: menu_sidebar_test) */
+#include "menu_hint.h"
+#include "device_pick.h"   /* (UI-02b) the chosen controller / camera, "not connected" */
+#include <string>
+#include <vector>   /* (UI-02a) the start hint, per device */   /* the sections' list (a controller reaches and chooses them: menu_sidebar_test) */
 #include "sysinfo.h"   /* the "Copy system info" text (U5) */
 #define STBI_NO_STDIO
 #include "third_party/stb/stb_image.h"   /* (its implementation: runtime/media/jpeg.c) */
@@ -125,6 +128,39 @@ int settings_reset_all(const char *const *keep);
 extern const char *const settings_default_keep[];
 }
 
+/* (UI-02b) a device choice by name: "Automatic" (the first one), each connected device, and the chosen one marked "not
+ * connected" while it isn't (the game then uses the first one) -- key: "pad_device" or "camera_device" */
+static void save_settings(void);   /* (below) */
+static void device_choice(const char *id, const char *key, const std::vector<std::string> &names) {
+	char want[128]; settings_str(key, "", want, sizeof want);
+	std::vector<std::string> opts{ui_tr("ctrl.in_auto")}; for (const std::string &n : names) opts.push_back(n);
+	int cur = 0;
+	if (want[0]) {
+		cur = -1;
+		for (size_t i = 0; i < names.size(); i++) if (device_same(names[i].c_str(), want, 1)) cur = (int)i + 1;
+		if (cur < 0) { opts.push_back(std::string(want) + " " + ui_tr("ctrl.not_connected")); cur = (int)opts.size() - 1; }
+	}
+	std::vector<std::string> ls; for (size_t i = 0; i < opts.size(); i++) ls.push_back(opts[i] + "##" + id + std::to_string(i));
+	std::vector<const char *> cs; for (const std::string &l : ls) cs.push_back(l.c_str());
+	int v = cur;
+	if (ui::segmented(cs.data(), (int)cs.size(), &v) && v != cur) {
+		if (v == 0) settings_set_str(key, "");
+		else if (v <= (int)names.size()) settings_set_str(key, names[v - 1].c_str());
+		save_settings();
+	}
+}
+static std::vector<std::string> pad_list(void) {
+	std::vector<std::string> v; int n = 0; SDL_JoystickID *ids = SDL_GetGamepads(&n);
+	for (int i = 0; ids && i < n; i++) { const char *nm = SDL_GetGamepadNameForID(ids[i]); v.push_back(nm ? nm : "Controller"); }
+	SDL_free(ids); return v;
+}
+static std::vector<std::string> camera_list(void) {
+	std::vector<std::string> v;
+	if (!SDL_WasInit(SDL_INIT_CAMERA) && !SDL_InitSubSystem(SDL_INIT_CAMERA)) return v;
+	int n = 0; SDL_CameraID *ids = SDL_GetCameras(&n);
+	for (int i = 0; ids && i < n; i++) { const char *nm = SDL_GetCameraName(ids[i]); v.push_back(nm ? nm : "Camera"); }
+	SDL_free(ids); return v;
+}
 /* (U7) a settings row's mark: "default" while the value equals the shared default (setting_defaults.h), else the
  * row's timing note -- "next scene" (render scale applies at the game's next scene) or "after restart" (values the
  * game reads only at start) */
@@ -583,6 +619,8 @@ static void page_controls(void) {
 			int v = 0; for (int i = 0; i < 3; i++) if (!strcmp(cur, ids[i])) v = i;
 			if (ui::segmented(names, 3, &v)) { settings_set_str("input_mode", ids[v]); save_settings(); }
 		}
+		ui::row(ui_tr("ctrl.pad_device"), ui_tr("ctrl.pad_device_help"), note_s("pad_device"));   /* (UI-02b: the game switches as the menu closes) */
+		device_choice("pd", "pad_device", pad_list());
 		ui::row(ui_tr("ctrl.mouse_look"), ui_tr("ctrl.mouse_look_help"), note_int("mouse_look", settings_int("mouse_look", 1)));
 		{ bool look = settings_int("mouse_look", 1) != 0; if (ui::toggle("ml", &look)) { settings_set_int("mouse_look", look ? 1 : 0); save_settings(); } }
 		ui::row(ui_tr("ctrl.mouse_aim"), ui_tr("ctrl.mouse_aim_help"), note_int("raw_look", window_raw_look()));
@@ -631,6 +669,7 @@ static void page_controls(void) {
 			int v = 0; for (int i = 0; i < 3; i++) if (!strcmp(cur, ids[i])) v = i;
 			if (ui::segmented(names, 3, &v)) { settings_set_str("camera", ids[v]); save_settings(); }
 			if (v == 0) { bool lit = camera_light() != 0; ImGui::SameLine(); ImGui::TextDisabled("%s", ui_tr("ctrl.cam_lamp_lbl")); ImGui::SameLine(); if (ui::toggle("lamp", &lit)) camera_light_set(lit ? 1 : 0); }
+			if (v == 1) { ImGui::TextDisabled("%s", ui_tr("ctrl.cam_device")); device_choice("cd", "camera_device", camera_list()); }   /* (UI-02b) */
 		}
 		ui::rows_end();
 	}

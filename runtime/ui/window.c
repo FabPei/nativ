@@ -47,6 +47,7 @@
 #include "audio_pace.h"
 #include "dump_fit.h"
 #include "touch_controls.h"
+#include "device_pick.h"   /* (UI-02b) the chosen controller by name, else the first */
 
 enum { SELECT = 0x1, START = 0x8, UP = 0x10, RIGHT = 0x20, DOWN = 0x40, LEFT = 0x80, LTRIG = 0x100, RTRIG = 0x200,
        TRIANGLE = 0x1000, CIRCLE = 0x2000, CROSS = 0x4000, SQUARE = 0x8000,
@@ -201,6 +202,12 @@ int window_osb_state(float *size, unsigned *held, unsigned *bits, float knob[4])
 }
 /* a controller or the keyboard took over: auto hides them, and what a finger held on them lets go */
 static void osb_other_input(void) { if (osb_touch_last) { osb_touch_last = 0; if (osb_mode == OSB_AUTO) osb_release(); } }
+/* (UI-02b) the player's controller: settings "pad_device" names one (SDL's name for it; "" = automatic, the first one).
+ * pad_choose opens that one when it is connected, else the first one there -- as a pad connects or goes, and when the
+ * setting may have changed (the menu closed): a chosen pad that is gone falls back to another instead of to none, and
+ * takes over again when it comes back */
+static char pad_want[128];
+static int pad_rechoose;
 static void kb_reload(void) {   /* the bindings from settings (at start, and when the menu closes: a rebind may have changed them) */
 	for (int i = 0; i < KB_N; i++) {
 		char b[48]; const char *name = settings_str(kb_binds[i].key, kb_binds[i].def, b, sizeof b);
@@ -209,6 +216,7 @@ static void kb_reload(void) {   /* the bindings from settings (at start, and whe
 	}
 	char sb[16]; shoulders_swapped = !strcmp(settings_str("shoulder_buttons", "triggers", sb, sizeof sb), "bumpers");
 	osb_reload();
+	{	char b[128]; snprintf(pad_want, sizeof pad_want, "%s", settings_str("pad_device", "", b, sizeof b)); pad_rechoose = 1; }   /* (UI-02b) */
 }
 int window_kb_count(void) { return KB_N; }
 const char *window_kb_label(int i) { return i >= 0 && i < KB_N ? kb_binds[i].label : ""; }
@@ -1011,6 +1019,31 @@ static void pad_second(SDL_Gamepad *pad, int k, int dn) {
 }
 /* display.c's layout card is offered only with a controller there: SDL's own list too, before the loop has seen its event */
 static int pad_connected;   /* (the window loop's gamepad, for other threads) */
+static void pad_close(SDL_Gamepad **pp) {   /* the player's controller let go: nothing it held stays held */
+	if (!*pp) return;
+	SDL_CloseGamepad(*pp); *pp = 0;
+	__atomic_store_n(&pad_connected, 0, __ATOMIC_RELAXED); pad_gyro = 0; motion_lost(); gamepad_touch_release(); buttons = 0; for (int i = 0; i < 4; i++) sticks[i] = 128;
+}
+static void pad_choose(SDL_Gamepad **pp) {   /* (UI-02b) open the chosen controller, else the first connected one */
+	int n = 0; SDL_JoystickID *ids = SDL_GetGamepads(&n);
+	const char *names[16]; const int m = n < 16 ? n : 16;
+	for (int i = 0; i < m; i++) { const char *nm = SDL_GetGamepadNameForID(ids[i]); names[i] = nm ? nm : ""; }
+	const int k = device_pick(names, m, pad_want);
+	const SDL_JoystickID want = k >= 0 ? ids[k] : 0, cur = *pp ? SDL_GetGamepadID(*pp) : 0;
+	if (want != cur) {
+		pad_close(pp);
+		if (want && (*pp = SDL_OpenGamepad(want)) != 0) {
+			__atomic_store_n(&pad_connected, 1, __ATOMIC_RELAXED);
+			/* a DS4/DualSense's gyroscope and accelerometer stream only once asked for (SDL's HIDAPI driver) */
+			int g = SDL_GamepadHasSensor(*pp, SDL_SENSOR_GYRO) && SDL_SetGamepadSensorEnabled(*pp, SDL_SENSOR_GYRO, true);
+			int a = SDL_GamepadHasSensor(*pp, SDL_SENSOR_ACCEL) && SDL_SetGamepadSensorEnabled(*pp, SDL_SENSOR_ACCEL, true);
+			pad_gyro = g && a;
+			fprintf(stderr, "gamepad: %s%s%s%s\n", SDL_GetGamepadName(*pp) ? SDL_GetGamepadName(*pp) : "?", SDL_GetNumGamepadTouchpads(*pp) > 0 ? ", touchpad" : "", pad_gyro ? ", gyro" : "",
+			        pad_want[0] ? (device_present(names, m, pad_want) ? " (the chosen one)" : " (the chosen one isn't connected: the first one instead)") : "");
+		}
+	}
+	SDL_free(ids);
+}
 int window_gamepad_connected(void) { return __atomic_load_n(&pad_connected, __ATOMIC_RELAXED) || (active && SDL_HasGamepad()); }
 /* keyboard or mouse tried to play the game in the PS TV layout, a controller's only: the notice why, once a run */
 static int kbm_pstv_said;
@@ -1203,15 +1236,8 @@ void window_run(void *(*fn)(void *), void *arg) {
 					if (dn) { kbm_used(); kbm_auto = 1; snprintf(kbm_why, sizeof kbm_why, "the key %s", SDL_GetKeyName(e.key.key)); }
 				}
 			}
-			if (e.type == SDL_EVENT_GAMEPAD_ADDED && !pad && (pad = SDL_OpenGamepad(e.gdevice.which)) != 0) {
-				__atomic_store_n(&pad_connected, 1, __ATOMIC_RELAXED);
-				/* a DS4/DualSense's gyroscope and accelerometer stream only once asked for (SDL's HIDAPI driver) */
-				int g = SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO) && SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_GYRO, true);
-				int a = SDL_GamepadHasSensor(pad, SDL_SENSOR_ACCEL) && SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_ACCEL, true);
-				pad_gyro = g && a;
-				fprintf(stderr, "gamepad: %s%s%s\n", SDL_GetGamepadName(pad) ? SDL_GetGamepadName(pad) : "?", SDL_GetNumGamepadTouchpads(pad) > 0 ? ", touchpad" : "", pad_gyro ? ", gyro" : "");
-			}
-			if (e.type == SDL_EVENT_GAMEPAD_REMOVED && pad && SDL_GetGamepadID(pad) == e.gdevice.which) { SDL_CloseGamepad(pad); pad = 0; __atomic_store_n(&pad_connected, 0, __ATOMIC_RELAXED); pad_gyro = 0; motion_lost(); gamepad_touch_release(); buttons = 0; for (int i = 0; i < 4; i++) sticks[i] = 128; }
+			if (e.type == SDL_EVENT_GAMEPAD_REMOVED && pad && SDL_GetGamepadID(pad) == e.gdevice.which) pad_close(&pad);
+			if (e.type == SDL_EVENT_GAMEPAD_ADDED || e.type == SDL_EVENT_GAMEPAD_REMOVED) pad_choose(&pad);   /* (UI-02b: the chosen one, else the first) */
 			if (e.type == SDL_EVENT_GAMEPAD_SENSOR_UPDATE) {
 				if (e.gsensor.sensor == SDL_SENSOR_ACCEL) motion_feed_accel(e.gsensor.data, e.gsensor.sensor_timestamp);
 				else if (e.gsensor.sensor == SDL_SENSOR_GYRO) motion_feed_gyro(e.gsensor.data, e.gsensor.sensor_timestamp);
@@ -1311,6 +1337,7 @@ void window_run(void *(*fn)(void *), void *arg) {
 			static uint64_t last; uint64_t t = now_us(); double dt = last ? (t - last) / 1e6 : 0; last = t;
 			if (dt > 0.1) dt = 0.1;
 			static int loaded; if (!loaded) { loaded = 1; kb_reload(); pad_reload(); }
+			if (pad_rechoose) { pad_rechoose = 0; pad_choose(&pad); }   /* (UI-02b: "pad_device" read anew -- at start, and as the menu closes) */
 			char mb[8]; const char *mode = settings_str("input_mode", "auto", mb, sizeof mb);
 			int on = !strcmp(mode, "kbm") ? 1 : !strcmp(mode, "pad") ? 0 : kbm_auto;
 			const int pstv = display_pstv_active();   /* the PS TV layout is a controller's only: no keyboard-and-mouse scheme, no capture */

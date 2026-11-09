@@ -40,7 +40,8 @@
 #include "file_browse.h"   /* (UI-01f) the own file / folder browser's listing */
 #include "library_info.h"   /* (UI-01l) a game's own name, play time, size: the list's columns */
 #include "export_progress.h"
-#include "pad_diagram.h"   /* (UI-02c) the drawn controller of Controls > Mapping */   /* (EXPORT-01a) what the AppImage export prints, read back */
+#include "pad_diagram.h"
+#include "device_pick.h"   /* (UI-02b) the chosen controller / camera by name, the "not connected" mark */   /* (UI-02c) the drawn controller of Controls > Mapping */   /* (EXPORT-01a) what the AppImage export prints, read back */
 #include "pad_family.h"   /* (UI-01e) the controller in use and its buttons' names, shared with the in-game menu */
 #include <ctime>
 #include <SDL3/SDL.h>
@@ -1566,6 +1567,84 @@ static void target_write(const SetTarget &t, const std::string &k, const std::st
 	Ini disk = ini_load(t.path); ini_set(disk, k, v); ini_save(disk, t.path, t.header);
 }
 static std::string tget(const SetTarget &t, const char *k, const char *def) { const std::string *v = ini_find(*t.x, k); return v ? *v : def; }
+/* ---- (UI-02b) the devices to choose: the controller that plays ("pad_device") and the camera that is the Vita's rear one
+ * ("camera" light|dark|webcam + "camera_device"), by the names SDL gives them -- the game opens the chosen one when it is
+ * connected, else the first one (device_pick.h). The lists come from SDL once a second (the camera's subsystem only once
+ * this page is shown); a screenshot run's from ATIV_SHOT_DEVICES="pad:<name>/<ps|xbox|deck|switch>;cam:<name>;..." */
+struct DevList { std::vector<std::string> pads, pad_kind, cams; Uint64 at = 0; bool cams_on = false; };
+static DevList g_devs;
+static const char *fam_name(int f) { return f == PAD_FAM_XBOX ? "Xbox" : f == PAD_FAM_DECK ? "Steam Deck" : f == PAD_FAM_SWITCH ? "Switch" : "PlayStation"; }
+static const DevList &devices(void) {
+	const Uint64 now = SDL_GetTicks();
+	if (g_devs.at && now - g_devs.at < 1000) return g_devs;
+	g_devs.at = now; g_devs.pads.clear(); g_devs.pad_kind.clear(); g_devs.cams.clear();
+	if (const char *fake = getenv("ATIV_SHOT_DEVICES"); fake && g_shot_mode) {
+		std::string s = fake;
+		for (size_t a = 0; a < s.size(); ) {
+			size_t e = s.find(';', a); if (e == std::string::npos) e = s.size();
+			const std::string it = s.substr(a, e - a); a = e + 1;
+			if (it.rfind("pad:", 0) == 0) { const size_t sl = it.rfind('/'); const std::string k = sl == std::string::npos ? "xbox" : it.substr(sl + 1);
+				g_devs.pads.push_back(it.substr(4, sl == std::string::npos ? std::string::npos : sl - 4));
+				g_devs.pad_kind.push_back(fam_name(k == "ps" ? PAD_FAM_PS : k == "deck" ? PAD_FAM_DECK : k == "switch" ? PAD_FAM_SWITCH : PAD_FAM_XBOX)); }
+			else if (it.rfind("cam:", 0) == 0) g_devs.cams.push_back(it.substr(4));
+		}
+		return g_devs;
+	}
+	int n = 0; SDL_JoystickID *ids = SDL_GetGamepads(&n);
+	const char *deck = getenv("SteamDeck");
+	for (int i = 0; ids && i < n; i++) { const char *nm = SDL_GetGamepadNameForID(ids[i]); g_devs.pads.push_back(nm ? nm : "Controller");
+		g_devs.pad_kind.push_back(fam_name(pad_family((int)SDL_GetGamepadTypeForID(ids[i]), deck && !strcmp(deck, "1")))); }
+	SDL_free(ids);
+	if (!g_devs.cams_on) g_devs.cams_on = SDL_WasInit(SDL_INIT_CAMERA) || SDL_InitSubSystem(SDL_INIT_CAMERA);
+	if (g_devs.cams_on) { int m = 0; SDL_CameraID *c = SDL_GetCameras(&m); for (int i = 0; c && i < m; i++) { const char *nm = SDL_GetCameraName(c[i]); g_devs.cams.push_back(nm ? nm : "Camera"); } SDL_free(c); }
+	return g_devs;
+}
+/* one choice row: labels for the options, the index chosen now; returns the index chosen this frame (-1 none) */
+static int choice_row(const char *id, const char *label, const char *expl, const std::vector<std::string> &opts, int cur, bool is_default) {
+	ui::row(label, expl, is_default ? "default" : nullptr);
+	ImGui::PushID(id);
+	std::vector<std::string> ls; for (size_t i = 0; i < opts.size(); i++) ls.push_back(opts[i] + "##o" + std::to_string(i));
+	std::vector<const char *> names; for (const std::string &l : ls) names.push_back(l.c_str());
+	int v = cur; const bool hit = ui::segmented(names.data(), (int)names.size(), &v);
+	ImGui::PopID();
+	return hit && v != cur ? v : -1;
+}
+static void controller_row(const SetTarget &t) {
+	const DevList &d = devices();
+	const std::string want = tget(t, "pad_device", "");
+	std::vector<std::string> opts{"Automatic"};
+	for (size_t i = 0; i < d.pads.size(); i++) opts.push_back(d.pads[i] + " (" + d.pad_kind[i] + ")");
+	std::vector<const char *> nm; for (const std::string &s : d.pads) nm.push_back(s.c_str());
+	int cur = 0;
+	if (!want.empty()) {
+		cur = -1;
+		for (size_t i = 0; i < d.pads.size(); i++) if (device_same(d.pads[i].c_str(), want.c_str(), 1)) cur = (int)i + 1;
+		if (cur < 0) { opts.push_back(want + " (not connected)"); cur = (int)opts.size() - 1; }
+	}
+	const int k = choice_row("pad_device", "Controller", d.pads.empty() ? "None connected now. Automatic takes the first one that is."
+	                                                      : "The one that plays. Automatic takes the first one connected; a chosen one that isn't connected: the first one, until it's back.",
+	                         opts, cur, want.empty());
+	if (k == 0) target_write(t, "pad_device", "");
+	else if (k > 0 && k <= (int)d.pads.size()) target_write(t, "pad_device", d.pads[k - 1]);
+}
+static void camera_row(const SetTarget &t) {
+	const DevList &d = devices();
+	const std::string mode = tget(t, "camera", "light"), want = tget(t, "camera_device", "");
+	std::vector<std::string> opts{"A lamp (made up)", "A dark room"};
+	for (const std::string &c : d.cams) opts.push_back(c);
+	int cur = mode == "dark" ? 1 : 0;
+	if (mode == "webcam") {
+		cur = -1;
+		for (size_t i = 0; i < d.cams.size(); i++) if (want.empty() ? i == 0 : device_same(d.cams[i].c_str(), want.c_str(), 1)) cur = (int)i + 2;
+		if (cur < 0) { opts.push_back((want.empty() ? std::string("This computer's camera") : want) + " (not connected)"); cur = (int)opts.size() - 1; }
+	}
+	const int k = choice_row("camera_device", "Rear camera", d.cams.empty() ? "What the game's camera sees. No camera found on this computer: a made-up picture (F7 turns the lamp on and off in a game)."
+	                                                         : "What the game's camera sees: a made-up picture (F7 turns the lamp on and off in a game), or one of this computer's cameras.",
+	                         opts, cur, mode == "light");
+	if (k == 0) { target_write(t, "camera", "light"); target_write(t, "camera_device", ""); }
+	else if (k == 1) { target_write(t, "camera", "dark"); target_write(t, "camera_device", ""); }
+	else if (k >= 2 && k - 2 < (int)d.cams.size()) { target_write(t, "camera", "webcam"); target_write(t, "camera_device", d.cams[k - 2]); }
+}
 static void seg_row(const SetTarget &t, const char *label, const char *expl, const char *key, const char *def, std::initializer_list<std::pair<const char *, const char *>> opts) {
 	std::string cur = tget(t, key, def);
 	ui::row(label, expl, cur == def ? "default" : nullptr);   /* (the in-game menu's "default" mark: U7) */
@@ -2030,6 +2109,7 @@ static void settings_modal(void) {
 			seg_row(t, "On-screen stats", "Frame rate and timings over the game. F1 cycles them.", "osd", "0", {{"0", "Off"}, {"1", "FPS"}, {"2", "Full"}});
 		} else if (g_settings_tab == 1) {
 			seg_row(t, "Play with", "Automatic follows the last device you touch.", "input_mode", "auto", {{"auto", "Automatic"}, {"pad", "Controller"}, {"kbm", "Keyboard & mouse"}});
+			controller_row(t);   /* (UI-02b) */
 			toggle_row(t, "Mouse look", "The mouse turns the camera and aims; left button R, right button L.", "mouse_look", true);
 			seg_row(t, "Mouse aim", "Direct: the game turns exactly as far as the mouse moves (Uncharted, Unit 13, Killzone). Stick: the mouse moves the right stick. F8 switches in a game.", "raw_look", "1", {{"1", "Direct"}, {"0", "Stick"}});
 			slider_row(t, "Mouse sensitivity", nullptr, "mouse_sens", 1.0, 0.1f, 5.0f, "%.2f×", 1, ImGuiSliderFlags_Logarithmic);
@@ -2039,6 +2119,7 @@ static void settings_modal(void) {
 			toggle_row(t, "Gyro", "A controller's gyro as the Vita's motion sensor.", "gyro", true);
 			seg_row(t, "A level controller is a Vita held", "Upright, as in your hands, or flat on a table.", "gyro_pose", "upright", {{"upright", "Upright"}, {"flat", "Flat"}});
 			slider_row(t, "Gyro sensitivity", nullptr, "gyro_sens", 1.0, 0.25f, 3.0f, "%.2f×");
+			camera_row(t);   /* (UI-02b) */
 			mapping_rows(t);
 		} else {
 			slider_row(t, "Volume", nullptr, "volume", 1.0, 0.0f, 100.0f, "%.0f%%", 100.0f);
