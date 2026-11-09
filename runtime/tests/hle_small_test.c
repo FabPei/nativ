@@ -42,6 +42,14 @@ int main(void) {
 	for (int k = 0; k < HLE_AUDIO_PORTS; k++) { int s = hle_audio_port_free_slot(len); ok &= s == k; if (s >= 0) len[s] = 256; }
 	check("audio: 8 opens take slots 0..7", ok);
 	check("audio: a 9th open finds no slot (PORT_FULL)", hle_audio_port_free_slot(len) == -1);
+	/* (AUTO-01 TW-30) RECOMP_TOUCH: front entries as before, @b entries on the back panel only */
+	{ int x = -1, y = -1; const char *sc = "100-105:1280,770;200-300:960,500@b;250:10,20";
+	  check("touch script: a front entry touches port 0", hle_touch_script(sc, 0, 103, &x, &y) && x == 1280 && y == 770);
+	  check("touch script: a front entry leaves the back alone", !hle_touch_script(sc, 1, 103, &x, &y));
+	  check("touch script: an @b entry touches port 1", hle_touch_script(sc, 1, 220, &x, &y) && x == 960 && y == 500);
+	  check("touch script: an @b entry leaves the front alone", !hle_touch_script(sc, 0, 220, &x, &y));
+	  check("touch script: front and back in one frame", hle_touch_script(sc, 0, 250, &x, &y) && x == 10 && y == 20 && hle_touch_script(sc, 1, 250, &x, &y) && x == 960);
+	  check("touch script: outside every range, or none, nothing", !hle_touch_script(sc, 0, 99, &x, &y) && !hle_touch_script(sc, 1, 301, &x, &y) && !hle_touch_script(0, 0, 100, &x, &y)); }
 	/* (AUTO-01 TW-27) RECOMP_MOTION: scripted accelerometer ranges, a /p shake flips x and y every p frames */
 	{ float a[3] = {9, 9, 9}; const char *sc = "100-200:2.5,2.5,-1/4;300:0,-1,0";
 	  check("motion script: before any range, nothing", !hle_motion_script(sc, 99, a) && a[0] == 9);

@@ -983,8 +983,8 @@ static int pstv_port_ok(uint32_t port) { if (!port) return 1; __atomic_store_n(&
 static void h_ctrl_read2(Cpu *c) { if (!pstv_port_ok(A0)) { RET(SCE_CTRL_ERROR_INVALID_ARG); return; } read_wait(&ctrl_read_edge[A0 & 3]); ctrl_peek(c, A0 != 0); }
 static void h_ctrl_peek2(Cpu *c) { if (!pstv_port_ok(A0)) { RET(SCE_CTRL_ERROR_INVALID_ARG); return; } ctrl_peek(c, A0 != 0); }
 /* SceTouchData (0x90 bytes, VitaSDK psp2/touch.h): u64 timestamp, u32 status, u32 report count, 8
- * reports {u8 id, u8 force, s16 x, s16 y, u8 reserved[8], u16 info}. RECOMP_TOUCH="from-to:x,y;..."
- * (frame ranges, front panel coordinates 1920x1088) touches the front panel in scripted runs.
+ * reports {u8 id, u8 force, s16 x, s16 y, u8 reserved[8], u16 info}. RECOMP_TOUCH="from-to:x,y[@b];..."
+ * (frame ranges, front panel coordinates 1920x1088; @b: the back panel, 0..1919 x 108..889) touches the panels in scripted runs.
  * Each new contact gets a new report id (counting up modulo 128, the id space SceSystemGesture
  * tracks), as the panels give each touch its own; not a fixed one: gesture.c follows a touch by its id and,
  * like the firmware, won't restart a DRAG for an id whose drag already ended -- with every touch
@@ -1002,14 +1002,7 @@ static void h_touch_peek(Cpu *c) {   /* (port, SceTouchData *, count) */
 	int keys[TOUCH_SLOTS], xs[TOUCH_SLOTS], ys[TOUCH_SLOTS], n = 0; uint8_t ids[TOUCH_SLOTS];
 	extern int window_touch_contacts(int port, int *keys, int *xs, int *ys, int max);
 	n = window_touch_contacts((int)port, keys, xs, ys, TOUCH_SLOTS);
-	for (const char *q = script; port == 0 && !n && q && *q; ) {
-		unsigned long a = strtoul(q, (char **)&q, 10), z = a, x = 0, y = 0;
-		if (*q == '-') z = strtoul(q + 1, (char **)&q, 10);
-		if (*q == ':') x = strtoul(q + 1, (char **)&q, 10);
-		if (*q == ',') y = strtoul(q + 1, (char **)&q, 10);
-		if (script_clock() >= a && script_clock() <= z) { keys[0] = 0; xs[0] = (int)x; ys[0] = (int)y; n = 1; break; }
-		if (*q == ';') q++; else break;
-	}
+	if (!n && hle_touch_script(script, port, script_clock(), &xs[0], &ys[0])) { keys[0] = 0; n = 1; }   /* front, or @b entries on the back (hle_small.h); on the script clock (frames, or ms with RECOMP_SCRIPT_MS) */
 	input_rec_init();
 	int played = 0;
 	if (play_loaded) {   /* the recording's contacts, slot by slot, with its ids */

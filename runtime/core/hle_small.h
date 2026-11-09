@@ -93,6 +93,23 @@ static inline int hle_motion_script(const char *q, uint64_t frame, float acc[3])
 	return 0;
 }
 
+/* (AUTO-01 TW-30) the scripted touch of a headless run, RECOMP_TOUCH="from-to:x,y[@b];...": an entry touches the front
+ * panel (1920x1088), or with @b the back panel, in its own coordinates (0..1919 x 108..889, sceTouchGetPanelInfo).
+ * Tearaway's first level asks "Tap & hold the rear touch pad"; the script reached the front only. 1 with x, y when an
+ * entry for this port (0 front, 1 back) covers frame, the first such entry */
+static inline int hle_touch_script(const char *q, uint32_t port, uint64_t frame, int *x, int *y) {
+	while (q && *q) {
+		char *e; unsigned long a = strtoul(q, &e, 10), z = a, px = 0, py = 0; uint32_t pp = 0; q = e;
+		if (*q == '-') { z = strtoul(q + 1, &e, 10); q = e; }
+		if (*q == ':') { px = strtoul(q + 1, &e, 10); q = e; }
+		if (*q == ',') { py = strtoul(q + 1, &e, 10); q = e; }
+		if (*q == '@') { pp = q[1] == 'b' || q[1] == '1'; q += q[1] ? 2 : 1; }
+		if (pp == port && frame >= a && frame <= z) { *x = (int)px; *y = (int)py; return 1; }
+		if (*q == ';') q++; else break;
+	}
+	return 0;
+}
+
 /* NGS: one patch's source side, as the host keeps it */
 typedef struct { uint32_t src; int32_t out, sub; int active; } HleNgsPatchSrc;
 /* the slot a new patch from (src, out) takes: the requested one, or with -1 the lowest one no active patch uses */
