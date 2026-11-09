@@ -12,7 +12,8 @@ Then optionally "VARS", u32 count, count x (u32 address, char name[60]): the imp
 Ghidra's Vita loader gives each one a 0x1000-byte slot from 0xfff00000, in import table order.
 
 A module loaded with the program (mkimage.py ... --module) also gets "EXPT", u32 count, count x
-(u32 address, char name[60]) (its exported functions, which the host resolves imports to) and
+(u32 address, char name[60]) (its exported functions, which the host resolves imports to), "EXPL" for the names longer
+than 59 characters (u32 count, count x (u32 address, u16 length, name)), and
 "MSTA", u32 module_start (run before the program's), and "MSTO", u32 module_stop when it has one (run when a module
 loaded on demand is unloaded: runtime/core/modload.c). The program's image has "PPRM", u32 address
 of its process parameters (sceKernelGetProcessParam).
@@ -65,9 +66,7 @@ def main():
         if is_module and "exports" in d:
             names = known_names()
             ex = [(a, names.get((lib, nid), f"{lib}_{nid:08X}")) for lib, nid, a, var in d["exports"] if not var and lib]
-            f.write(b"EXPT" + struct.pack("<I", len(ex)))
-            for a, n in ex:
-                f.write(struct.pack("<I", a) + n.encode()[:59].ljust(60, b"\0"))
+            write_exports(f, ex)
             start = d["functions"].get("module_start")
             if start is not None:
                 start = next((a for lib, nid, a, var in d["exports"] if nid == 0x935CD196), start)
@@ -82,10 +81,23 @@ def main():
             names = known_names()
             ex = [(a, names.get((lib, nid), f"{lib}_{nid:08X}")) for lib, nid, a, var in d["exports"] if not var and lib]
             if ex:
-                f.write(b"EXPT" + struct.pack("<I", len(ex)))
-                for a, n in ex:
-                    f.write(struct.pack("<I", a) + n.encode()[:59].ljust(60, b"\0"))
+                write_exports(f, ex)
                 print(f"EXPT {len(ex)} functions the program exports")
+
+
+def write_exports(f, ex):
+    """EXPT (u32 count, count x (u32 address, char name[60])) for the names that fit in 59 characters, EXPL (u32 count,
+    count x (u32 address, u16 length, name)) for the longer ones -- C++ names such as libSceJson's
+    _ZN3sce4Json11Initializer10initializeEPKNS0_13InitParameterE (60 characters): cut to 59, no import matched them"""
+    short = [(a, n.encode()) for a, n in ex if len(n.encode()) <= 59]
+    longer = [(a, n.encode()) for a, n in ex if len(n.encode()) > 59]
+    f.write(b"EXPT" + struct.pack("<I", len(short)))
+    for a, n in short:
+        f.write(struct.pack("<I", a) + n.ljust(60, b"\0"))
+    if longer:
+        f.write(b"EXPL" + struct.pack("<I", len(longer)))
+        for a, n in longer:
+            f.write(struct.pack("<IH", a, len(n)) + n)
 
 
 def module_tls(elf):

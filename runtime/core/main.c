@@ -142,7 +142,8 @@ static const char *import_name_any(uint32_t a) {
 	for (int i = 0; !n && i < nmodules; i++) n = modules[i].import_name(a);
 	return n;
 }
-static struct { uint32_t addr; char name[60]; } *exports;   /* every loaded module's (images' EXPT records) */
+#define EXPORT_NAME 160   /* (the longest known export name is 96 characters) */
+static struct { uint32_t addr; char name[EXPORT_NAME]; } *exports;   /* every loaded module's (images' EXPT / EXPL records) */
 static uint32_t nexports;
 /* (a module loaded on demand adds or drops exports while game threads resolve imports: the list is read and changed
  * under this lock; resolution is cached, so it is taken once per import, not per call) */
@@ -533,12 +534,22 @@ static int load_image_ex(const char *path, int ondemand, uint32_t *start, uint32
 		if (!memcmp(tag, "TLS", 4)) {
 			if (fread(tls_template, 4, 3, f) == 3)
 				fprintf(stderr, "TLS template %#x, %#x bytes, block %#x\n", tls_template[0], tls_template[1], tls_template[2]);
-		} else if (!memcmp(tag, "EXPT", 4)) {   /* a module's exports: (address, name) */
+		} else if (!memcmp(tag, "EXPT", 4) || !memcmp(tag, "EXPL", 4)) {   /* a module's exports: (address, name) --
+			 * EXPT: u32 address + a 60-byte name; EXPL: u32 address, u16 length, the name (the ones longer than 59
+			 * characters: C++ names such as sce::Json::Initializer::initialize, which EXPT cut and nothing matched) */
+			int lng = !memcmp(tag, "EXPL", 4);
 			if (fread(&n, 4, 1, f) != 1) break;
 			pthread_mutex_lock(&exports_lock);
 			exports = realloc(exports, (nexports + n) * sizeof *exports);
-			uint32_t got = (uint32_t)fread(exports + nexports, sizeof *exports, n, f);
-			for (uint32_t i = 0; i < got; i++) exports[nexports + i].name[59] = 0;
+			uint32_t got = 0;
+			for (; got < n; got++) {
+				uint32_t a; uint16_t len = 59;
+				if (fread(&a, 4, 1, f) != 1 || (lng && fread(&len, 2, 1, f) != 1)) break;
+				char nm[EXPORT_NAME] = {0}; size_t take = len < EXPORT_NAME - 1 ? len : EXPORT_NAME - 1;
+				if (lng) { if (fread(nm, 1, take, f) != take || (len > take && fseek(f, len - take, SEEK_CUR))) break; }
+				else { char raw[60]; if (fread(raw, 1, 60, f) != 60) break; memcpy(nm, raw, 59); }
+				exports[nexports + got].addr = a; memcpy(exports[nexports + got].name, nm, EXPORT_NAME);
+			}
 			nexports += got;
 			pthread_mutex_unlock(&exports_lock);
 			if (got != n) break;
