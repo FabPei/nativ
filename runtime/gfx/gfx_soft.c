@@ -2418,6 +2418,9 @@ static int render_interp(const GfxDraw *d) {
 static void render(const GfxDraw *d) {
 	if (shaders_interp && render_interp(d)) return;
 	Shader s = shader_of(d);
+	/* a program the stand-ins can't place (its position attribute named otherwise: LittleBigPlanet's position_sdfyofs):
+	 * the shader interpreter runs the game's own programs instead of skipping the draw */
+	if (s.pos_reg < 0 && !shaders_interp && render_interp(d)) return;
 	if (s.pos_reg < 0) { unhandled(d, "no position attribute, draw skipped"); stats_skipped++; return; }
 	check_known(d);
 	if (nrecs == cap_recs) { cap_recs = cap_recs ? 2 * cap_recs : 256; recs = realloc(recs, cap_recs * sizeof *recs); }
