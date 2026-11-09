@@ -1594,7 +1594,9 @@ def main():
             todo.append(e)
     while todo:
         e = todo.pop()
-        if e in arm or e not in by_entry:
+        # an ARM instruction starts on a word: an entry with bit 1 set is Thumb whatever its decode looks like (a
+        # Thumb function whose literal pool reads as a coprocessor instruction went ARM by the guess above, NIGHT-01)
+        if e in arm or e not in by_entry or e & 3:
             continue
         arm.add(e)
         f = Fn(e, (fspans[e], True, None), eset, arm=True)
