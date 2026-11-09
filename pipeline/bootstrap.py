@@ -83,7 +83,22 @@ def modules(app0, libraries, have_module=lambda m: True, module_libraries=lambda
     return mods, [s for s in shipped if s not in mods]
 
 
-def pack_text(title, name, version, sha, elf, mods, notes):
+def load_modules(app0):
+    """LOAD_MODULES (MODLOAD-01): the modules app0 ships outside sce_module/ (loaded at start) and sce_sys/ (the
+    system's), which the game loads itself while it runs (sceKernelLoadStartModule "app0:bin/<name>.self") -- as
+    app0-relative globs, one per folder and extension ("bin/*.self"); not the main program and not the .elf twins"""
+    pats = set()
+    for root, dirs, files in os.walk(app0):
+        rel = os.path.relpath(root, app0).replace(os.sep, "/")
+        if rel.split("/")[0] in ("sce_module", "sce_sys"): dirs[:] = []; continue
+        for f in files:
+            ext = os.path.splitext(f)[1].lower()
+            if ext in (".self", ".suprx", ".sprx") and f.lower() != "eboot.bin":
+                pats.add((f"{rel}/*{os.path.splitext(f)[1]}" if rel != "." else f"*{os.path.splitext(f)[1]}"))
+    return sorted(pats)
+
+
+def pack_text(title, name, version, sha, elf, mods, notes, load_mods=()):
     """the generated pack.toml (packconf.read accepts it: NAME, one [versions] table with a sha256)"""
     q = lambda s: json.dumps(s, ensure_ascii=False)   # (a TOML basic string is a JSON string)
     lines = [
@@ -96,6 +111,8 @@ def pack_text(title, name, version, sha, elf, mods, notes):
         f"MODULES = {q(' '.join(mods))}",
         "TEST_FRAMES = 600         # bootstrap's headless run length (TEST_FRAMES=<n> for one run)",
     ]
+    if load_mods:   # (modules the game loads on demand: recompiled with it, loaded at its sceKernelLoadStartModule)
+        lines.insert(-1, f"LOAD_MODULES = {q(' '.join(load_mods))}")
     lines += [f"# note: {n}" for n in notes]
     lines += ["", f"[versions.{q(version)}]", f"sha256 = {q(sha)}", 'status = "supported"', ""]
     return "\n".join(lines)

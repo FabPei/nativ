@@ -173,5 +173,15 @@ check("libult" in m and left == ["libface"], f"modules: shipped libult loaded fo
 m, left = bootstrap.modules(_d, {"SceGxm"}, lambda m: False, lambda m: [])
 check("libult" not in m and left == ["libface", "libult"], "modules: shipped libult without SceUlt imports stays a note")
 
+# ---- 5. LOAD_MODULES (MODLOAD-01): modules app0 ships outside sce_module/ and sce_sys/ are loaded on demand by the game
+# (sceKernelLoadStartModule "app0:bin/<name>.self"): pack-init names them as app0-relative globs, one per folder and
+# extension; their decrypted .elf twins, sce_module/ and sce_sys/ are not modules to load
+for rel in ("bin/god.self", "bin/god.self.elf", "bin/ui.self", "modules_psvita/libmd5.suprx", "sce_sys/about/right.suprx", "eboot.bin"):
+    os.makedirs(os.path.dirname(os.path.join(_d, rel)) or _d, exist_ok=True); open(os.path.join(_d, rel), "w").close()
+lm = bootstrap.load_modules(_d) if hasattr(bootstrap, "load_modules") else []
+check(lm == ["bin/*.self", "modules_psvita/*.suprx"], f"load_modules: app0 modules outside sce_module/ ({lm})")
+t = bootstrap.pack_text("PCSX00000", "x", "1.00", "0" * 64, "eboot.bin.elf", ["libc"], [], lm) if lm else ""
+check('LOAD_MODULES = "bin/*.self modules_psvita/*.suprx"' in t, "pack_text: writes LOAD_MODULES")
+
 print(f"all passed ({ok} ok)" if not bad else f"{bad} FAILED, {ok} ok")
 sys.exit(1 if bad else 0)
