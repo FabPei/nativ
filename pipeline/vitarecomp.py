@@ -971,6 +971,10 @@ def cmd_pack_init(T, force):
     elf, note = bootstrap.main_elf(edir, fns)
     if elf != "eboot.bin.elf":   # (the program it launches: its imports decide the modules)
         libs = {lib for lib, *_ in imp.imports(os.path.join(edir, elf))[1]}
+    lmods = bootstrap.load_modules(app0)   # (modules the game loads on demand: their imports choose MODULES too)
+    for f in bootstrap.load_module_files(app0, lmods):
+        try: libs |= {lib for lib, *_ in imp.imports(f + ".elf" if os.path.isfile(f + ".elf") else f)[1]}
+        except Exception: pass
     g = Game(T, "import")
     def mod_libs(m):   # (the libraries a chosen firmware module imports; one that isn't a readable ELF adds none)
         try: return {lib for lib, *_ in imp.imports(g.modelf(m))[1]}
@@ -979,7 +983,7 @@ def cmd_pack_init(T, force):
     name, version = bootstrap.identity(app0, sfo.read_sfo_file)
     notes = ([note] if note else []) + ([f"shipped in sce_module/ but not loaded: {' '.join(left)} (add to MODULES if the run stubs their imports)"] if left else [])
     notes += [f"imports {lib}: {m} is not on this machine (vitarecomp firmware)" for lib, m in bootstrap.IMPORT_MODULES.items() if lib in libs and m not in mods]
-    text = bootstrap.pack_text(own, name, version, sha256(os.path.join(edir, elf)), elf, mods, notes, bootstrap.load_modules(app0))
+    text = bootstrap.pack_text(own, name, version, sha256(os.path.join(edir, elf)), elf, mods, notes, lmods)
     d = os.path.join(PACKS, own); os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, "pack.toml"), "w", encoding="utf-8", newline="\n") as f: f.write(text)
     packconf.read(os.path.join(d, "pack.toml"))   # (its shape checked as every pack's)

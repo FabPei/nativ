@@ -511,8 +511,10 @@ static int load_image_ex(const char *path, int ondemand, uint32_t *start, uint32
 		if (!h[2] && ondemand) memset(G(h[0]), 0, h[1]);   /* (a reload starts from a zeroed .bss again) */
 		fprintf(stderr, "loaded %#010x %#9x%s\n", h[0], h[1], h[2] ? "" : " (zero)");
 		if (nseg < 64) { seg_lo[nseg] = h[0]; seg_hi[nseg] = h[0] + h[1]; nseg++; }
-		if (h[0] < l) l = h[0];
-		if (h[0] + h[1] > h_) h_ = h[0] + h[1];
+		if (h[0] < 0xffe00000u) {   /* (the module's range: its segments, not its imported-variable slots up there) */
+			if (h[0] < l) l = h[0];
+			if (h[0] + h[1] > h_) h_ = h[0] + h[1];
+		}
 	}
 	if (start) *start = 0;
 	if (stop) *stop = 0;

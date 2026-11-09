@@ -22,7 +22,8 @@ BASE_MODULES = ("libc", "libgxm_es4", "libgpu_es4", "libfios2")
 # a firmware module the runtime runs as Sony's code when the game imports its library (Uncharted / P4G / Killzone's
 # packs: libscemp4 for SceMp4, libsceavplayer for SceAvPlayer; P4G's / SSD's: libpvf for the ScePvf font library, which
 # itself imports SceFt2 from libSceFt2); the runtime's own HLE covers the rest
-IMPORT_MODULES = {"SceMp4": "libscemp4", "SceAvPlayer": "libsceavplayer", "ScePvf": "libpvf", "SceFt2": "libSceFt2"}
+IMPORT_MODULES = {"SceMp4": "libscemp4", "SceAvPlayer": "libsceavplayer", "ScePvf": "libpvf", "SceFt2": "libSceFt2",
+                  "SceLibJson": "libSceJson"}   # (libSceJson: the firmware's JSON library, PCSB00672's hand pack)
 # a library the game ships itself in sce_module/ and the runtime runs as the game's code when imported (hand packs
 # SSD / P4G / PCSB00672 list libult; without it SceUlt's imports run as stubs and the game's user-level worker threads
 # never start): loaded when the game imports the library and its own sce_module/ holds the module
@@ -96,6 +97,13 @@ def load_modules(app0):
             if ext in (".self", ".suprx", ".sprx") and f.lower() != "eboot.bin":
                 pats.add((f"{rel}/*{os.path.splitext(f)[1]}" if rel != "." else f"*{os.path.splitext(f)[1]}"))
     return sorted(pats)
+
+
+def load_module_files(app0, pats):
+    """the files LOAD_MODULES' app0-relative globs name (their imports count for MODULES too: an on-demand module is
+    the game's code)"""
+    import glob
+    return sorted({f for p in pats for f in glob.glob(os.path.join(glob.escape(app0), p))})
 
 
 def pack_text(title, name, version, sha, elf, mods, notes, load_mods=()):

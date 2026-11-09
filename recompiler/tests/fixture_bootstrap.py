@@ -182,6 +182,13 @@ lm = bootstrap.load_modules(_d) if hasattr(bootstrap, "load_modules") else []
 check(lm == ["bin/*.self", "modules_psvita/*.suprx"], f"load_modules: app0 modules outside sce_module/ ({lm})")
 t = bootstrap.pack_text("PCSX00000", "x", "1.00", "0" * 64, "eboot.bin.elf", ["libc"], [], lm) if lm else ""
 check('LOAD_MODULES = "bin/*.self modules_psvita/*.suprx"' in t, "pack_text: writes LOAD_MODULES")
+# the firmware's JSON library: a game (or one of its on-demand modules) importing SceLibJson gets libSceJson, as the
+# PCSB00672 hand pack lists it -- else its sce::Json calls run as stubs
+m, _ = bootstrap.modules(_d, {"SceLibJson"}, lambda m: True, lambda m: [])
+check("libSceJson" in m, f"modules: SceLibJson -> libSceJson ({' '.join(m)})")
+lf = bootstrap.load_module_files(_d, lm) if hasattr(bootstrap, "load_module_files") else []
+check(sorted(os.path.relpath(f, _d).replace(os.sep, "/") for f in lf) == ["bin/god.self", "bin/ui.self", "modules_psvita/libmd5.suprx"],
+      f"load_module_files: the files LOAD_MODULES names ({lf})")
 
 print(f"all passed ({ok} ok)" if not bad else f"{bad} FAILED, {ok} ok")
 sys.exit(1 if bad else 0)

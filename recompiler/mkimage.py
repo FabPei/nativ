@@ -76,6 +76,16 @@ def main():
             if stop is not None:   # (MODLOAD-01: a module loaded on demand runs it at sceKernelStopUnloadModule)
                 f.write(b"MSTO" + struct.pack("<I", stop))
             print(f"EXPT {len(ex)} exported functions; module_start {start:#x}" if start else f"EXPT {len(ex)} exported functions")
+        elif "exports" in d:
+            # the main program's own libraries (MODLOAD-01): a module the game loads on demand imports functions the
+            # program exports (library "main" in PCSB00874: 3911) -- registered like a module's, never started from here
+            names = known_names()
+            ex = [(a, names.get((lib, nid), f"{lib}_{nid:08X}")) for lib, nid, a, var in d["exports"] if not var and lib]
+            if ex:
+                f.write(b"EXPT" + struct.pack("<I", len(ex)))
+                for a, n in ex:
+                    f.write(struct.pack("<I", a) + n.encode()[:59].ljust(60, b"\0"))
+                print(f"EXPT {len(ex)} functions the program exports")
 
 
 def module_tls(elf):

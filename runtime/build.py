@@ -333,6 +333,13 @@ def main(argv):
     # (Linux links libm/pthread explicitly; zlib: PSARC archives) -- objects only: the code generation flags a link
     # needs (RECOMP_CFLAGS' -flto) and the libraries' link words
     link = [CC] + CPUFLAGS + extra + ["-w"] + hobjs + lwords + objs + sdl_libs + CXXLIB + LIBS + ["-o", OUT]
+    if sum(len(a) + 3 for a in link) > 30000:   # (Windows' command line holds 32 KiB: a game with its on-demand modules --
+        # LOAD_MODULES, ~90 modules' objects -- failed with WinError 206; the objects go into response files, in order)
+        def rsp(name, args):
+            p = f"{OUT}.{name}.rsp"
+            with open(p, "w", newline="\n") as f: f.write("".join('"' + a.replace("\\", "/").replace('"', '\\"') + '"\n' for a in args))
+            return "@" + p
+        link = [CC] + CPUFLAGS + extra + ["-w", rsp("game", hobjs)] + lwords + [rsp("runtime", objs)] + sdl_libs + CXXLIB + LIBS + ["-o", OUT]
     sys.stdout.flush()
     r = subprocess.run(link)
     if r.returncode: return r.returncode
