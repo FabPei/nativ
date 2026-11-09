@@ -1889,7 +1889,7 @@ static void settings_modal(void) {
 			seg_row(t, "Widescreen", "Shows more of the game at the sides, in games that support it.", "aspect_ratio", "native", {{"native", "Off"}, {"16:10", "16:10"}, {"3:2", "3:2"}, {"21:9", "21:9"}, {"32:9", "32:9"}, {"window", "Window"}});
 			seg_row(t, "HUD", "With widescreen on: the HUD at the screen's edges, in a 16:9 frame in the middle, or stretched.", "hud_layout", "edges", {{"edges", "Edges"}, {"16:9", "16:9"}, {"stretch", "Stretched"}});
 			seg_row(t, "Picture fit", "How the picture fills the window.", "aspect", "fit", {{"fit", "Fit"}, {"stretch", "Stretch"}, {"fill", "Fill"}});
-			seg_row(t, "Frame rate", "Parts of a game timed in fixed 1/30 s steps can run fast at 60.", "frame_rate", "30", {{"30", "30"}, {"60", "60 (experimental)"}});
+			seg_row(t, "Frame rate", "Above 30 is experimental: parts of a game timed in fixed 1/30 s steps can run fast. A game runs at the highest rate it allows up to this one (its Game settings show which).", "frame_rate", "30", {{"30", "30"}, {"60", "60"}, {"120", "120"}});
 			toggle_row(t, "Anti-aliasing", "Smooths jagged edges (FXAA).", "post_aa", true);
 			slider_row(t, "Sharpening", "Brings back detail lost to scaling and anti-aliasing.", "sharpen", 0.35, 0.0f, 100.0f, "%.0f%%", 100.0f);
 			seg_row(t, "Texture filtering", "Keeps textures crisp when seen at an angle.", "anisotropy", "16", {{"1", "Off"}, {"2", "2×"}, {"4", "4×"}, {"8", "8×"}, {"16", "16×"}});
