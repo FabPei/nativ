@@ -27,6 +27,7 @@
  *       RECOMP_OVERLAY_DUMP_UI=menu|menu:<tab>|bar|Game|View|Controls|Help|toast|osb|intro[:pad|:touch][@<s>]|quit|layout[,...]  what that dump
  *                           shows (overlay.h: overlay_render_forced); several, comma-separated, write
  *                           one file each, f_<name>.ppm (':' in a name written as '-')
+ *       RECOMP_OVERLAY_DUMP_PAD=ps|xbox|switch  that dump with a virtual controller of that kind attached (the foot's button names)
  *       RECOMP_OVERLAY_DUMP_SIZE=WxH  that dump as in a window of W x H: the frame fitted (dump_fit.h), the menu at W x H
  */
 #include <SDL3/SDL.h>
@@ -836,6 +837,22 @@ void window_present_gpu(void *src, uint32_t w, uint32_t h, int raw) {
  * this unset pays one cached getenv and a branch, same as metrics.c's RECOMP_OSD_DUMP. Works with
  * either graphics backend: by the time window_present is called, RECOMP_GFX=gpu has already synced
  * its rendered frame into this same guest memory (gfx_gpu.c's present, for exactly this reason). */
+/* RECOMP_OVERLAY_DUMP_PAD=ps|xbox|switch (a test's, with RECOMP_OVERLAY_DUMP): a virtual controller of that kind (SDL's
+ * virtual joystick, a real pad's vendor and product ids, so SDL names its type as for the real one) attached before the dump,
+ * so the menu's foot shows that pad's button names (UI-01e) without a controller plugged in; with SteamDeck=1, the Deck's */
+static void dump_virtual_pad(void) {
+	const char *k = getenv("RECOMP_OVERLAY_DUMP_PAD");
+	if (!k || !*k) return;
+	const int ps = !strcmp(k, "ps"), sw = !strcmp(k, "switch");
+	if (!SDL_WasInit(SDL_INIT_GAMEPAD) && !SDL_InitSubSystem(SDL_INIT_GAMEPAD)) { fprintf(stderr, "RECOMP_OVERLAY_DUMP_PAD: %s\n", SDL_GetError()); return; }
+	SDL_VirtualJoystickDesc d; SDL_INIT_INTERFACE(&d);
+	d.type = SDL_JOYSTICK_TYPE_GAMEPAD; d.naxes = SDL_GAMEPAD_AXIS_COUNT; d.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+	d.vendor_id = ps ? 0x054c : sw ? 0x057e : 0x045e; d.product_id = ps ? 0x09cc : sw ? 0x2009 : 0x02ea;   /* DualShock 4, Switch Pro, Xbox One S */
+	d.name = ps ? "virtual DualShock 4" : sw ? "virtual Switch Pro" : "virtual Xbox pad";
+	const SDL_JoystickID id = SDL_AttachVirtualJoystick(&d);
+	SDL_UpdateJoysticks();
+	fprintf(stderr, "RECOMP_OVERLAY_DUMP_PAD: %s attached (id %u, gamepad type %d)\n", d.name, (unsigned)id, id ? (int)SDL_GetGamepadTypeForID(id) : -1);
+}
 static void overlay_dump_maybe(uint32_t base, uint32_t w, uint32_t h, uint32_t pitch) {
 	static int done = -1;
 	if (done < 0) { const char *e = getenv("RECOMP_OVERLAY_DUMP"); done = e ? 0 : 1; }
@@ -854,6 +871,7 @@ static void overlay_dump_maybe(uint32_t base, uint32_t w, uint32_t h, uint32_t p
 	const char *path = getenv("RECOMP_OVERLAY_DUMP");
 	if (!gpu) { fprintf(stderr, "RECOMP_OVERLAY_DUMP: no GPU device, skipping\n"); return; }
 	if (!overlay_init(gpu, 0, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM)) { fprintf(stderr, "RECOMP_OVERLAY_DUMP: overlay_init failed\n"); return; }
+	dump_virtual_pad();
 	uint8_t *tmp = malloc(4u * w * h);
 	if (!tmp) return;
 	for (uint32_t y = 0; y < h; y++) memcpy(tmp + 4u * w * y, G(base + 4 * pitch * y), 4u * w);
