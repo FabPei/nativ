@@ -1311,6 +1311,30 @@ static void h_evf_info(Cpu *c) {   /* (uid, *SceKernelEventFlagInfo 0x38) */
 	RET(0);
 }
 
+/* ---- sceKernelGetThreadmgrUIDClass(uid): the kind of thread-manager object a uid names. A game's generic "wait for
+ * this object" (a Win32 WaitForSingleObject port) asks it and then calls the kind's own wait: one title waits for a
+ * thread's end on class 1 and for a simple event on class 0xd. Unimplemented, the stub's 0 matched no kind, the wrapper
+ * waited for nothing and reported the object signalled at once -- the title's start-up hand-shakes all ran ahead and it
+ * sat behind a cleared screen. The numbers: thread 1 (VitaSDK SceKernelIdListType SCE_KERNEL_TMID_Thread, and that
+ * title's own check), simple event 0xd (that title's check, written against the hardware), semaphore 2 / event flag 3
+ * (VitaSDK's list, which follows the PSP's). Other kinds have no known number: 0 as before, reported once each. */
+static void h_uid_class(Cpu *c) {
+	const uint32_t uid = A0;
+	if (uid && thread_of(uid)) { RET(1); return; }
+	static const struct { int kind; uint32_t cls; const char *name; } k[] = {
+		{SEVENT, 0xd, "simple event"}, {SEMA, 2, "semaphore"}, {EVF, 3, "event flag"},
+		{MUTEX, 0, "mutex"}, {LWMUTEX, 0, "lwmutex"}, {LWCOND, 0, "lwcond"}, {KCOND, 0, "cond"}, {RWLOCK, 0, "rwlock"},
+		{MSGPIPE, 0, "msgpipe"}, {CALLBACK, 0, "callback"}, {TIMER, 0, "timer"} };
+	for (size_t i = 0; i < sizeof k / sizeof *k; i++) {
+		if (!by_uid(uid, k[i].kind)) continue;
+		if (!k[i].cls) {
+			static uint32_t told; if (!(told & (1u << k[i].kind))) { told |= 1u << k[i].kind; fprintf(stderr, "    sceKernelGetThreadmgrUIDClass: %s %#x -- its class number is not known, returns 0\n", k[i].name, uid); }
+		}
+		RET(k[i].cls); return;
+	}
+	static int told_unknown; if (!told_unknown) { told_unknown = 1; fprintf(stderr, "    sceKernelGetThreadmgrUIDClass: %#x is no thread-manager object here, returns 0\n", uid); }
+	RET(0);
+}
 /* ---- simple events (sceKernelCreateSimpleEvent: name, attr, initial pattern, opt): a pattern a
  * thread waits on with WaitEvent (any of its bits), which hands back the whole pattern and the
  * 64-bit user data of the last SetEvent, and clears the bits it waited for only when the event was
@@ -2195,6 +2219,7 @@ const HleEntry hle_kernel[] = {
 	{"sceKernelCreateEventFlag", h_create_evf}, {"sceKernelWaitEventFlag", h_wait_evf}, {"sceKernelWaitEventFlagCB", h_wait_evf_cb},
 	{"sceKernelPollEventFlag", h_poll_evf}, {"sceKernelSetEventFlag", h_set_evf}, {"sceKernelClearEventFlag", h_clear_evf},
 	{"sceKernelDeleteEventFlag", h_delete_evf}, {"sceKernelGetEventFlagInfo", h_evf_info},
+	{"sceKernelGetThreadmgrUIDClass", h_uid_class},
 	{"sceKernelCreateSimpleEvent", h_create_sevent}, {"sceKernelDeleteSimpleEvent", h_delete_sevent}, {"sceKernelWaitEvent", h_wait_sevent}, {"sceKernelWaitEventCB", h_wait_sevent_cb},
 	{"sceKernelPollEvent", h_poll_sevent}, {"sceKernelSetEvent", h_set_sevent}, {"sceKernelGetEventPattern", h_get_sevent_pattern}, {"sceKernelClearEvent", h_clear_sevent},
 	{"sceKernelCreateMutex", h_create_mutex}, {"sceKernelLockMutex", h_lock_mutex}, {"sceKernelLockMutexCB", h_lock_mutex_cb},

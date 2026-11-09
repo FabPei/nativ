@@ -900,6 +900,21 @@ static void test_sched(void) {
 	pthread_mutex_unlock(&sched_m);
 }
 
+/* ================= sceKernelGetThreadmgrUIDClass: the kind of object a uid names (a game's generic wait asks it, then
+ * calls that kind's own wait; the stub's 0 made it wait for nothing) */
+static void test_uid_class(void) {
+	uint32_t name = guest_alloc(16, 4); strcpy((char *)G(name), "uc");
+	pthread_mutex_lock(&klock);
+	Thread *t = &threads[nthreads++]; memset(t, 0, sizeof *t); t->uid = 0x40010f01; t->started = 1; snprintf(t->name, sizeof t->name, "uc");
+	pthread_mutex_unlock(&klock);
+	CHECKEQ(call(h_uid_class, 1, 0x40010f01), 1);                                     /* thread */
+	CHECKEQ(call(h_uid_class, 1, call(h_create_sevent, 4, name, 0x100, 0, 0)), 0xd);  /* simple event */
+	CHECKEQ(call(h_uid_class, 1, call(h_create_sema, 5, name, 0, 0, 1, 0)), 2);       /* semaphore */
+	CHECKEQ(call(h_uid_class, 1, call(h_create_evf, 4, name, 0, 0, 0)), 3);           /* event flag */
+	uint32_t e = call(h_create_sevent, 4, name, 0, 0, 0); call(h_delete_sevent, 1, e);
+	CHECKEQ(call(h_uid_class, 1, e), 0);                                              /* a deleted object: no class */
+	CHECKEQ(call(h_uid_class, 1, 0x12345679), 0);                                     /* no object */
+}
 int main(void) {
 	recomp_mem = mmap(0, 1ull << 32, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
 	if (recomp_mem == MAP_FAILED) { perror("mmap"); return 2; }
@@ -908,6 +923,7 @@ int main(void) {
 	test_mutex();
 	test_cond();
 	test_sevent();
+	test_uid_class();
 	test_ult();
 	test_threads();
 	test_rwlock();
