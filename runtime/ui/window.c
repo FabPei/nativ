@@ -24,7 +24,7 @@
  *       RECOMP_OVERLAY_DUMP=f.ppm  headless: renders the in-game menu once, open, over the next
  *                           presented frame, into an offscreen texture, and writes it to f -- so the
  *                           menu can be looked at without a screen (see overlay_dump_maybe below)
- *       RECOMP_OVERLAY_DUMP_UI=menu|menu:<tab>|bar|Game|View|Controls|Help|toast|osb|intro[:pad|:touch][@<s>]|quit|layout[,...]  what that dump
+ *       RECOMP_OVERLAY_DUMP_UI=menu|menu:<tab>|bar|Game|View|Controls|Help|toast|osb|touch:front|touch:rear|intro[:pad|:touch][@<s>]|quit|layout[,...]  what that dump
  *                           shows (overlay.h: overlay_render_forced); several, comma-separated, write
  *                           one file each, f_<name>.ppm (':' in a name written as '-')
  *       RECOMP_OVERLAY_DUMP_PAD=ps|xbox|switch  that dump with a virtual controller of that kind attached (the foot's button names)
@@ -438,6 +438,8 @@ void window_controls_row(int i, const char **action, const char **key, const cha
 	if (shoulders_swapped) for (size_t j = 0; j < sizeof ctrl_rows_swapped / sizeof ctrl_rows_swapped[0]; j++) if (!strcmp(*action, ctrl_rows_swapped[j][0])) *pad = ctrl_rows_swapped[j][1];
 }
 int window_touch(int *x, int *y) { *x = touch_x; *y = touch_y; return touch_down; }
+/* (UI-02d) the controller is the touch screen now: 1 the front panel, 2 the rear (the touch cursor's shoulder held), 0 not */
+int window_touch_emulation(void) { return cur_mode; }
 /* A game hook's word that the game wants a front-panel swipe now (Killzone: a brutal melee / interrogation gesture window):
  * with the mouse captured (keyboard + mouse), the left button then drags a touch instead of firing -- from the panel's
  * centre, moved by the mouse's motion -- so a quick drag lands inside the window. Without it a swipe meant Alt for the

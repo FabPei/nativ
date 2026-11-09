@@ -58,7 +58,8 @@
 #include "ui_scale.h"
 #include "pad_family.h"   /* (UI-01e) the pad's own button names, shared with the launcher */
 #include "touch_controls.h"   /* (UI-01n) the on-screen buttons' layout, shared with window.c */
-#include "menu_sidebar.h"   /* the sections' list (a controller reaches and chooses them: menu_sidebar_test) */
+#include "menu_sidebar.h"
+#include "menu_hint.h"   /* (UI-02a) the start hint, per device */   /* the sections' list (a controller reaches and chooses them: menu_sidebar_test) */
 #include "sysinfo.h"   /* the "Copy system info" text (U5) */
 #define STBI_NO_STDIO
 #include "third_party/stb/stb_image.h"   /* (its implementation: runtime/media/jpeg.c) */
@@ -1287,6 +1288,52 @@ static void build_osb(ImDrawList *dl) {
 		}
 	}
 }
+/* (UI-02a) the player's controller: its SDL type (-1: none), for the names in a hint */
+static int player_pad_type(void) {
+	int n = 0; SDL_JoystickID *ids = SDL_GetGamepads(&n);
+	const int type = ids && n > 0 ? (int)SDL_GetGamepadTypeForID(ids[0]) : -1;
+	SDL_free(ids);
+	return type;
+}
+static bool steam_deck(void) { const char *d = std::getenv("SteamDeck"); return d && !strcmp(d, "1"); }
+/* a touch screen is there (SDL's direct touch devices; RECOMP_OVERLAY_DUMP_TOUCH=1: as if, for a dump) */
+static bool touch_screen_present(void) {
+	if (std::getenv("RECOMP_OVERLAY_DUMP_TOUCH") && atoi(std::getenv("RECOMP_OVERLAY_DUMP_TOUCH"))) return true;
+	int n = 0; bool any = false; SDL_TouchID *t = SDL_GetTouchDevices(&n);
+	for (int i = 0; t && i < n; i++) any |= SDL_GetTouchDeviceType(t[i]) == SDL_TOUCH_DEVICE_DIRECT;
+	SDL_free(t);
+	return any;
+}
+/* (UI-02a) the game's first hint: every way to open the menu this player has (menu_hint.h) */
+static void menu_hint_toast(void) {
+	char body[224];
+	const bool dump = !g_has_window;   /* (a dump: as a desktop with a keyboard and a mouse) */
+	menu_hint_text(body, sizeof body, dump || SDL_HasKeyboard(), dump || SDL_HasMouse(), SDL_HasGamepad() ? player_pad_type() : -1, steam_deck(), touch_screen_present());
+	overlay_toast_titled("Menu", body, TOAST_S);
+}
+/* (UI-02d) while the controller drives the touch screen (the shoulder pair that isn't L and R held: window.c's touch
+ * cursor), a badge at the top centre says which panel it is -- the Vita's front touch screen or its rear touch pad --
+ * and how to touch; it goes when the pair is let go. RECOMP_OVERLAY_DUMP_UI=touch:front|touch:rear shows it in a dump. */
+extern "C" int window_touch_emulation(void);
+static int g_force_touch_badge;
+static void build_touch_badge(ImDrawList *dl) {
+	const int m = g_force_touch_badge ? g_force_touch_badge : g_has_window ? window_touch_emulation() : 0;
+	if (m != 1 && m != 2) return;
+	const ImVec2 ds = ImGui::GetIO().DisplaySize;
+	ImFont *font = ImGui::GetFont(); const float fs = ImGui::GetFontSize() * (ds.x >= 1000 ? 2.0f : 1.0f);
+	const PadNames *pn = pad_names_of(pad_family(SDL_HasGamepad() ? player_pad_type() : -1, steam_deck()));
+	const char *title = ui_tr(m == 2 ? "touch.badge_rear" : "touch.badge_front");
+	char hint[96]; snprintf(hint, sizeof hint, ui_tr("touch.badge_hint"), pn->select);
+	const float pad = fs * 0.55f, gap = fs * 0.2f;
+	const ImVec2 t1 = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, title), t2 = font->CalcTextSizeA(fs * 0.75f, FLT_MAX, 0.0f, hint);
+	const float bw = (t1.x > t2.x ? t1.x : t2.x) + 2 * pad, bh = t1.y + gap + t2.y + 2 * pad;
+	const float x = (ds.x - bw) * 0.5f, y = 8 + g_bar_h * g_bar_vis;
+	const ImU32 col = m == 2 ? IM_COL32(255, 170, 60, 255) : IM_COL32(80, 200, 255, 255);   /* (the markers' colours: rear orange, front blue) */
+	dl->AddRectFilled(ImVec2(x, y), ImVec2(x + bw, y + bh), IM_COL32(16, 18, 24, 200), fs * 0.5f);
+	dl->AddRect(ImVec2(x, y), ImVec2(x + bw, y + bh), col, fs * 0.5f, 0, fs * 0.08f > 1.5f ? fs * 0.08f : 1.5f);
+	dl->AddText(font, fs, ImVec2(x + (bw - t1.x) * 0.5f, y + pad), col, title);
+	dl->AddText(font, fs * 0.75f, ImVec2(x + (bw - t2.x) * 0.5f, y + pad + t1.y + gap), IM_COL32(235, 235, 240, 230), hint);
+}
 static void build_marks(void) {
 	ImDrawList *dl = g_intro ? ImGui::GetForegroundDrawList() : ImGui::GetBackgroundDrawList();   /* over the game's frame (LOAD), under the bar and its menus; over the touch card */
 	if (g_full) build_perf_full(dl);
@@ -1313,6 +1360,7 @@ static void build_marks(void) {
 		}
 	}
 	build_osb(dl);   /* (under the touch markers) */
+	build_touch_badge(dl);
 	if (g_rear[2] > 0) dl->AddRect(ImVec2(g_rear[0], g_rear[1]), ImVec2(g_rear[0] + g_rear[2], g_rear[1] + g_rear[3]), IM_COL32(255, 170, 60, 140), 0.0f, 2.0f);   /* (rounding 0, thickness 2: ImGui 1.92.8+ argument order -- the old (0, 0, 2.0f) put 2 in `flags`, an ImGui user-error assert) */
 	for (int i = 0; i < g_nmarks; i++) {
 		const OverlayMark &m = g_marks[i];
@@ -1360,7 +1408,7 @@ static void build_closed(void) {
 			g_toast_checked = true;
 			if (!settings_has("touch_intro_shown")) {   /* the player's first game: the touch card first (it says where the menu is too) */
 				g_intro = true; settings_set_int("menu_hint_shown", 1); save_settings(); g_paused = true; apply_pause();
-			} else if (!settings_has("menu_hint_shown")) { g_toast_until = t + TOAST_S; overlay_toast_titled("Menu", "Move the mouse to the top, or press [F10] or Start+Select", TOAST_S); settings_set_int("menu_hint_shown", 1); save_settings(); }
+			} else if (!settings_has("menu_hint_shown")) { g_toast_until = t + TOAST_S; menu_hint_toast(); settings_set_int("menu_hint_shown", 1); save_settings(); }
 		}
 		const ImVec2 m = io.MousePos;
 		const bool inside = ImGui::IsMousePosValid(&m) && m.x >= 0 && m.x < w && m.y >= 0 && m.y < hgt;   /* (focused but outside the window, e.g. on the title bar: the backend reports a position there too) */
@@ -1384,7 +1432,7 @@ static void build_closed(void) {
 		if (g_touch_cursor && g_bar_vis <= 0 && !popup_open && !io.WantCaptureMouse) ImGui::SetMouseCursor(ImGuiMouseCursor_None);   /* (the touch mark stands in for it) */
 	} else {   /* headless (the dump): no pointer; RECOMP_OVERLAY_DUMP_UI says what to show */
 		if (g_force_bar) { g_bar_vis = 1; g_bar_want = true; }
-		if (g_force_toast) { g_toast_until = t + TOAST_S; g_tab_a = 1; g_force_toast = false; overlay_toast_titled("Menu", "Move the mouse to the top, or press [F10] or Start+Select", TOAST_S); overlay_toast_titled("Balance", "[A] [D] tilt left / right", TOAST_S); }
+		if (g_force_toast) { g_toast_until = t + TOAST_S; g_tab_a = 1; g_force_toast = false; menu_hint_toast(); overlay_toast_titled("Balance", "[A] [D] tilt left / right", TOAST_S); }
 	}
 	{	/* the slide, at a fixed rate either way */
 		const float target = g_bar_want ? 1.0f : 0.0f, step = dt > 0.1f ? 1.0f : dt / SLIDE_S;
@@ -1839,6 +1887,7 @@ void overlay_render_forced(SDL_GPUDevice *device, SDL_GPUTexture *target, uint32
 		g_intro_dev = -1; g_intro_at = -1;
 		return;
 	}
+	if (!strncmp(ui, "touch:", 6)) { g_force_touch_badge = !strcmp(ui + 6, "rear") ? 2 : 1; for (int i = 0; i < 3; i++) forced_frame(device, target, w, h, i == 2, build_closed); g_force_touch_badge = 0; return; }   /* (UI-02d) the touch badge */
 	if (!strcmp(ui, "osb")) { g_force_osb = true; for (int i = 0; i < 3; i++) forced_frame(device, target, w, h, i == 2, build_closed); g_force_osb = false; return; }   /* (UI-01n) the on-screen buttons */
 	if (!strcmp(ui, "toast")) g_force_toast = true;
 	else { g_force_bar = true; if (strcmp(ui, "bar")) {
