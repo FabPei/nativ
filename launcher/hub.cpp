@@ -39,7 +39,8 @@
 #include "hub_scale.h"   /* (UI-01h) the UI's scale from the window's height or the display's scale */
 #include "file_browse.h"   /* (UI-01f) the own file / folder browser's listing */
 #include "library_info.h"   /* (UI-01l) a game's own name, play time, size: the list's columns */
-#include "export_progress.h"   /* (EXPORT-01a) what the AppImage export prints, read back */
+#include "export_progress.h"
+#include "pad_diagram.h"   /* (UI-02c) the drawn controller of Controls > Mapping */   /* (EXPORT-01a) what the AppImage export prints, read back */
 #include "pad_family.h"   /* (UI-01e) the controller in use and its buttons' names, shared with the in-game menu */
 #include <ctime>
 #include <SDL3/SDL.h>
@@ -1825,7 +1826,127 @@ static void bind_modal(const SetTarget &t) {   /* (inside Settings) */
 	if (!chosen.empty() || cancel) { g_bind.open = false; ImGui::CloseCurrentPopup(); }
 	ImGui::EndPopup();
 }
-static bool g_bind_open(void) { return g_bind.open; }
+/* ---- (UI-02c) the drawn controller: the pad of the family in use (pad_diagram.h), each of its buttons with the Vita button
+ * it is (the Vita's own symbol on it); a button with two on it ringed red (the game keeps one), the Vita buttons on none
+ * listed under it. A button of the drawing is a button of its own (a click, a tap, or the D-pad and Select): "What does
+ * <it> do?" -- a Vita button, or nothing -- written with the game's rule (bind_write: one taken from where it was). */
+static struct { bool open = false; int spot = 0; } g_spot;
+static bool g_diag_scroll;   /* (a screenshot run: map:diagram scrolls the drawing into view once) */
+static void vita_symbol(ImDrawList *dl, ImVec2 c, float r, int row, ImU32 ink) {   /* row: k_pad_rows' index */
+	const float s = r * 0.5f, t = std::max(1.5f, r * 0.16f);
+	switch (row) {
+	case 0: dl->AddLine(ImVec2(c.x - s, c.y - s), ImVec2(c.x + s, c.y + s), ink, t); dl->AddLine(ImVec2(c.x - s, c.y + s), ImVec2(c.x + s, c.y - s), ink, t); return;
+	case 1: dl->AddCircle(c, s * 1.1f, ink, 0, t); return;
+	case 2: dl->AddRect(ImVec2(c.x - s, c.y - s), ImVec2(c.x + s, c.y + s), ink, 0, 0, t); return;
+	case 3: dl->AddTriangle(ImVec2(c.x, c.y - s * 1.15f), ImVec2(c.x + s * 1.15f, c.y + s * 0.8f), ImVec2(c.x - s * 1.15f, c.y + s * 0.8f), ink, t); return;
+	case 6: dl->AddTriangleFilled(ImVec2(c.x, c.y - s), ImVec2(c.x - s, c.y + s * 0.6f), ImVec2(c.x + s, c.y + s * 0.6f), ink); return;
+	case 7: dl->AddTriangleFilled(ImVec2(c.x, c.y + s), ImVec2(c.x + s, c.y - s * 0.6f), ImVec2(c.x - s, c.y - s * 0.6f), ink); return;
+	case 8: dl->AddTriangleFilled(ImVec2(c.x - s, c.y), ImVec2(c.x + s * 0.6f, c.y + s), ImVec2(c.x + s * 0.6f, c.y - s), ink); return;
+	case 9: dl->AddTriangleFilled(ImVec2(c.x + s, c.y), ImVec2(c.x - s * 0.6f, c.y - s), ImVec2(c.x - s * 0.6f, c.y + s), ink); return;
+	default: {
+		const char *txt = row == 4 ? "Start" : row == 5 ? "Sel" : row == 10 ? "L3" : row == 11 ? "R3" : "?";
+		ImFont *f = ImGui::GetFont(); float fs = ImGui::GetFontSize() * 0.8f; ImVec2 ts = f->CalcTextSizeA(fs, FLT_MAX, 0, txt);
+		if (ts.x > r * 1.8f) { fs *= r * 1.8f / ts.x; ts = f->CalcTextSizeA(fs, FLT_MAX, 0, txt); }   /* (fits the button) */
+		dl->AddText(f, fs, ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), ink, txt);
+	}
+	}
+}
+static void pad_diagram(const SetTarget &t) {
+	const float em = ImGui::GetFontSize();
+	std::vector<std::string> values; for (const BindRow &r : k_pad_rows) values.push_back(bind_value(t, r, true));
+	const auto on = pad_diag_on(values); const auto unplaced = pad_diag_unplaced(values);
+	const float W = std::min(ImGui::GetContentRegionAvail().x, em * 30), H = W * PAD_DIAG_H;
+	const ImVec2 o = ImGui::GetCursorScreenPos();
+	if (g_diag_scroll) { ImGui::SetScrollHereY(0.0f); g_diag_scroll = false; }
+	ImDrawList *dl = ImGui::GetWindowDrawList();
+	auto P = [&](float x, float y) { return ImVec2(o.x + x * W, o.y + y * W); };
+	/* the body: a rounded slab with two grips (the Deck: one wide slab) */
+	const ImU32 body = ui::u32(ui::card), edge = ui::u32(ui::border);
+	if (g_pad_fam == PAD_FAM_DECK) { dl->AddRectFilled(P(0.02f, 0.04f), P(0.98f, 0.56f), body, W * 0.08f); dl->AddRect(P(0.02f, 0.04f), P(0.98f, 0.56f), edge, W * 0.08f); }
+	else {
+		dl->AddRectFilled(P(0.10f, 0.06f), P(0.90f, 0.40f), body, W * 0.10f); dl->AddRect(P(0.10f, 0.06f), P(0.90f, 0.40f), edge, W * 0.10f);
+		for (float gx : {0.20f, 0.80f}) { dl->AddCircleFilled(P(gx, 0.42f), W * 0.15f, body); }
+		dl->AddRectFilled(P(0.12f, 0.08f), P(0.88f, 0.38f), body, W * 0.09f);   /* (the grips merged into the slab) */
+	}
+	/* the shoulders: not on this map (the game's L and R, and the touch cursor's pair: Controls above) */
+	{	const PadNames *n = pad_names_of(g_pad_fam);
+		for (int k = 0; k < 2; k++) {
+			const float x0 = k ? 0.70f : 0.14f;
+			dl->AddRectFilled(P(x0, 0.025f), P(x0 + 0.16f, 0.062f), ui::u32(ui::surface), W * 0.015f); dl->AddRect(P(x0, 0.025f), P(x0 + 0.16f, 0.062f), edge, W * 0.015f);
+			const char *nm = k ? n->r : n->l; const ImVec2 ts = ImGui::CalcTextSize(nm);
+			ImFont *f = ImGui::GetFont(); const float fs = std::min(ImGui::GetFontSize(), W * 0.03f);
+			const ImVec2 ts2 = f->CalcTextSizeA(fs, FLT_MAX, 0, nm); (void)ts;
+			dl->AddText(f, fs, ImVec2(o.x + (x0 + 0.08f) * W - ts2.x * 0.5f, o.y + 0.0435f * W - ts2.y * 0.5f), ui::u32(ui::muted), nm);
+		}
+	}
+	/* the buttons: each a button of its own */
+	for (int bi = 0; bi < PD_N; bi++) {
+		const PadSpot s = pad_spot(g_pad_fam, bi);
+		const ImVec2 c = P(s.x, s.y); const float r = s.r * W, hit = std::max(r, g_touch ? em * 1.1f : em * 0.7f);
+		ImGui::SetCursorScreenPos(ImVec2(c.x - hit, c.y - hit));
+		ImGui::PushID(bi);
+		ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0, 0, 0, 0)); ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0, 0, 0, 0)); ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0, 0, 0, 0));
+		const std::string id = "##spot" + std::string(pd_names[bi]);
+		if (ImGui::Selectable(id.c_str(), false, 0, ImVec2(hit * 2, hit * 2))) { g_spot.open = true; g_spot.spot = bi; }
+		ImGui::PopStyleColor(3);
+		const bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
+		ImGui::PopID();
+		const bool clash = on[bi].size() > 1, empty = on[bi].empty();
+		dl->AddCircleFilled(c, r, ui::u32(hot ? ui::card_hi : ui::surface));
+		dl->AddCircle(c, r, clash ? ui::u32(ui::error) : hot ? ui::u32(ui::accent) : edge, 0, clash || hot ? 2.5f : 1.0f);
+		if (!empty) vita_symbol(dl, c, r, on[bi][0], ui::u32(ui::text));
+		else dl->AddLine(ImVec2(c.x - r * 0.35f, c.y), ImVec2(c.x + r * 0.35f, c.y), ui::u32(ui::muted), 1.5f);   /* (nothing on it) */
+		if (clash) { const char *two = on[bi].size() > 2 ? "3+" : "2"; dl->AddText(ImVec2(c.x + r * 0.7f, c.y - r * 1.3f), ui::u32(ui::error), two); }
+	}
+	ImGui::SetCursorScreenPos(ImVec2(o.x, o.y + H));
+	ImGui::Dummy(ImVec2(W, 0));
+	ImGui::PushTextWrapPos(0);
+	ui::muted_wrapped("Each button shows the Vita button it is. Select one on the drawing to change it.");
+	bool any_clash = false; for (int bi = 0; bi < PD_N; bi++) any_clash |= on[bi].size() > 1;
+	if (any_clash) { ImGui::PushStyleColor(ImGuiCol_Text, ui::error); ImGui::TextWrapped("Red: two Vita buttons on one button -- the game keeps only one of them."); ImGui::PopStyleColor(); }
+	if (!unplaced.empty()) {
+		std::string l = "Not on any button: ";
+		for (size_t i = 0; i < unplaced.size(); i++) l += (i ? ", " : "") + std::string(k_pad_rows[unplaced[i]].label);
+		ImGui::PushStyleColor(ImGuiCol_Text, ui::warn); ImGui::TextWrapped("%s", l.c_str()); ImGui::PopStyleColor();
+	}
+	ImGui::PopTextWrapPos();
+	ImGui::Dummy(ImVec2(0, em * 0.3f));
+}
+static bool g_bind_open(void) { return g_bind.open || g_spot.open; }   /* (a dialog over Settings: B closes it, not Settings) */
+static void spot_modal(const SetTarget &t) {   /* "What does <button> do?" (inside Settings) */
+	if (!g_spot.open) return;
+	const ImGuiViewport *vp = ImGui::GetMainViewport(); const float em = ImGui::GetFontSize();
+	if (!ImGui::IsPopupOpen("##spot")) ImGui::OpenPopup("##spot");
+	ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x < 40 * em ? vp->WorkSize.x * 0.94f : 34 * em, 0), ImGuiCond_Always);
+	ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(1.6f * em, 1.3f * em)); ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+	if (!ImGui::BeginPopupModal("##spot", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove)) { ImGui::PopStyleVar(2); return; }
+	ImGui::PopStyleVar(2);
+	const char *phys = pd_names[g_spot.spot];
+	ui::heading(("What does " + pad_button_label(phys) + " do?").c_str(), em * 1.3f);
+	std::vector<std::string> values; for (const BindRow &r : k_pad_rows) values.push_back(bind_value(t, r, true));
+	const auto on = pad_diag_on(values)[g_spot.spot];
+	dialog_body_begin();
+	ImGui::PushTextWrapPos(0);
+	ui::muted_wrapped("The Vita button it is in the game. One that was on another button moves here.");
+	ImGui::PopTextWrapPos();
+	int chosen = -2;   /* -2 nothing chosen, -1 "Nothing", else the row */
+	for (int i = 0; i < 12; i++) {
+		const bool here = std::find(on.begin(), on.end(), i) != on.end();
+		std::string l = std::string(k_pad_rows[i].label) + (here ? "  (now)" : "") + "##vita" + std::to_string(i);
+		if ((here ? ui::primary_button(l.c_str(), ImVec2(-FLT_MIN, 0)) : ImGui::Button(l.c_str(), ImVec2(-FLT_MIN, 0)))) chosen = i;
+		if (i == 0 && ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere(-1);
+	}
+	if (ImGui::Button("Nothing##vita", ImVec2(-FLT_MIN, 0))) chosen = -1;
+	dialog_body_end();
+	bool close = false;
+	if (ImGui::Button("Cancel##spot") || dialog_back()) close = true;
+	dialog_hints();
+	if (chosen >= 0) { if (g_settings_writable) bind_write(t, true, chosen, phys); if (g_shot_mode) g_shot_done.push_back(std::string("bound ") + k_pad_rows[chosen].key + "=" + phys); close = true; }
+	if (chosen == -1) { for (int i : on) { if (g_settings_writable) target_write(t, k_pad_rows[i].key, "none"); if (g_shot_mode) g_shot_done.push_back(std::string("bound ") + k_pad_rows[i].key + "=none"); } close = true; }
+	if (close) { g_spot.open = false; ImGui::CloseCurrentPopup(); }
+	ImGui::EndPopup();
+}
 static void mapping_rows(const SetTarget &t) {   /* (Controls tab, after its rows) */
 	const float em = ImGui::GetFontSize();
 	ui::row("Mapping for", "Each way of playing has its own mapping; the game's own menu (F10, Controls) changes the same.");
@@ -1834,7 +1955,7 @@ static void mapping_rows(const SetTarget &t) {   /* (Controls tab, after its row
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
 	if (g_map_type == 2) {   /* (UI-01n) the on-screen buttons: when they show, how big; the rest of the screen is the Vita's front touch screen */
 		if (ui::rows_begin("map_touch")) {
-			seg_row(t, "On-screen buttons", "For playing by touch alone: the Vita's buttons and sticks on the screen. Automatic shows them once you touch the screen and hides them when you use a controller or the keyboard.",
+			seg_row(t, "On-screen buttons", "For playing by touch alone: the Vita's buttons and sticks on the screen. Automatic shows them when you touch the screen and no controller is connected (a Steam Deck never shows them by itself).",
 			        "osb", "auto", {{"auto", "Automatic"}, {"on", "Always"}, {"off", "Off"}});
 			slider_row(t, "Button size", "Bigger buttons are easier to hit; smaller ones cover less of the game.", "osb_size", 1.0, 0.75f, 1.5f, "%.2f×");
 			ui::rows_end();
@@ -1848,6 +1969,7 @@ static void mapping_rows(const SetTarget &t) {   /* (Controls tab, after its row
 	}
 	const bool pad = g_map_type == 0;
 	const BindRow *rows = pad ? k_pad_rows : k_key_rows; const int n = pad ? 12 : 16;
+	if (pad) pad_diagram(t);   /* (UI-02c) the drawing first, the list under it */
 	if (ui::rows_begin(pad ? "map_pad" : "map_keys")) {
 		for (int i = 0; i < n; i++) {
 			const std::string v = bind_value(t, rows[i], pad);
@@ -1943,6 +2065,7 @@ static void settings_modal(void) {
 	dialog_hints();
 	child_dialogs();   /* (Library: Add a folder; the online name) */
 	bind_modal(SetTarget{&g_shared, shared_path(), SHARED_HEADER});
+	spot_modal(SetTarget{&g_shared, shared_path(), SHARED_HEADER});
 	ImGui::EndPopup();
 }
 
@@ -3765,7 +3888,9 @@ int main(int argc, char **argv) {
 		if (ui_sel.rfind("game:", 0) == 0) g_game_settings = ui_sel.substr(5);
 		if (ui_sel.rfind("more:", 0) == 0) g_game_page = ui_sel.substr(5);
 		if (ui_sel.rfind("name:", 0) == 0) g_name_game = ui_sel.substr(5);
-		if (ui_sel == "map:touch") { g_settings_open = true; g_settings_tab = 1; g_map_type = 2; }   /* (UI-01n: Settings > Controls, the touch mapping) */
+		if (ui_sel == "map:diagram") { g_settings_open = true; g_settings_tab = 1; g_map_type = 0; g_diag_scroll = true; }   /* (UI-02c: the drawing in view) */
+		else if (ui_sel.rfind("map:spot:", 0) == 0) { g_settings_open = true; g_settings_tab = 1; g_map_type = 0; g_spot.open = true; g_spot.spot = atoi(ui_sel.c_str() + 9) % PD_N; }
+		else if (ui_sel == "map:touch") { g_settings_open = true; g_settings_tab = 1; g_map_type = 2; }   /* (UI-01n: Settings > Controls, the touch mapping) */
 		else if (ui_sel.rfind("map:", 0) == 0) {   /* (map:pad|key:<row>: Settings > Controls with that row's Change dialog open) */
 			g_settings_open = true; g_settings_tab = 1; g_map_type = ui_sel.compare(4, 3, "pad") == 0 ? 0 : 1;
 			g_bind.open = true; g_bind.pad = g_map_type == 0; g_bind.row = atoi(ui_sel.c_str() + 8); g_bind.until = 6.0;   /* (a screenshot run's clock starts at 0: the real 6 seconds) */
