@@ -138,6 +138,16 @@ known intervals, then the full overlay is read back:
 On Windows (llvm-mingw), use `../platform/platform_win32.c` and add `-static -lpthread -lwinmm`. It prints
 `all passed`.
 
+## What the dialogs that finish at once answer: `dialog_result_test.c`
+
+Checks `runtime/core/apputil.c`'s results offline. `sceMsgDialogGetResult` fills SceMsgDialogResult as a console
+does after the player confirmed: mode as opened, result OK, buttonId 1 (OK / YES / first button), or INVALID (0)
+for a user message without buttons and for a progress bar. The offline network check is the user backing out:
+USER_CANCELED (1), psnModeSucceeded 0; online it stays OK and 1. Build as `dlg_term_test.c` below; fail-before
+against an older apputil.c: `-DAPPUTIL_UNDER_TEST='"<file>"'` (one fail per message dialog and the offline net check).
+
+    cc -O1 -g -Wall -D_GNU_SOURCE $INC -I $SDL3_INC dialog_result_test.c -o /tmp/dialog_result_test -lpthread && /tmp/dialog_result_test
+
 ## The common dialogs' Term contract: `dlg_term_test.c`
 
 Checks the `Term` handlers in `runtime/core/apputil.c` against the common-dialog contract: a `Term` with no

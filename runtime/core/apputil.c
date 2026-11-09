@@ -34,7 +34,24 @@ static int dialog_open[DLG_N];
 	static void h_##name##_term(Cpu *c) { int in_use = dialog_open[kind]; dialog_open[kind] = 0; RET(in_use ? 0 : 0x80020411u); } /* NOT_IN_USE without an open dialog */
 DIALOG(DLG_TROPHY, trophy_dlg)
 DIALOG(DLG_NETCHECK, net_dlg)
-DIALOG(DLG_MSG, msg_dlg)
+DIALOG(DLG_MSG, msg_dlg_base)
+/* the message dialog's result is the console's after the player confirmed it: SceMsgDialogResult {mode, result,
+ * buttonId} -- mode as the game opened it (SceMsgDialogParam.mode, +80 after sdkVersion and the 76-byte
+ * SceCommonDialogParam), result OK, and the button the player took: the first (OK / YES / BUTTON1, id 1) for a user
+ * message with buttons or a system / error message; none (INVALID 0) for a user message without buttons or a progress
+ * bar, which only the game closes. Writing only word 0 left mode 0 and buttonId INVALID: no answer to the question. */
+static uint32_t msg_dlg_mode, msg_dlg_button;
+static void h_msg_dlg_init(Cpu *c) {
+	msg_dlg_mode = A0 ? RD32(A0 + 80) : 0; msg_dlg_button = 1;
+	uint32_t btype = 0xffffffffu;
+	if (msg_dlg_mode == 1 && A0 && RD32(A0 + 84)) { btype = RD32(RD32(A0 + 84)); if (btype == 2) msg_dlg_button = 0; }   /* USER_MSG; button type NONE */
+	if (msg_dlg_mode == 4) msg_dlg_button = 0;   /* PROGRESS_BAR */
+	static int logged; if (logged++ < 4) fprintf(stderr, "    msg dialog: mode %u button type %d -> confirmed, button %u\n", msg_dlg_mode, (int)btype, msg_dlg_button);
+	h_msg_dlg_base_init(c);
+}
+static void h_msg_dlg_status(Cpu *c) { h_msg_dlg_base_status(c); }
+static void h_msg_dlg_term(Cpu *c) { h_msg_dlg_base_term(c); }
+static void h_msg_dlg_result(Cpu *c) { if (A0) { WR32(A0, msg_dlg_mode); WR32(A0 + 4, 0); WR32(A0 + 8, msg_dlg_button); } RET(0); }
 DIALOG(DLG_EULA, eula_dlg)
 static void h_dialog_result(Cpu *c) { if (A0) WR32(A0, 0); RET(0); }
 /* (HLE-LIB-01) Abort / Close for the kinds above: one that is in use finishes (its result stays the host's OK);
@@ -121,9 +138,11 @@ CDLG_HANDLERS(CDLG_TW, ctw) CDLG_INIT(CDLG_TW, ctw)
 CDLG_HANDLERS(CDLG_STORE_CHECKOUT, cstore) CDLG_INIT(CDLG_STORE_CHECKOUT, cstore)
 /* SceNetCheckDialogResult {result, psnModeSucceeded, ...}: online (net.h), connected and, in the PSN modes, signed in (np.c's
  * local account) -- with psnModeSucceeded left 0 Killzone took its Multiplayer connect as a failed sign-in and went quietly
- * back to the menu */
+ * back to the menu. Offline the check cannot succeed: a Vita without a connection shows its "could not connect" page and the
+ * user backs out -- SCE_COMMON_DIALOG_RESULT_USER_CANCELED (1). Answered OK offline, an online-only title (MHF-G) took the
+ * check as passed and waited for a PSN sign-in for ever behind its dimmed title screen. */
 static void h_net_dlg_result(Cpu *c) {
-	if (A0) { WR32(A0, 0); WR32(A0 + 4, net_online() ? 1 : 0); }
+	if (A0) { WR32(A0, net_online() ? 0 : 1); WR32(A0 + 4, net_online() ? 1 : 0); }
 	if (!net_online() && net_online_needs()) {   /* the game went for its online modes on a version they aren't for: say why it can't (net.h) */
 		static double told; const double now = (double)time(0);
 		if (now - told > 20) { told = now; char b[200]; snprintf(b, sizeof b, "This copy of the game isn't the version online play is for. Add update %s in the launcher, then play again.", net_online_needs());
@@ -827,7 +846,7 @@ const HleEntry hle_apputil[] = {
 	{"sceNetCheckDialogTerm", h_net_dlg_term},
 	{"sceMsgDialogInit", h_msg_dlg_init},
 	{"sceMsgDialogGetStatus", h_msg_dlg_status},
-	{"sceMsgDialogGetResult", h_dialog_result},
+	{"sceMsgDialogGetResult", h_msg_dlg_result},
 	{"sceMsgDialogTerm", h_msg_dlg_term},
 	{"SceCommonDialog_33626E2C", h_eula_dlg_init}, {"SceCommonDialog_B7D4C911", h_eula_dlg_status},
 	{"SceCommonDialog_D1858A78", h_eula_dlg_result}, {"SceCommonDialog_BEBAEF25", h_eula_dlg_term}, {"SceCommonDialog_B55CF0E3", h_eula_dlg_term},
