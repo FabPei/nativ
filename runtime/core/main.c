@@ -13,6 +13,7 @@
 #include <sys/prctl.h>
 #endif
 #include "stubret.h"
+#include "seedaddr.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -57,7 +58,8 @@ void recomp_runfast(void) {
 #define GUEST_HEAP_END 0x80000000u
 static uint32_t heap_top = GUEST_HEAP;
 /* the guest memory in use: the loaded images' segments and the heap so far (gfx_capture.c snapshots these) */
-static uint32_t seg_lo[64], seg_hi[64]; static int nseg;
+#define MAX_SEGS 512   /* (64 before: a game with dozens of on-demand modules, 2-3 segments each, filled it) */
+static uint32_t seg_lo[MAX_SEGS], seg_hi[MAX_SEGS]; static int nseg;
 int guest_mem_ranges(uint32_t lo[], uint32_t hi[], int max) {
 	int n = 0;
 	for (int i = 0; i < nseg && n < max - 1; i++) { lo[n] = seg_lo[i]; hi[n] = seg_hi[i]; n++; }
@@ -357,7 +359,7 @@ void recomp_call_external(Cpu *c, uint32_t addr) {
 		 * Thumb code called or branched to (a branch target carries no Thumb bit; np_matching2's 0x8cee was
 		 * recorded as ARM); ARM: the rest */
 		const char *sp = getenv("RECOMP_SEEDS");
-		FILE *sf = addr >= 0x81000000u && addr < 0xa0000000u ? fopen(sp ? sp : "missed_functions.txt", "a") : 0;   /* (a call through a null or poisoned pointer is not a missed function) */
+		FILE *sf = seed_addr(addr, seg_lo, seg_hi, nseg) ? fopen(sp ? sp : "missed_functions.txt", "a") : 0;   /* (seedaddr.h: in a loaded image; a call through a null or poisoned pointer is not a missed function) */
 		if (sf) { fprintf(sf, "%#x %s\n", addr & ~1u, (addr & 3) || (c->r[14] & 1) ? "thumb" : "arm"); fclose(sf); }
 		summary("stopped"); exit(2);
 	}
@@ -516,7 +518,7 @@ static int load_image_ex(const char *path, int ondemand, uint32_t *start, uint32
 		if (h[2] && fread(G(h[0]), 1, h[1], f) != h[1]) { fprintf(stderr, "%s: truncated\n", path); if (ondemand) { fclose(f); return -1; } exit(1); }
 		if (!h[2] && ondemand) memset(G(h[0]), 0, h[1]);   /* (a reload starts from a zeroed .bss again) */
 		fprintf(stderr, "loaded %#010x %#9x%s\n", h[0], h[1], h[2] ? "" : " (zero)");
-		if (nseg < 64) { seg_lo[nseg] = h[0]; seg_hi[nseg] = h[0] + h[1]; nseg++; }
+		if (nseg < MAX_SEGS) { seg_lo[nseg] = h[0]; seg_hi[nseg] = h[0] + h[1]; nseg++; }
 		if (h[0] < 0xffe00000u) {   /* (the module's range: its segments, not its imported-variable slots up there) */
 			if (h[0] < l) l = h[0];
 			if (h[0] + h[1] > h_) h_ = h[0] + h[1];
