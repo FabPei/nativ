@@ -20,6 +20,10 @@
                                             a game as a Steam shortcut (pipeline/steam.py): <launcher> --play <title>,
                                             written into every Steam user's shortcuts.vdf (a copy kept first; refused
                                             while Steam runs); remove takes out only ours
+  vitarecomp export-appimage <title> <out.AppImage>   a built game as one AppImage for the player's OWN Linux
+                                            handheld (a Steam Deck; pipeline/appimage.py): compiled once more for its
+                                            processor (EXPORT_CPU, default znver2) as <base>_deck, packed with the
+                                            game's images and app0 -- private: it holds the game. On Windows: in WSL
   vitarecomp add       <copy> [--license work.bin] [--no-build] [--in-place]   a game or its update (ux0:app/<title>
                                             or ux0:patch/<title> copied off the Vita, or a PKG with its licence file
                                             (.rif or work.bin); an already-decrypted folder works too), decrypted here
@@ -114,6 +118,7 @@ R = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.dirname(R)   # (p
 RECOMPILER, RUNTIME, PACKS, DECRYPT, DEV = (os.path.join(ROOT, d) for d in ("recompiler", "runtime", "packs", "decrypt", "dev"))
 PACKS = os.environ.get("ATIV_PACKS") or PACKS   # (ATIV_PACKS=<dir>: the packs read from there -- a game run as if it had none, bootstrap's test)
 sys.path.insert(0, R)
+import appimage  # noqa: E402
 import bootstrap  # noqa: E402
 import hookscan  # noqa: E402
 import packconf  # noqa: E402
@@ -649,6 +654,19 @@ def tee_run(argv, env, cwd, log_path):
     return rc
 
 
+def play_fixed_env(g, shipped=None, icon=None):
+    """the settings `vitarecomp run` gives the game after its RUN_ENV (export-appimage's AppRun too: shipped/icon then the
+    image's paths)"""
+    have_shipped = os.path.isfile(os.path.join(PACKS, g.PACK, "shaders.txt"))
+    shipped = shipped or os.path.join(PACKS, g.PACK, "shaders.txt")
+    own_icon = os.path.join(ROOT, "assets", "brand", "png", "icon-" + ("macos-512" if sys.platform == "darwin" else "256") + ".png")   # (the window's: window.c)
+    icon = icon or own_icon
+    return ([("RECOMP_SHADER_RECIPES_SHIPPED", shipped)] if have_shipped else []) + ([("RECOMP_ICON", icon)] if os.path.isfile(own_icon) and sys.platform != "win32" else []) + [
+        ("RECOMP_TITLE", g.TITLE_ID), ("RECOMP_GAME_NAME", g.NAME), ("RECOMP_TOOLS_VERSION", tools_version()), ("RECOMP_GAME_VERSION", g.VERSION or ""),
+        ("RECOMP_LOG", ENV.get("RECOMP_LOG") or "0"),
+        ("RECOMP_HITCH_LOG", ENV.get("RECOMP_HITCH_LOG") or "50"), ("RECOMP_STALL_PROF", ENV.get("RECOMP_STALL_PROF") or "150")]
+
+
 def cmd_run(g, frames):
     OUT = g.OUT
     os.makedirs(os.path.join(OUT, "captures"), exist_ok=True)   # F12 in the window saves captures here
@@ -656,12 +674,7 @@ def cmd_run(g, frames):
     # session.log: this session's stderr (the terminal still shows it; the one before is session.prev.log), with the hitch
     # log on for frames over 50 ms -- what a first-use stutter did, from the player's own session (RECOMP_HITCH_LOG=0: off)
     # RECOMP_SHADER_RECIPES_SHIPPED: packs/<title>/shaders.txt, the shader recipes that ship (gfx_gpu.c: built as the game registers each program)
-    shipped = os.path.join(PACKS, g.PACK, "shaders.txt")
-    icon = os.path.join(ROOT, "assets", "brand", "png", "icon-" + ("macos-512" if sys.platform == "darwin" else "256") + ".png")   # (the window's: window.c)
-    fixed = ([("RECOMP_SHADER_RECIPES_SHIPPED", shipped)] if os.path.isfile(shipped) else []) + ([("RECOMP_ICON", icon)] if os.path.isfile(icon) and sys.platform != "win32" else []) + [
-        ("RECOMP_TITLE", g.TITLE_ID), ("RECOMP_GAME_NAME", g.NAME), ("RECOMP_TOOLS_VERSION", tools_version()), ("RECOMP_GAME_VERSION", g.VERSION or ""),
-        ("RECOMP_LOG", ENV.get("RECOMP_LOG") or "0"),
-        ("RECOMP_HITCH_LOG", ENV.get("RECOMP_HITCH_LOG") or "50"), ("RECOMP_STALL_PROF", ENV.get("RECOMP_STALL_PROF") or "150")]
+    fixed = play_fixed_env(g)
     # ATIV_PRE_LAUNCH / ATIV_POST_EXIT (the environment): commands run before the game starts and after it exits. On a machine
     # whose GPU is shared (a local AI model kept in VRAM, say) the GPU must be free BEFORE the game starts: a game that starts
     # into full VRAM keeps its allocations in system memory for the whole session, even once the model is gone (an Uncharted
@@ -1090,6 +1103,78 @@ def cmd_bootstrap(g, rest):
     return 0 if s["stop"] == "frame_reached" else 3
 
 
+EXPORT_BIN = "deck"   # export-appimage's binary: <base>_deck beside the play one (the play binary and .built_version untouched)
+
+
+def wsl_path(p):   # a Windows path as WSL sees it (/mnt/c/...)
+    return subprocess.run(["wsl.exe", "-e", "wslpath", "-a", p], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def cmd_export_appimage(T, out, rest):
+    """the game as one AppImage for the player's own Linux handheld (pipeline/appimage.py): its code as it is (made by
+    the launcher's Build: nothing is recompiled) compiled once more for the handheld's processor -- EXPORT_CPU, default
+    znver2, a Steam Deck's (a native build runs instructions the Deck has none of: GFNI, a SIGILL at start) -- into
+    <base>_deck, then packed with the game's images and app0. On Windows it all runs in WSL (its Linux toolchain:
+    ATIV_LINUX_TOOLCHAIN, else ~/toolchains/ativ-linux, made by runtime/platform/linux/setup-toolchain.sh)"""
+    if not out.endswith(".AppImage"): die("export-appimage: the output is a file named <something>.AppImage")
+    say("export: " + appimage.NOTICE)
+    if WINDOWS:
+        say("export: running in WSL (the Linux build and the packing)")
+        try: wroot, wdump, wout = wsl_path(ROOT), wsl_path(DUMP), wsl_path(os.path.abspath(out))
+        except (OSError, subprocess.CalledProcessError): die("export-appimage: needs WSL (wsl.exe) on Windows")
+        os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+        keep = [f"{k}={ENV[k]}" for k in ("EXPORT_CPU", "JOBS", "RUNTIME_FROM", "ATIV_LINUX_TOOLCHAIN", "ATIV_PACKS") if ENV.get(k)]
+        for i, kv in enumerate(keep):   # (paths as WSL sees them)
+            k, _, v = kv.partition("=")
+            if k in ("RUNTIME_FROM", "ATIV_PACKS") and re.match(r"[A-Za-z]:[\\/]", v): keep[i] = f"{k}={wsl_path(v)}"
+        return run(["wsl.exe", "-e", "env", f"ATIV_DUMP={wdump}", "PYTHONUTF8=1"] + keep +
+                   ["python3", wroot + "/pipeline/vitarecomp.py", "export-appimage", T, wout] + rest, check=False).returncode
+    g = Game(T, "export-appimage")
+    if not os.path.isfile(os.path.join(g.W, "elf", g.ELF)): die(f"{T}: not added yet (vitarecomp add, or + Add game in the launcher)")
+    stamp = os.path.join(g.OUT, ".recompile_inputs")
+    if not os.path.isfile(stamp) or open(stamp, encoding="utf-8").read().strip() != recompile_inputs(g):
+        die(f"{T}: its code isn't made for these tools yet: build it (vitarecomp ready {T}, or Build in the launcher), then export")
+    cpu = ENV.get("EXPORT_CPU") or "znver2"
+    lt = ENV.get("ATIV_LINUX_TOOLCHAIN") or os.path.expanduser("~/toolchains/ativ-linux")
+    if not os.path.isfile(os.path.join(lt, "bin", "cc")) and not os.path.isfile(os.path.join(ROOT, "toolchain", "bin", "cc")):
+        die(f"export-appimage: no Linux toolchain at {lt}: bash runtime/platform/linux/setup-toolchain.sh {lt} (or ATIV_LINUX_TOOLCHAIN=<it>)")
+    if not shutil.which("mksquashfs"): die("export-appimage: needs mksquashfs (Debian/Ubuntu: sudo apt install squashfs-tools)")
+    say(f"export 1/3: compiling {g.NAME} for the handheld's processor ({cpu}); the first time takes as long as a build")
+    benv = {"RECOMP_BIN": EXPORT_BIN, "RECOMP_CPU": cpu}
+    if os.path.isfile(os.path.join(lt, "bin", "cc")): benv["ATIV_LINUX_TOOLCHAIN"] = lt
+    run(SELF + ["build", T], env=env_with(benv))
+    exe = f"{g.BASE}_{EXPORT_BIN}"
+    sdl = os.path.join(g.OUT, "libSDL3.so.0")
+    for f in (exe, g.BASE + ".img"):
+        if not os.path.isfile(os.path.join(g.OUT, f)): die(f"export-appimage: {f} wasn't made in {g.OUT}")
+    say("export 2/3: collecting the game's files (app0 is copied whole)")
+    files = [(os.path.join(g.OUT, exe), exe), (os.path.join(g.OUT, g.BASE + ".img"), g.BASE + ".img")]
+    if os.path.isfile(sdl): files.append((sdl, "libSDL3.so.0"))
+    mods = [m + ".img" for m in g.MODS]
+    lmods = [(g.LPATH[m], m + ".img") for m in g.LMODS]
+    files += [(os.path.join(g.OUT, m), m) for m in mods + [n for _p, n in lmods]]
+    shipped = os.path.join(PACKS, g.PACK, "shaders.txt")
+    if os.path.isfile(shipped): files.append((shipped, "shaders.txt"))
+    icon = os.path.join(g.W, "app0", "sce_sys", "icon0.png")
+    if not os.path.isfile(icon): icon = os.path.join(ROOT, "assets", "brand", "png", "icon-256.png")
+    files.append((os.path.join(ROOT, "assets", "brand", "png", "icon-256.png"), "window-icon.png"))
+    env = [tuple(w.partition("=")[::2]) for w in g.RUN_ENV.split() if "=" in w] + play_fixed_env(g, "$APPDIR/game/shaders.txt", "$APPDIR/game/window-icon.png")
+    cache = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "ProjectNativ", "appimage")
+    stage = os.path.join(cache, f"appdir-{T}")
+    appimage.make_appdir(stage, title=T, name=g.NAME, exe=exe, files=files, app0=os.path.realpath(os.path.join(g.W, "app0")),
+                         icon=icon, image=g.BASE + ".img", entry=g.entry(), env=env, modules=mods, load_modules=lmods)
+    say("export 3/3: packing the AppImage")
+    try:
+        rt = appimage.fetch_runtime(cache, ENV.get("RUNTIME_FROM"))
+        os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+        appimage.pack(stage, rt, out)
+    finally: shutil.rmtree(stage, ignore_errors=True)
+    say(f"exported {g.NAME} -> {out} ({os.path.getsize(out) / 1e9:.2f} GB); on the handheld: mark it executable, start it, "
+        f"or add it to Steam as a non-Steam game. Its saves and settings: ~/.local/share/ProjectNativ/Exported/{T}")
+    say("export: " + appimage.NOTICE)
+    return 0
+
+
 def main(argv):
     try:   # (this program's own output UTF-8 too, and never an error over a character it can't write)
         sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace", line_buffering=True)
@@ -1111,6 +1196,9 @@ def main(argv):
         if not packconf.pack_for(PACKS, T.split("_")[0]): cmd_pack_init(T, False)
         return cmd_bootstrap(Game(T, cmd), argv[2:])
     if cmd == "hooks-scan": cmd_hooks_scan(Game(T, cmd)); return 0
+    if cmd == "export-appimage":
+        if len(argv) < 3: usage(); return 1
+        return cmd_export_appimage(T, argv[2], argv[3:])
     if cmd not in ("import", "analyze", "recompile", "build", "ready", "run", "test", "capture", "replay", "accept", "check", "coverage", "verify", "recipes", "versions"):
         usage(); return 1
     g = Game(T, cmd)
