@@ -363,3 +363,4 @@ generic, PR-suitable with the fixture's synthetic content (comment wording gener
 <!-- INTEGRATION-01 2026-11-09 16:2x refresh 17: + UI 2ea6ccf (UI-02a start hint per input, UI-02d touch-panel badge). menu_hint_test passes. -->
 <!-- INTEGRATION-01 2026-11-09 16:4x refresh 18: + UI 8fb6423 + 5144e0e (UI-02e: auto on-screen buttons only without a pad). touch_controls_test passes. -->
 <!-- INTEGRATION-01 2026-11-09 16:5x refresh 19: + UI 799cdb3 (UI-02c drawn controller mapping). pad_diagram_test passes; launcher rebuilt. -->
+<!-- INTEGRATION-01 2026-11-09 17:0x refresh 20: + UI a43507b (UI-02b controller + camera choice by name). device_pick_test passes; run_ci_tests see ledger. UI-02 a-e all in. -->
