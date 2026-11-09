@@ -610,6 +610,13 @@ class Fn:
             miss = f"o[k]" if mn == "vtbx" else "0"
             return [f"{{ uint8_t t[32], ix[8], o[8]; {loads} memcpy(ix, &c->vfp.d[{ix}], 8); memcpy(o, &c->vfp.d[{dd}], 8);"
                     f" for (int k = 0; k < 8; k++) o[k] = ix[k] < {n} ? t[ix[k]] : {miss}; memcpy(&c->vfp.d[{dd}], o, 8); }}"]
+        if mn == "vtrn" and dt in ("8", "16") and len(regs) == 2 and regs[0][0] == regs[1][0]:
+            # transpose: for each pair of elements (2e, 2e+1), D's 2e+1 and M's 2e swap
+            (a0, cnt), (b0, _) = dbytes(regs[0]), dbytes(regs[1])
+            es, nb = int(dt) // 8, 8 * cnt
+            return [f"{{ uint8_t x[16], y[16], t[2]; memcpy(x, &c->vfp.d[{a0}], {nb}); memcpy(y, &c->vfp.d[{b0}], {nb});"
+                    f" for (int e = 0; e < {nb // es}; e += 2) {{ memcpy(t, x + (e + 1) * {es}, {es}); memcpy(x + (e + 1) * {es}, y + e * {es}, {es}); memcpy(y + e * {es}, t, {es}); }}"
+                    f" memcpy(&c->vfp.d[{a0}], x, {nb}); memcpy(&c->vfp.d[{b0}], y, {nb}); }}"]
         if mn == "vtrn" and dt == "32" and len(regs) == 2 and regs[0][0] == regs[1][0]:
             (a0, cnt), (b0, _) = dbytes(regs[0]), dbytes(regs[1])
             out = []
@@ -775,14 +782,17 @@ class Fn:
             d, q0 = regs[0][1], 2 * regs[1][1]
             return [f"{{ {ty} a[{16 // es}]; {oty} o[{16 // es}]; memcpy(a, &c->vfp.d[{q0}], 16); for (int k = 0; k < {16 // es}; k++) o[k] = ({oty})(a[k] >> {n});"
                     f" memcpy(&c->vfp.d[{d}], o, 8); }}"]
-        if mn in ("vqshrn", "vqshrun") and dt in ("s16", "s32", "s64", "u16", "u32", "u64") and regs[0][0] == "d" and regs[1][0] == "q" and len(ops) == 3 and ops[2].type == ARM_OP_IMM:
+        if mn in ("vqshrn", "vqshrun", "vqrshrn", "vqrshrun") and dt in ("s16", "s32", "s64", "u16", "u32", "u64") and not (mn[2] == "r" and dt[1:] == "64") and regs[0][0] == "d" and regs[1][0] == "q" and len(ops) == 3 and ops[2].type == ARM_OP_IMM:
             # saturating narrowing shift right: each element of qM shifted right by the immediate (signed:
-            # arithmetic), saturated to the result's range (vqshrun: signed input, unsigned result)
+            # arithmetic), saturated to the result's range (vq[r]shrun: signed input, unsigned result); the
+            # rounding forms (vqrshrn / vqrshrun) add half the shifted-out unit first, at full precision (not for 64-bit elements: 65 bits)
             es = int(dt[1:]) // 8; n = ops[2].imm; ob = int(dt[1:]) // 2
+            rnd = mn.startswith("vqr")
+            mn = mn.replace("vqr", "vq")
             ty, oty = {2: ("uint16_t", "uint8_t"), 4: ("uint32_t", "uint16_t"), 8: ("uint64_t", "uint32_t")}[es]
             sg_in = dt[0] == "s"
             ity = {2: "int16_t", 4: "int32_t", 8: "int64_t"}[es] if sg_in else ty
-            shift = f"((int64_t)({ity})a[k] >> {n})" if sg_in else f"(uint64_t)(a[k] >> {n})"
+            shift = (f"((int64_t)({ity})a[k] >> {n})" if sg_in else f"(uint64_t)(a[k] >> {n})") if not rnd else                     (f"(((int64_t)({ity})a[k] + {1 << (n - 1)}ll) >> {n})" if sg_in else f"(((uint64_t)a[k] + {1 << (n - 1)}ull) >> {n})")
             if mn == "vqshrun" or not sg_in:
                 body = (f"o[k] = ({oty})SATU({shift}, {ob});" if sg_in else
                         f"{{ uint64_t t = {shift}; o[k] = t > {1 << ob}ull - 1 ? {oty}({(1 << ob) - 1}) : ({oty})t; }}")
@@ -830,6 +840,14 @@ class Fn:
                 return [f"{{ uint64_t t = 0; for (int k = 0; k < 4; k++) t |= (uint64_t)F2H(c->vfp.s[{sq} + k]) << (16 * k); c->vfp.d[{dd}] = t; }}"]
         # by scalar: vmul/vmla/vmls.f32 qD|dD, qN|dN, dM[x] (capstone leaves the lane in the text)
         sm = re.search(r"d(\d+)\[(\d)\]$", i.op_str)
+        if sm and dt in ("i16", "i32") and mn in ("vmul", "vmla", "vmls") and len(ops) == 3 and regs[0][0] == regs[1][0]:
+            # integer: each element of N times element x of dM, into (or added to / subtracted from) D, modulo the element
+            (dn, cnt), (an, _) = dbytes(regs[0]), dbytes(regs[1])
+            ty = "uint16_t" if dt == "i16" else "uint32_t"; es = int(dt[1:]) // 8
+            sc = f"({ty})(c->vfp.d[{int(sm.group(1))}] >> {8 * es * int(sm.group(2))})"
+            e = {"vmul": "p", "vmla": f"o[k] + p", "vmls": f"o[k] - p"}[mn]
+            return [f"{{ {ty} a[8], o[8], s = {sc}; memcpy(a, &c->vfp.d[{an}], {8 * cnt}); memcpy(o, &c->vfp.d[{dn}], {8 * cnt});"
+                    f" for (int k = 0; k < {8 * cnt // es}; k++) {{ {ty} p = ({ty})(a[k] * s); o[k] = ({ty})({e}); }} memcpy(&c->vfp.d[{dn}], o, {8 * cnt}); }}"]
         if sm and dt == "f32" and mn in ("vmul", "vmla", "vmls") and len(ops) == 3:
             dbase = (4 if q else 2) * regs[0][1]
             abase = (4 if regs[1][0] == "q" else 2) * regs[1][1]
@@ -1026,6 +1044,11 @@ class Fn:
             if mn in ("vhadd", "vhsub") and two:   # halving: the exact sum or difference, then floor(x / 2)
                 op = "+" if mn == "vhadd" else "-"
                 return pack(lambda j: f"(uint32_t)(({wide}{sa(j)} {op} {wide}{sb(j)}) >> 1)")
+            if mn in ("vqdmulh", "vqrdmulh") and two and sg and bits in (16, 32):
+                # high half of 2*a*b (+ rounding), saturated: computed as (a*b [+ 2^(bits-2)]) >> (bits-1), the same value
+                # without 2*MIN*MIN overflowing 64 bits; SATS clamps that one case (MIN*MIN) to MAX
+                rd = f" + {1 << (bits - 2)}ll" if mn == "vqrdmulh" else ""
+                return pack(lambda j: f"(uint32_t)SATS(((int64_t){sa(j)} * (int64_t){sb(j)}{rd}) >> {bits - 1}, {bits})")
             if mn in ("vabd", "vaba") and two:   # |a - b| exact (64-bit), truncated to the element; vaba adds it to d
                 ad = lambda j: f"(uint32_t)({wide}{sa(j)} > {wide}{sb(j)} ? {wide}{sa(j)} - {wide}{sb(j)} : {wide}{sb(j)} - {wide}{sa(j)})"
                 return pack(ad if mn == "vabd" else (lambda j: f"({E(regs[0], j)} + {ad(j)})"))
