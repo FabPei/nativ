@@ -85,10 +85,6 @@ void widen_aspect_reg(Cpu *c, int reg) {   /* a register holding the 960/544 con
  * hook, for a pack with no code of its own (needs RECOMP_ASPECT_HOOK=1 in its RUN_ENV, as every aspect hook) */
 void recomp_ihook_aspect(Cpu *c, int reg) { widen_aspect_reg(c, reg); }
 
-/* any game's: IHOOKS="addr:aspect" right after the instruction that leaves 960/544 in a core register (vitarecomp
- * hooks-scan proposes such sites) -- the same widening as the per-game aspect hooks, without a pack hooks.c */
-void recomp_ihook_aspect(Cpu *c, int reg) { widen_aspect_reg(c, reg); }
-
 /* the callbacks a game's diagnostics plug into (a pack's hooks.c sets them from a constructor): a call-sequence capture
  * to arm (verify.c), a call to address 0 (main.c), a stall of the presented frames (stallprof.c) */
 void (*hook_seq_arm)(const char *);
