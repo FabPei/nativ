@@ -917,7 +917,7 @@ static void texel(const GfxTexture *t, float u, float v, float out[4]) {
  * address by 4x4 block via block_index, not a flat per-texel stride -- see cube_texel) */
 static uint32_t tex_bytes_per_texel(uint32_t base) {
 	switch (base) {
-	case 0x1b000000u: return 8;                                                           /* F16F16F16F16 */
+	case 0x1b000000u: case 0x1e000000u: return 8;                                         /* F16F16F16F16 / F32F32 */
 	case 0x0c000000u: case 0x0d000000u: case 0x15000000u: case 0x9a000000u: case 0x12000000u:
 	case 0x11000000u: case 0x1a000000u: case 0x13000000u: case 0x0e000000u: return 4;     /* *8U8U8U8/S8S8S8S8/X8U24/U2F10F10F10/F32/F16F16/F11F11F10/F32M/U2U10U10U10 */
 	case 0x05000000u: case 0x09000000u: case 0x0a000000u: case 0x0b000000u: case 0x07000000u:
@@ -1197,6 +1197,11 @@ static void texel_raw(const GfxTexture *t, float u, float v, float out[4]) {
 		out[0] = (p & 0x3ff) / 1023.f; out[1] = ((p >> 10) & 0x3ff) / 1023.f; out[2] = ((p >> 20) & 0x3ff) / 1023.f; out[3] = (p >> 30) / 3.f;
 	} else if (base == 0x07000000u) {    /* U8U8: two components, R then G */
 		uint16_t p = RD16(at + 2 * texel_index(t, x, y)); out[0] = (p & 0xff) / 255.f; out[1] = (p >> 8) / 255.f; out[2] = 0; out[3] = 1;
+	} else if (base == 0x1e000000u) {    /* F32F32: two 32-bit floats, R then G, sampled as (r, g, 0, 1) -- an F32F32 colour target
+	                                       * (0x11000000, gfx_encode_target_f32 stores it bit for bit) read back as a texture (God Eater
+	                                       * samples one every frame of its start-up; undecoded, each texel was the magenta fallback) */
+		const uint32_t a = at + 8 * texel_index(t, x, y); uint32_t p0 = RD32(a), p1 = RD32(a + 4);
+		memcpy(&out[0], &p0, 4); memcpy(&out[1], &p1, 4); out[2] = 0; out[3] = 1;
 	} else if (base == 0x11000000u) {    /* F16F16 */
 		uint32_t p = RD32(at + 4 * texel_index(t, x, y)); out[0] = half_to_float_soft(p & 0xffff); out[1] = half_to_float_soft(p >> 16); out[2] = 0; out[3] = 1;
 	} else if (base == 0x02000000u) {    /* U4U4U4U4, ABGR: R in the low nibble (as U8U8U8U8's byte order; Killzone: Mercenary's

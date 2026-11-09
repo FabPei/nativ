@@ -50,6 +50,20 @@ int main(void) {
 	check("F32M texel: R 0.625 (as F32), G 0, B 0, A 1", near(px[0], 0.625f) && near(px[1], 0) && near(px[2], 0) && near(px[3], 1));
 	check("F32M is 4 bytes a texel (the GPU upload's size)", gfx_texture_bpp(&t) == 4);
 
+	/* F32F32 texture (base 0x1e), 2x1: two 32-bit floats a texel, R then G, sampled as (r, g, 0, 1) */
+	{ float v[4] = {0.25f, -3.5f, 1024.0f, 0.125f}; for (int k = 0; k < 4; k++) { uint32_t w; memcpy(&w, &v[k], 4); WR32(T + 0x300 + 4 * k, w); }
+	  GfxTexture f2; memset(&f2, 0, sizeof f2); f2.data = T + 0x300; f2.width = 2; f2.height = 1; f2.format = 0x1e000000u | 8;
+	  float q[8]; gfx_decode_texture_f32(&f2, q);
+	  check("F32F32 texel 0: R 0.25, G -3.5, B 0, A 1", q[0] == 0.25f && q[1] == -3.5f && q[2] == 0 && q[3] == 1);
+	  check("F32F32 texel 1: R 1024, G 0.125 (8 bytes on, full float range)", q[4] == 1024.0f && q[5] == 0.125f && q[6] == 0 && q[7] == 1);
+	  check("F32F32 is 8 bytes a texel (the GPU upload's size)", gfx_texture_bpp(&f2) == 8);
+	  /* an F32F32 colour target (0x11000000) read back as an F32F32 texture: the values the target stored */
+	  GfxTarget g2; memset(&g2, 0, sizeof g2); g2.data = T + 0x400; g2.width = 2; g2.height = 1; g2.stride = 2; g2.format = 0x11000000u;
+	  float in2[8] = {0.5f, 2.0f, 9, 9, -1.0f, 3.0f, 9, 9}, q2[8];
+	  gfx_encode_target_f32(&g2, in2);
+	  f2.data = T + 0x400; gfx_decode_texture_f32(&f2, q2);
+	  check("target 0x11000000 F32F32 read as texture 0x1e: (0.5, 2), (-1, 3)", q2[0] == 0.5f && q2[1] == 2.0f && q2[4] == -1.0f && q2[5] == 3.0f && q2[3] == 1 && q2[7] == 1); }
+
 	/* a U2U10U10U10 colour target: what it stores, the 0x0e texture reads */
 	GfxTarget g; memset(&g, 0, sizeof g);
 	g.data = T + 0x200; g.width = 2; g.height = 1; g.stride = 2; g.format = 0x60800000u;
