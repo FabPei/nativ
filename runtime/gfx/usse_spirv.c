@@ -1923,6 +1923,13 @@ static void emit_vert_epilogue(Gen *g, int *ok) {
 	uint32_t vz = load(s, t_vec(s, t_float(s), 4), pz);
 	uint32_t zoff = composite_extract1(s, t_float(s), vz, 0), zscale = composite_extract1(s, t_float(s), vz, 1);
 	pos[2] = fop2(s, SpvOpFAdd, fop2(s, SpvOpFMul, zoff, pos[3]), fop2(s, SpvOpFMul, zscale, pos[2]));
+	if (!g->points) {   /* SCE_GXM_VIEWPORT_DISABLED (VPDIS-01, gfx/viewport_map.h): the position is in target pixels; with the
+		 * host's factors in viewport_z[2..3] (2/W, -2/H; 0 for every other draw) x' = x*ax - w, y' = y*ay + w puts it in NDC */
+		uint32_t tf = t_float(s), ax = composite_extract1(s, tf, vz, 2), ay = composite_extract1(s, tf, vz, 3);
+		uint32_t on = result2(s, &s->func, SpvOpFOrdNotEqual, t_bool(s), ax, c_float(s, 0.0f));
+		uint32_t nx = fop2(s, SpvOpFSub, fop2(s, SpvOpFMul, pos[0], ax), pos[3]), ny = fop2(s, SpvOpFAdd, fop2(s, SpvOpFMul, pos[1], ay), pos[3]);
+		pos[0] = result3(s, &s->func, SpvOpSelect, tf, on, nx, pos[0]); pos[1] = result3(s, &s->func, SpvOpSelect, tf, on, ny, pos[1]);
+	}
 	if (g->pos_only) {   /* the motion variant's second run: its position, nothing else */
 		uint32_t id = nid(s); INS(&s->func, SpvOpCompositeConstruct, t_vec(s, t_float(s), 4), id, pos[0], pos[1], pos[2], pos[3]);
 		store(s, g->var_mv_prev, id); return;

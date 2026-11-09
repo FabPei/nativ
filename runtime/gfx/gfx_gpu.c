@@ -29,6 +29,7 @@
 #include "gfx.h"
 #include "usse.h"
 #include "usse_spirv.h"
+#include "viewport_map.h"
 #include "guestwatch.h"
 #include "metrics.h"
 #include "settings.h"
@@ -6058,7 +6059,11 @@ void gfx_gpu_draw(const GfxDraw *d) {
 		vp2.w = 2.0f * d->vp_xscale; vp2.x = d->vp_xoff - d->vp_xscale;
 		vp2.h = -2.0f * d->vp_yscale; vp2.y = d->vp_yoff + d->vp_yscale;
 		vp2.min_depth = 0.0f; vp2.max_depth = 1.0f;   /* z is mapped in the vertex shader (zOffset + zScale * z/w): the depth range stays the full [0,1] */
-	} else if (d->viewport_set) {   /* SCE_GXM_VIEWPORT_DISABLED: clip position IS the device position, 1:1 */
+	} else if (d->viewport_set && !g_points_draw) {   /* SCE_GXM_VIEWPORT_DISABLED: the position is the device position. The host
+		 * clips to |x|,|y| <= w before its viewport, so the draw gets the whole target and the vertex epilogue maps pixels to NDC
+		 * (viewport_z[2..3], gfx/viewport_map.h -- VPDIS-01: Toukiden's KTGL sprites, every one black in a 2x2 viewport before) */
+		vp2 = (SDL_GPUViewport){ 0, 0, (float)vw, (float)scene_entry->height, 0.0f, 1.0f };
+	} else if (d->viewport_set) {   /* DISABLED point sprites: clip position 1:1 as before (their corner offsets are in pixels) */
 		vp2 = (SDL_GPUViewport){ -1.0f, -1.0f, 2.0f, 2.0f, 0.0f, 1.0f };
 	} else vp2 = (SDL_GPUViewport){ 0, 0, (float)vw, (float)scene_entry->height, 0.0f, 1.0f };   /* never set: the old implicit full-target mapping */
 	{ float kx = (float)scene_sx, ky = (float)scene_sy; vp2.x *= kx; vp2.y *= ky; vp2.w *= kx; vp2.h *= ky; }   /* render scale: the target's pixels are n x n (DISABLED's 1:1 device mapping too: (-n,-n,2n,2n) puts clip x at n*x) */
@@ -6168,6 +6173,7 @@ void gfx_gpu_draw(const GfxDraw *d) {
 		int vz_on = d->viewport_set && !d->viewport_disabled;
 		b->vu.viewport_z[0] = b->fu.viewport_z[0] = vz_on ? d->vp_zoff : 0.0f; b->vu.viewport_z[1] = b->fu.viewport_z[1] = vz_on ? d->vp_zscale : 1.0f;
 		b->vu.viewport_z[2] = b->vu.viewport_z[3] = b->fu.viewport_z[2] = b->fu.viewport_z[3] = 0;
+		if (d->viewport_set && d->viewport_disabled && !g_points_draw) vp_disabled_factors((float)vw, (float)scene_entry->height, &b->vu.viewport_z[2], &b->vu.viewport_z[3]);   /* (VPDIS-01: pixels -> NDC in the vertex epilogue; 0 for every other draw) */
 		if (g_points_draw) {   /* point sprites: half a target pixel in NDC per axis, signed for the screen's directions (gfx_soft.c's render_points_interp) */
 			float kx, ky; int ydown, xleft = 0;
 			if (d->viewport_set && d->viewport_disabled) { kx = ky = 1; ydown = 1; }
