@@ -13,7 +13,8 @@ Ghidra's Vita loader gives each one a 0x1000-byte slot from 0xfff00000, in impor
 
 A module loaded with the program (mkimage.py ... --module) also gets "EXPT", u32 count, count x
 (u32 address, char name[60]) (its exported functions, which the host resolves imports to) and
-"MSTA", u32 module_start (run before the program's). The program's image has "PPRM", u32 address
+"MSTA", u32 module_start (run before the program's), and "MSTO", u32 module_stop when it has one (run when a module
+loaded on demand is unloaded: runtime/core/modload.c). The program's image has "PPRM", u32 address
 of its process parameters (sceKernelGetProcessParam).
 
 usage: mkimage.py <export.data.json> <out.img> [module ELF] [--module]
@@ -71,6 +72,9 @@ def main():
             if start is not None:
                 start = next((a for lib, nid, a, var in d["exports"] if nid == 0x935CD196), start)
                 f.write(b"MSTA" + struct.pack("<I", start))
+            stop = next((a for lib, nid, a, var in d["exports"] if nid == 0x79F8E492), d["functions"].get("module_stop"))
+            if stop is not None:   # (MODLOAD-01: a module loaded on demand runs it at sceKernelStopUnloadModule)
+                f.write(b"MSTO" + struct.pack("<I", stop))
             print(f"EXPT {len(ex)} exported functions; module_start {start:#x}" if start else f"EXPT {len(ex)} exported functions")
 
 
