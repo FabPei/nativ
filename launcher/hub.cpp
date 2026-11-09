@@ -2347,6 +2347,40 @@ static void steam_task(const Game &g, bool add) {
 	g_steam_name = (add ? "Adding " : "Removing ") + g.name + (add ? " to Steam" : " from Steam"); g_steam_game = g.id;
 	task_start(g_steam_name, "steam", g.id, g_steam_steps);
 }
+/* (UI-01j) Steam can't be closed by the player in the Deck's Game Mode -- it is the screen. "Restart Steam and add it" lets
+ * steam.py ask Steam to quit, make the change once it has, and start it again (--restart; in Game Mode Steam's session
+ * starts it by itself). Started from Steam, the launcher would go with it: there the change runs on its own, outside
+ * Steam's processes (systemd-run --user, else a new session), its output in <prefs>/steam-restart.log */
+static bool started_by_steam(void) {
+	const char *deck = getenv("SteamDeck"), *gid = getenv("SteamGameId"), *aid = getenv("SteamAppId");
+	return (deck && !strcmp(deck, "1")) || (gid && *gid) || (aid && *aid);
+}
+static bool g_steam_restarting;   /* (the detached change is under way: the dialog says so) */
+static void steam_restart_change(void) {
+	std::vector<Step> s = g_steam_steps;
+	for (Step &st : s) if (!st.argv.empty()) st.argv.push_back("--restart");
+	if (g_shot_mode) { g_shot_done.push_back("steam restart " + std::string(started_by_steam() ? "detached" : "task")); return; }
+#ifndef _WIN32
+	if (started_by_steam() && !s.empty() && !s[0].argv.empty()) {
+		std::vector<std::string> argv = s[0].argv;
+		if (system("command -v systemd-run >/dev/null 2>&1") == 0) argv.insert(argv.begin(), {"systemd-run", "--user", "--collect", "--quiet"});
+		const std::string logf = pref_dir() + "steam-restart.log";
+		std::vector<char *> a; for (std::string &x : argv) a.push_back(&x[0]); a.push_back(nullptr);
+		pid_t pid = fork();
+		if (pid == 0) {   /* a new session, its output into the log: it outlives Steam's quitting and the launcher's */
+			setsid();
+			int fd = open(logf.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644); if (fd >= 0) { dup2(fd, 1); dup2(fd, 2); close(fd); }
+			if (chdir(g_root.c_str()) != 0) _exit(126);
+			execvp(a[0], a.data());
+			_exit(127);
+		}
+		log_line(pid > 0 ? "Steam restarts to take the change (" + logf + ")" : std::string("couldn't start the change"));
+		g_steam_restarting = pid > 0;
+		return;
+	}
+#endif
+	task_start(g_steam_name, "steam", g_steam_game, s);
+}
 static void steam_closed_modal(void) {
 	const ImGuiViewport *vp = ImGui::GetMainViewport();
 	const float em = ImGui::GetFontSize();
@@ -2361,11 +2395,16 @@ static void steam_closed_modal(void) {
 	ImGui::PushTextWrapPos(0);
 	ImGui::TextUnformatted("Steam is running. It keeps its list of games in memory and writes it back when it closes, so a change made now would be lost.");
 	ImGui::Dummy(ImVec2(0, em * 0.3f));
-	ImGui::TextUnformatted("Close Steam completely (in Steam: Steam menu, Exit), then try again. The game shows up the next time Steam starts.");
+	ImGui::TextUnformatted(started_by_steam() ? "Nativ can restart Steam to make the change: Steam quits for a moment, the game is added, and Steam starts again with it."
+	                                          : "Let Nativ restart Steam to make the change (Steam quits for a moment and starts again), or close Steam yourself (Steam menu, Exit) and try again.");
+	if (g_steam_restarting) { ImGui::Dummy(ImVec2(0, em * 0.2f)); ui::muted_wrapped("Steam is restarting: the change is made while it's closed."); }
 	ImGui::PopTextWrapPos();
 	dialog_body_end();
-	ImGui::BeginDisabled(g_task.running);
-	if (ui::primary_button("Try again")) { g_steam_closed_open = false; ImGui::CloseCurrentPopup(); task_start(g_steam_name, "steam", g_steam_game, g_steam_steps); }
+	ImGui::BeginDisabled(g_task.running || g_steam_restarting);
+	const bool adding = g_steam_name.rfind("Adding ", 0) == 0;
+	if (ui::primary_button(adding ? "Restart Steam and add it" : "Restart Steam and remove it")) { steam_restart_change(); if (!g_steam_restarting) { g_steam_closed_open = false; ImGui::CloseCurrentPopup(); } }
+	same_line_fits(button_w("Try again"));
+	if (ImGui::Button("Try again")) { g_steam_closed_open = false; ImGui::CloseCurrentPopup(); task_start(g_steam_name, "steam", g_steam_game, g_steam_steps); }
 	ImGui::EndDisabled();
 	same_line_fits(button_w("Not now")); if (ImGui::Button("Not now") || dialog_back()) { g_steam_closed_open = false; ImGui::CloseCurrentPopup(); }
 	dialog_hints();
@@ -3568,6 +3607,7 @@ int main(int argc, char **argv) {
 			g_settings_open = true; g_settings_tab = 1; g_map_type = ui_sel.compare(4, 3, "pad") == 0 ? 0 : 1;
 			g_bind.open = true; g_bind.pad = g_map_type == 0; g_bind.row = atoi(ui_sel.c_str() + 8); g_bind.until = 6.0;   /* (a screenshot run's clock starts at 0: the real 6 seconds) */
 		}
+		if (ui_sel == "steamclosed") { g_steam_closed_open = true; g_steam_name = "Adding Soul Sacrifice Delta to Steam"; g_steam_game = "PCSF00532"; g_steam_steps = {step("Adding it to Steam", vitarecomp({"steam", "add", "PCSF00532"}))}; }
 		if (ui_sel == "osk") { static std::string sample = "D:/Vita backup/ux0"; osk_open(&sample, "##scanpath"); g_osk.top = true; }
 		if (ui_sel.rfind("browse:", 0) == 0) {   /* (browse:<kind>:<dir>: the own browser, opened at <dir>) */
 			static std::string picked_here;

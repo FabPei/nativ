@@ -8,14 +8,18 @@ binary userdata/<user>/config/shortcuts.vdf of every Steam user on this computer
                                                  the game as a shortcut: <launcher> --play <title>, tagged "Project
                                                  Nativ"; its cover as the shortcut's Steam artwork (grid, hero)
   steam.py remove <title>                        our shortcut for it removed (no other shortcut is touched)
+  ... add|remove ... --restart                   Steam running: asked to quit (steam -shutdown), the change made once
+                                                 it has, Steam started again (in Steam's Game Mode its session starts
+                                                 it by itself) -- the Deck's Game Mode, where Steam can't be closed
   steam.py selftest
 
 Steam keeps the list in memory while it runs and writes it back when it closes, so a change made while it runs is lost:
 add and remove refuse then (exit 3, "Steam is running"). Before each write the file is copied beside itself
 (shortcuts.vdf.<time>.nativ-bak, the newest 5 kept). A shortcut is ours when its tags hold "Project Nativ" and its launch
 options are "--play <title>"; every other entry is kept byte for byte (its key too: Steam renumbers when it saves).
-ATIV_STEAM_DIR=<folder>: that Steam folder instead of the installed one; ATIV_STEAM_RUNNING=0|1: what the check finds
-(both for a test).
+ATIV_STEAM_DIR=<folder>: that Steam folder instead of the installed one; ATIV_STEAM_RUNNING=0|1: what the check finds;
+ATIV_STEAM_RUNNING_FILE=<file>: Steam runs while that file exists; ATIV_STEAM_CMD=<program>: Steam's program for
+-shutdown and the start (all for a test).
 """
 from __future__ import annotations
 
@@ -193,6 +197,8 @@ def running():
     v = os.environ.get("ATIV_STEAM_RUNNING")
     if v in ("0", "1"):
         return v == "1"
+    if os.environ.get("ATIV_STEAM_RUNNING_FILE"):
+        return os.path.exists(os.environ["ATIV_STEAM_RUNNING_FILE"])
     if sys.platform == "win32":
         # (bytes, not text: tasklist answers in the console's code page -- a German umlaut in its no-match line is
         # not UTF-8, and Python's UTF-8 mode, which the launcher sets, failed on it)
@@ -262,7 +268,50 @@ def cmd_list():
     return 0
 
 
-def change(title, new, cover=None):
+def game_mode():
+    """Steam's own session runs this desktop (the Deck's Game Mode, gamescope): it starts Steam again when Steam quits"""
+    return os.environ.get("SteamDeck") == "1" and ("gamescope" in os.environ.get("XDG_CURRENT_DESKTOP", "").lower() or os.environ.get("SteamGamepadUI") == "1"
+                                                or bool(os.environ.get("GAMESCOPE_WAYLAND_DISPLAY")))
+
+
+def steam_cmd(sd):
+    """Steam's program, for -shutdown and the start"""
+    if os.environ.get("ATIV_STEAM_CMD"):
+        return [os.environ["ATIV_STEAM_CMD"]]
+    if sys.platform == "win32":
+        return [os.path.join(sd, "steam.exe")]
+    return ["steam"]
+
+
+def restart_around(do, sd):
+    """Steam asked to quit (and waited for, up to a minute), do() run, Steam started again; do()'s status"""
+    print("steam: asking Steam to quit for a moment, to change its list", flush=True)
+    cmd = steam_cmd(sd)
+    try:
+        subprocess.run(cmd + ["-shutdown"], capture_output=True, timeout=30, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(f"steam: couldn't ask Steam to quit ({e})", file=sys.stderr); return 3
+    for _ in range(120):
+        if not running():
+            break
+        time.sleep(0.5)
+    else:
+        print("steam: Steam didn't quit within a minute: nothing changed -- close it yourself, then try again", file=sys.stderr); return 3
+    time.sleep(float(os.environ.get("ATIV_STEAM_SETTLE", "2")))   # (Steam writes its list as it quits: after that)
+    rc = do()
+    if game_mode():
+        print("steam: Steam's session starts it again", flush=True)
+    else:
+        try:
+            subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+                             creationflags=getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+            print("steam: Steam started again", flush=True)
+        except OSError as e:
+            print(f"steam: start Steam again yourself ({e})", file=sys.stderr)
+    return rc
+
+
+def change(title, new, cover=None, restart=False):
     sd = steam_dir()
     if not sd:
         print("steam: Steam isn't installed here (no Steam folder with a userdata folder found)", file=sys.stderr); return 2
@@ -270,6 +319,8 @@ def change(title, new, cover=None):
     if not us:
         print("steam: no Steam user has signed in on this computer yet: start Steam once and sign in", file=sys.stderr); return 2
     if running():
+        if restart:
+            return restart_around(lambda: change(title, new, cover), sd)
         print("steam: Steam is running -- close Steam (Steam menu, Exit), then try again: Steam writes its own list back "
               "when it closes, so a change made now would be lost", file=sys.stderr)
         return 3
@@ -302,15 +353,16 @@ def main(argv):
     if argv[0] == "selftest":
         return selftest()
     if argv[0] in ("add", "remove") and len(argv) >= 2:
-        title, opts = argv[1], argv[2:]
+        title, opts = argv[1], [a for a in argv[2:] if a != "--restart"]
+        restart = "--restart" in argv[2:]
         o = {opts[i]: opts[i + 1] for i in range(0, len(opts) - 1, 2)}
         if argv[0] == "remove":
-            return change(title, None)
+            return change(title, None, restart=restart)
         if "--exe" not in o or "--name" not in o:
             print("steam add <title> --exe <launcher> --name <name> [--icon <png>] [--cover <png>]", file=sys.stderr); return 2
         exe = o["--exe"]
         new = (o["--name"], f'"{exe}"', f'"{os.path.dirname(exe)}"', o.get("--icon", ""))
-        return change(title, new, o.get("--cover"))
+        return change(title, new, o.get("--cover"), restart=restart)
     print(__doc__, file=sys.stderr)
     return 2
 
@@ -360,6 +412,29 @@ def selftest():
         main(["remove", "PCSZ00043"])
         assert open(p1, "rb").read() == base, "add + remove round trip: the file as it was"
         assert len(glob.glob(p1 + ".*.nativ-bak")) <= BACKUPS
+
+        # --restart: a "Steam" that runs while a file exists and quits (removes it) on -shutdown; started again after
+        flag = os.path.join(tmp, "steam-running"); log = os.path.join(tmp, "steam-calls")
+        fake = os.path.join(tmp, "fake_steam.py")
+        open(fake, "w").write("import os, sys\nopen(%r, 'a').write(' '.join(sys.argv[1:]) + '|')\n"
+                              "if '-shutdown' in sys.argv: os.path.exists(%r) and os.remove(%r)\n" % (log, flag, flag))
+        wrapper = os.path.join(tmp, "fake_steam.cmd" if sys.platform == "win32" else "fake_steam.sh")
+        open(wrapper, "w").write((f'@"{sys.executable}" "{fake}" %*\n') if sys.platform == "win32" else (f'#!/bin/sh\nexec "{sys.executable}" "{fake}" "$@"\n'))
+        os.chmod(wrapper, 0o755)
+        os.environ.pop("ATIV_STEAM_RUNNING"); os.environ["ATIV_STEAM_RUNNING_FILE"] = flag; os.environ["ATIV_STEAM_CMD"] = wrapper; os.environ["ATIV_STEAM_SETTLE"] = "0"
+        open(flag, "w").write("1")
+        assert main(add) == 3 and not os.path.exists(log), "running, no --restart: refused, Steam left alone"
+        assert main(add + ["--restart"]) == 0, "--restart: asked to quit, changed, started again"
+        _, e4, _ = parse(open(p1, "rb").read())
+        assert any(ours(f, "PCSZ00042") for _, _, f in e4), "the shortcut written once Steam had quit"
+        for _ in range(50):   # (the start runs detached: give it a moment to note itself)
+            if open(log).read().count("|") >= 2: break
+            time.sleep(0.1)
+        assert open(log).read().startswith("-shutdown|"), open(log).read()
+        assert open(log).read().count("|") == 2, "Steam asked to quit once, started once: " + open(log).read()
+        assert main(["remove", "PCSZ00042"]) == 0   # (not running now: as before)
+        for k in ("ATIV_STEAM_RUNNING_FILE", "ATIV_STEAM_CMD", "ATIV_STEAM_SETTLE"): os.environ.pop(k)
+        os.environ["ATIV_STEAM_RUNNING"] = "0"
 
         bad = base[:-2] + b"\x05W\x00\x00\x00" + b"\x08\x08"   # (an unknown field type: refused, untouched)
         open(p1, "wb").write(bad)
