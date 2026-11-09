@@ -289,7 +289,7 @@ def main(argv):
     host = [part(f) for f in (
         "main hle modload libc events io sysmem apputil trophy imedlg fios psarc gxp_index kernel gpu video display input_rec gesture gxm_sony usse usse_spirv gfx_soft gfx_gpu "
         "gfx_dispatch gfx_coverage gfx_capture guestwatch metrics settings hooks motion pad_bind window ui_text gpulock ngs audiodec stallprof waitstats memscan jpeg camera smart post "
-        "ssao texpack fsr/fsr net np http sha1 ssl_local online/m2_server online/m2_wire online/m2_rooms online/m2_proxy online/discovery online/basic_msg online/stun online/overlay online/dht online/upnp online/aes128 online/status online/crypto").split()]
+        "ssao texpack fsr/fsr net netinfo np http sha1 ssl_local online/m2_server online/m2_wire online/m2_rooms online/m2_proxy online/discovery online/basic_msg online/stun online/overlay online/dht online/upnp online/aes128 online/status online/crypto").split()]
     # the game's own host code (vitarecomp: every .c in packs/<title>/), in this game's build alone
     host += [f for f in (ENV.get("RECOMP_PACK_SOURCES") or "").split(os.pathsep) if f]
     # the runtime's own sources (and the pack's) as cached objects, compiled in parallel with the game's parts -- they were
