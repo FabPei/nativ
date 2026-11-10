@@ -19,4 +19,10 @@ static inline int seed_addr(uint32_t addr, const uint32_t *lo, const uint32_t *h
 	for (int i = 0; i < n; i++) if (a >= lo[i] && a < hi[i]) return 1;   /* a loaded image's segment */
 	return 0;
 }
+/* the loaded segment an address lies in (its index into lo/hi), -1 when none: names a missed function's image (GAPS) */
+static inline int seed_image(uint32_t addr, const uint32_t *lo, const uint32_t *hi, int n) {
+	const uint32_t a = addr & ~1u;
+	for (int i = 0; i < n; i++) if (a >= lo[i] && a < hi[i]) return i;
+	return -1;
+}
 #endif

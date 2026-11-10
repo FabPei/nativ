@@ -21,7 +21,7 @@ static pthread_mutex_t gaps_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static const char *const cat_names[GAP_NCAT] = {
 	"tex_format", "usse_op", "shader_soft", "spirv", "gpu_soft", "gxm_state", "transfer", "gpu_req", "hle_stub",
-	"nid_unknown", "audio_codec", "insn"
+	"nid_unknown", "audio_codec", "missed_function", "insn"
 };
 const char *gaps_cat_name(int cat) { return cat >= 0 && cat < GAP_NCAT ? cat_names[cat] : "?"; }
 

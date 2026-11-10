@@ -9,6 +9,7 @@
 #include "seedaddr.h"
 #ifdef SEEDADDR_BEFORE
 #define seed_addr(a, lo, hi, n) ((a) >= 0x81000000u && (a) < 0xa0000000u)
+#define seed_image(a, lo, hi, n) (-1)   /* (no image lookup before GAPS-02) */
 #endif
 
 static int fails;
@@ -27,6 +28,8 @@ int main(void) {
 	check("a null call is not", !seed_addr(0, lo, hi, n));
 	check("a poisoned pointer (0xdeadbeef, no image) is not", !seed_addr(0xdeadbeefu, lo, hi, n));
 	check("an imported-variable slot is not", !seed_addr(0xffe25801u, lo, hi, n));
+	check("GAPS-02: a missed function's image: the segment it lies in (0xc50002f7 -> 2)", seed_image(0xc50002f7u, lo, hi, n) == 2);
+	check("GAPS-02: main program code -> segment 0; a poisoned pointer -> none (-1)", seed_image(0x81044f3du, lo, hi, n) == 0 && seed_image(0xdeadbeefu, lo, hi, n) == -1);
 	if (fails) { printf("%d checks FAILED\n", fails); return 1; }
 	printf("all passed\n");
 	return 0;

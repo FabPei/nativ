@@ -27,6 +27,7 @@ enum {
 	GAP_HLE_STUB,       /* an import with no implementation and no module export (returns a stand-in value) */
 	GAP_NID_UNKNOWN,    /* the same for an import whose NID has no name in the database (<lib>_<8 hex>, analyze.py) */
 	GAP_AUDIO_CODEC,    /* an audio codec type the decoder does not implement */
+	GAP_MISSED_FN,      /* a call to code that is neither recompiled nor an import (main.c recomp_call_external: the run stops; key = address, what = its image) */
 	GAP_INSN,           /* a guest instruction the recompiler left UNIMPL (the run stops there) */
 	GAP_NCAT
 };

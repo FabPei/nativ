@@ -42,7 +42,7 @@ int main(void) {
 	gaps_line(line, sizeof line);
 	printf("  %s\n", line);
 	check("a run without gaps: the line names every category with 0",
-	      !strcmp(line, "GAPS: tex_format 0, usse_op 0, shader_soft 0, spirv 0, gpu_soft 0, gxm_state 0, transfer 0, gpu_req 0, hle_stub 0, nid_unknown 0, audio_codec 0, insn 0"));
+	      !strcmp(line, "GAPS: tex_format 0, usse_op 0, shader_soft 0, spirv 0, gpu_soft 0, gxm_state 0, transfer 0, gpu_req 0, hle_stub 0, nid_unknown 0, audio_codec 0, missed_function 0, insn 0"));
 
 	fake_frame = 12;
 	gap(GAP_TEX_FORMAT, 0x95000000u, "texture format not decoded");
@@ -73,14 +73,18 @@ int main(void) {
 	printf("  %s\n", line);
 	check("the line: texture formats with their keys in first-seen order",
 	      strstr(line, "GAPS: tex_format 2 (0x95000000,0xc001000)") == line);
+	gap(GAP_MISSED_FN, 0x81044f3cu, "missed function in eboot.img (lr 0x81000101)");
+	gaps_line(line, sizeof line);
+	check("GAPS-02: a missed function is its own category, keyed by its address",
+	      strstr(line, "missed_function 1 (0x81044f3c)") && gaps_distinct(GAP_MISSED_FN) == 1);
 	check("the line: a named gap by its name, an empty category still 0",
 	      strstr(line, "hle_stub 1 (sceTestMadeUpFunction)") && strstr(line, "insn 0") && strstr(line, "usse_op 1 (0x1900)"));
 
 	const char *jp = "gaps_test_out.json";
 	check("gaps.json written", gaps_write_json(jp) == 0);
 	const char *j = slurp(jp);
-	check("gaps.json: 5 keys in all, the texture format's count and first frame, the stub's name",
-	      j && strstr(j, "\"total\": 5") && strstr(j, "{\"key\": \"0x95000000\", \"what\": \"texture format not decoded\", \"first_frame\": 12, \"count\": 3}")
+	check("gaps.json: 6 keys in all, the texture format's count and first frame, the stub's name",
+	      j && strstr(j, "\"total\": 6") && strstr(j, "{\"key\": \"0x95000000\", \"what\": \"texture format not decoded\", \"first_frame\": 12, \"count\": 3}")
 	      && strstr(j, "\"what\": \"sceTestMadeUpFunction\"") && strstr(j, "\"insn\": {\"distinct\": 0, \"keys\": []}"));
 	remove(jp);
 
