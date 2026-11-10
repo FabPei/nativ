@@ -127,6 +127,11 @@ static std::vector<std::string> vitarecomp(std::initializer_list<std::string> ar
 	v.insert(v.end(), args);
 	return v;
 }
+static std::vector<std::string> vitarecomp(const std::vector<std::string> &args) {   /* (EXPORT-02: arguments made up at run time) */
+	std::vector<std::string> v{python_exe(), g_root + "/pipeline/vitarecomp.py"};
+	v.insert(v.end(), args.begin(), args.end());
+	return v;
+}
 static void open_folder(const std::string &p) {
 #ifdef _WIN32
 	std::string u = p; std::replace(u.begin(), u.end(), '\\', '/'); open_url("file:///" + u);
@@ -2972,10 +2977,15 @@ static void game_card(const Game &g, float w, float name_h, float id_h) {
 /* ---- a game's page (UI-01i): what the card's "..." opens -- its picture, what it is and where it stands (version, region,
  * Steam, played, size, notes in plain sight) and every action as a full-size button with what it does written under it
  * (no hover needed: the explanations were tooltips). B or Back closes it */
-/* ---- Export for Steam Deck (EXPORT-01a): the game as one AppImage file, made by `vitarecomp export-appimage <title> <out>`
- * (the n04 contract: its notice line, three steps, the result line, or one plain line why it failed -- export_progress.h).
- * Only for a game that is Ready to play, like Add to Steam. The file is the player's own: the dialog says so first. */
+/* ---- Export (EXPORT-01a, EXPORT-02): the game for the player's other devices -- Windows: a folder (`vitarecomp export-win
+ * <title> <folder> --cpu <level> [--zip]`: start.cmd + the game, for other PCs), Linux / Steam Deck: one AppImage file
+ * (`vitarecomp export-appimage <title> <out>`), Android: shown, not offered yet. Both commands keep the n04 contract (the
+ * notice line, the steps, the result line, or one plain line why it failed -- export_progress.h). Only for a game that is
+ * Ready to play, like Add to Steam. What it makes is the player's own: the dialog says so first. The owner, 2026-11-10:
+ * "am besten gleich ein Menü mit Export und dann den optionen für Linux, android oder windows". */
 static bool g_export_open;
+static int g_export_target = EXPORT_WIN, g_export_cpu = 0, g_export_cam = 0; static bool g_export_zip = false;   /* (the cpu: 0 x86-64-v3, 1 x86-64-v2; the camera: export_cameras) */
+static int g_export_target_seen = -1;
 static std::string g_export_game, g_export_name, g_export_out, g_export_dir, g_export_dir_seen;
 static std::string g_export_shot_log; static int g_export_shot_state = -1;   /* (ATIV_SHOT_UI=export:<id>:<log>:<run|ok|fail>) */
 static std::string g_export_report;   /* (ATIV_SHOT_NAV: "export <state> step <k>/<n> | <out> | <error>") */
@@ -2987,28 +2997,55 @@ static std::string export_join(std::string d, const std::string &file) {   /* (t
 }
 static void export_open(const Game &g) {
 	g_export_open = true; g_export_game = g.id; g_export_name = g.name;
+#ifdef _WIN32
+	g_export_target = EXPORT_WIN;   /* (the kind of computer this is: the likeliest other one) */
+#else
+	g_export_target = EXPORT_LINUX;
+#endif
+	if (const char *e = getenv("ATIV_SHOT_EXPORT")) g_export_target = !strcmp(e, "linux") ? EXPORT_LINUX : EXPORT_WIN;   /* (a screenshot run's choice) */
+	{	const Ini sh = ini_load(shared_path()); const std::string *cv = ini_find(sh, "camera"); const std::string cam = cv ? *cv : "light";   /* (the other PC's camera: as this one's Settings say, to start with) */
+		g_export_cam = 0; for (int i = 0; i < 3; i++) if (cam == export_cameras[i]) g_export_cam = i; }
 	const char *docs = SDL_GetUserFolder(SDL_FOLDER_DOCUMENTS);
-	g_export_out = export_join(docs ? docs : "", export_file_name(g.name));
-	g_export_dir.clear(); g_export_dir_seen.clear();
+	g_export_out = export_join(docs ? docs : "", export_out_name(g.name, g_export_target));
+	g_export_dir.clear(); g_export_dir_seen.clear(); g_export_target_seen = g_export_target;
 }
 static void export_choose(void) {
 	static const SDL_DialogFileFilter f[] = {{"AppImage (*.AppImage)", "AppImage"}};
 	if (use_in_app_browser()) { browse_open(&g_export_dir, BROWSE_FOLDER); return; }   /* (a controller or a finger: the folder; the name is the game's) */
-	if (g_shot_mode) { g_shot_done.push_back("choose where to save " + export_file_name(g_export_name)); return; }
+	if (g_shot_mode) { g_shot_done.push_back("choose where to save " + export_out_name(g_export_name, g_export_target)); return; }
+	if (g_export_target == EXPORT_WIN) { g_pick_target = &g_export_dir; SDL_ShowOpenFolderDialog(picked, nullptr, g_win, nullptr, false); return; }   /* (Windows: a folder is made in the one chosen) */
 	g_pick_target = &g_export_out; SDL_ShowSaveFileDialog(picked, nullptr, g_win, f, 1, g_export_out.c_str());
+}
+/* (EXPORT-02) a dialog's foot for the pad: the page's first button (its primary one) is where the focus goes -- when the page
+ * changes (it started, it finished: the button that had the focus is gone), and when D-pad down leaves the body, whatever
+ * button sits nearest below (ImGui's nearest-below took a wide "Choose a folder..." down onto Cancel, and Cross there closed
+ * the dialog). first: the first button's id; others: the rest of the foot's buttons; page: the page shown now */
+static void foot_focus(ImGuiID first, std::initializer_list<ImGuiID> others, int page, int *page_seen, ImGuiWindow **body_seen, ImGuiWindow *body) {
+	ImGuiContext &g = *GImGui;
+	bool to_first = false;
+	if (*page_seen != page) { to_first = *page_seen >= 0 && ui::nav_by_pad(); *page_seen = page; }
+	for (ImGuiID o : others) if (o && g.NavJustMovedToId == o && *body_seen == body && body) to_first = true;
+	if (to_first && first) { ImGui::SetFocusID(first, ImGui::GetCurrentWindow()); ImGui::SetNavCursorVisible(true); }
+	*body_seen = g.NavWindow;
 }
 static void export_modal(void) {
 	const ImGuiViewport *vp = ImGui::GetMainViewport();
 	const float em = ImGui::GetFontSize();
-	if (g_export_open && !ImGui::IsPopupOpen("Export for Steam Deck")) ImGui::OpenPopup("Export for Steam Deck");
+	if (g_export_open && !ImGui::IsPopupOpen("Export###export")) ImGui::OpenPopup("Export###export");
 	ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x < 44 * em ? vp->WorkSize.x * 0.94f : 34 * em, 0), ImGuiCond_Always);
 	ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(1.6f * em, 1.3f * em)); ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
-	if (!ImGui::BeginPopupModal("Export for Steam Deck", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove)) { ImGui::PopStyleVar(2); return; }
+	if (!ImGui::BeginPopupModal("Export###export", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove)) { ImGui::PopStyleVar(2); return; }
 	ImGui::PopStyleVar(2);
 	/* the folder the in-app browser picked: the file goes there under the game's name */
-	if (g_export_dir != g_export_dir_seen) { g_export_dir_seen = g_export_dir; if (!g_export_dir.empty()) g_export_out = export_join(g_export_dir, export_file_name(g_export_name)); }
+	if (g_export_dir != g_export_dir_seen || g_export_target != g_export_target_seen) {   /* (a folder picked, or another target: its name there) */
+		const std::string base = !g_export_dir.empty() ? g_export_dir : export_folder(g_export_out);
+		g_export_dir_seen = g_export_dir; g_export_target_seen = g_export_target;
+		g_export_out = export_join(base, export_out_name(g_export_name, g_export_target));
+	}
 	/* what the export said so far (the task's part of the log), or a screenshot run's sample */
+	static int page_seen = -1; static ImGuiWindow *body_seen = nullptr;   /* (foot_focus) */
+	if (ImGui::IsWindowAppearing()) { page_seen = -1; body_seen = nullptr; }
 	int state = 0;   /* 0 not started, 1 running, 2 done, 3 failed */
 	std::string part;
 	if (g_export_shot_state >= 0) { state = g_export_shot_state; part = g_export_shot_log; }
@@ -3018,14 +3055,17 @@ static void export_modal(void) {
 		if (g_task.log_from < g_log.size()) part = g_log.substr(g_task.log_from);
 	}
 	const ExportView v = export_parse(part, state == 3);
-	g_export_report = std::string("export ") + (state == 0 ? "ask" : state == 1 ? "run" : state == 2 ? "ok" : "fail") + " step " + std::to_string(v.step) + "/" + std::to_string(v.steps) + " | " + (v.out.empty() ? g_export_out : v.out) + " | " + v.error + (v.notice.empty() ? "" : " | notice: " + v.notice);
-	ui::heading("Export for Steam Deck", em * 1.4f);
+	const bool win = g_export_target == EXPORT_WIN;
+	g_export_report = std::string("export ") + (state == 0 ? "ask" : state == 1 ? "run" : state == 2 ? "ok" : "fail") + " step " + std::to_string(v.step) + "/" + std::to_string(v.steps) + " | " + (v.out.empty() ? g_export_out : v.out) + " | " + v.error + (v.notice.empty() ? "" : " | notice: " + v.notice)
+	                  + " | target " + (win ? "win" : "linux") + (win ? std::string(" cpu ") + (g_export_cpu ? "x86-64-v2" : "x86-64-v3") + " camera " + export_cameras[g_export_cam] + (g_export_zip ? " zip" : "") : std::string());
+	ui::heading("Export", em * 1.4f);
 	ImGui::TextDisabled("%s", g_export_name.c_str());
 	dialog_body_begin();
+	ImGuiWindow *body = ImGui::GetCurrentWindow();
 	ImGui::PushTextWrapPos(0);
 	{	/* the notice first, set apart: the file is the player's own */
 		const std::string notice = !v.notice.empty() ? v.notice
-			: "A private file for your own device. It holds code made from your copy of the game: keep it for yourself, don't share or upload it.";
+			: "Private, for your own devices. It holds code made from your copy of the game: keep it for yourself, don't share or upload it.";
 		const ImVec2 p0 = ImGui::GetCursorScreenPos();
 		ImGui::Indent(em * 0.7f); ImGui::Dummy(ImVec2(0, em * 0.35f));
 		ImGui::PushStyleColor(ImGuiCol_Text, ui::warn); ImGui::TextUnformatted("For your own device only"); ImGui::PopStyleColor();
@@ -3036,15 +3076,36 @@ static void export_modal(void) {
 		ImGui::Dummy(ImVec2(0, em * 0.4f));
 	}
 	if (state == 0) {
-		ImGui::TextUnformatted("One file that runs this game on a Steam Deck or another Linux PC, with what it needs inside. Copy it to the Deck and start it there (in Game Mode: add it to Steam on the Deck).");
+		ImGui::TextDisabled("Export for");
+		{	static const char *const t[] = {"Windows##xt", "Linux / Steam Deck##xt"};
+			ui::segmented(t, 2, &g_export_target);
+			ImGui::SameLine(); ImGui::BeginDisabled(); ImGui::Button("Android##xt"); ImGui::EndDisabled();   /* (shown, not offered: below why) */
+		}
+		ui::muted_wrapped("Android: not available yet. Nativ has no Android build of its runtime so far (no Android toolchain, app package or movie decoder for phones).");
 		ImGui::Dummy(ImVec2(0, em * 0.3f));
-		ImGui::TextDisabled("Save as");
+		if (win) {
+			ImGui::TextUnformatted("A folder that runs this game on another Windows PC, with what it needs inside. Copy it there and double-click start.cmd; its saves stay in the folder.");
+			ImGui::Dummy(ImVec2(0, em * 0.2f));
+			ImGui::TextDisabled("For");
+			{ static const char *const c[] = {"Most PCs (x86-64-v3)##xc", "Older PCs (x86-64-v2)##xc"}; ui::segmented(c, 2, &g_export_cpu); }
+			ui::muted_wrapped("Most PCs: any Intel since 2013 (Haswell) and every Ryzen. Older PCs: slower, for processors before that.");
+			ImGui::TextDisabled("Rear camera on that PC");
+			{ static const char *const c[] = {"A lamp (made up)##xm", "Its camera##xm", "A dark room##xm"}; ui::segmented(c, 3, &g_export_cam); }
+			ImGui::TextDisabled("Also as one .zip"); ImGui::SameLine(); ui::toggle("xzip", &g_export_zip);
+		} else {
+			ImGui::TextUnformatted("One file that runs this game on a Steam Deck or another Linux PC, with what it needs inside. Copy it to the Deck and start it there (in Game Mode: add it to Steam on the Deck).");
+		}
+		ImGui::Dummy(ImVec2(0, em * 0.3f));
+		ImGui::TextDisabled(win ? "Save to (a new folder)" : "Save as");
 		ImGui::TextUnformatted(g_export_out.c_str());
-		if (ImGui::Button(use_in_app_browser() ? "Choose a folder…###choose" : "Choose…###choose")) export_choose();   /* (one id for both labels: the label follows the input in use, and a changing id lost the focus) */
+		if (ImGui::Button(use_in_app_browser() || win ? "Choose a folder…###choose" : "Choose…###choose")) export_choose();   /* (one id for both labels: the label follows the input in use, and a changing id lost the focus) */
 		ImGui::Dummy(ImVec2(0, em * 0.2f));
-		ui::muted_wrapped("It takes a while: the game is compiled for the Deck's processor, then packed with its files (a few GB).");
+		ui::muted_wrapped(win ? "It takes a while: the game is compiled for other PCs' processors, then copied with its files (a few GB)."
+		                      : "It takes a while: the game is compiled for the Deck's processor, then packed with its files (a few GB).");
 	} else {
-		static const char *const def[] = {"", "Compiling for the Deck", "Collecting the game's files", "Packing the AppImage"};
+		static const char *const def_lin[] = {"", "Compiling for the Deck", "Collecting the game's files", "Packing the AppImage", ""};
+		static const char *const def_win[] = {"", "Compiling for other PCs", "Collecting the game's files", "Writing the folder and start.cmd", "Packing it as one .zip"};
+		const char *const *def = win ? def_win : def_lin;
 		/* now, on the launcher's clock (a screenshot run's sample: its own latest stamp, so the shot is the same each time) */
 		int now_s = v.last_at;
 		if (g_export_shot_state < 0) { time_t tt = time(nullptr); struct tm tm;
@@ -3059,12 +3120,12 @@ static void export_modal(void) {
 			const bool done = state == 2 || k < v.step, now = state == 1 && k == v.step;
 			const bool stuck = state == 3 && (k == v.step || (v.step == 0 && k == 1));
 			if (now) ui::spinner(ui::accent); else ui::dot(done ? ui::ready : stuck ? ui::error : ui::border);
-			const std::string t = !v.step_text[k].empty() ? v.step_text[k] : std::string(k < 4 ? def[k] : "");
+			const std::string t = !v.step_text[k].empty() ? v.step_text[k] : std::string(k < 5 ? def[k] : "");
 			if (done || now) ImGui::TextUnformatted(t.c_str()); else ImGui::TextDisabled("%s", t.c_str());
 			/* how long: a finished step's time, the running one's so far (SSD's export: 43 minutes) */
 			const int end = k < n && v.step_at[k + 1] >= 0 ? v.step_at[k + 1] : v.done_at >= 0 ? v.done_at : now ? now_s : -1;
 			const std::string d = (done || now) ? export_dur(export_secs(v.step_at[k], end)) : std::string();
-			if (!d.empty()) { ImGui::SameLine(); ImGui::TextDisabled("%s", d.c_str()); }
+			if (!d.empty()) { same_line_fits(ImGui::CalcTextSize(d.c_str()).x); ImGui::TextDisabled("%s", d.c_str()); }   /* (EXPORT-02: on the next line when the step's text takes the row -- squeezed beside a wrapped one it stood one character a line) */
 		}
 		{	const int first = v.step_at[1] >= 0 ? v.step_at[1] : -1, end = v.done_at >= 0 ? v.done_at : state == 1 ? now_s : v.last_at;
 			const std::string d = export_dur(export_secs(first, end));
@@ -3088,27 +3149,37 @@ static void export_modal(void) {
 		ImGui::BeginDisabled(g_task.running);
 		if (ui::primary_button("Export")) {
 			std::string out = g_export_out;
-			if (out.size() < 9 || out.compare(out.size() - 9, 9, ".AppImage") != 0) out += ".AppImage";   /* (the command takes only *.AppImage) */
+			if (!win && (out.size() < 9 || out.compare(out.size() - 9, 9, ".AppImage") != 0)) out += ".AppImage";   /* (the command takes only *.AppImage) */
 			g_export_out = out;
-			task_start("Exporting " + g_export_name + " for Steam Deck", "export", g_export_game, {step("", vitarecomp({"export-appimage", g_export_game, out}))});
+			task_start("Exporting " + g_export_name + (win ? " for Windows" : " for Steam Deck"), "export", g_export_game,
+			           {step("", vitarecomp(export_command(g_export_target, g_export_game, out, g_export_cpu ? "x86-64-v2" : "x86-64-v3", g_export_zip, export_cameras[g_export_cam])))});
 		}
+		const ImGuiID first = ImGui::GetItemID();
 		ImGui::EndDisabled();
 		same_line_fits(button_w("Cancel"));
 		if (ImGui::Button("Cancel") || dialog_back()) close = true;
+		foot_focus(first, {ImGui::GetItemID()}, state, &page_seen, &body_seen, body);
 	} else if (state == 1) {
 		if (ImGui::Button("Stop the export")) task_cancel();
+		const ImGuiID first = ImGui::GetItemID();
 		same_line_fits(button_w("Close"));
 		if (ImGui::Button("Close") || dialog_back()) close = true;
+		foot_focus(first, {ImGui::GetItemID()}, state, &page_seen, &body_seen, body);
 	} else {
 		if (state == 2) {
 			const std::string out = !v.out.empty() ? v.out : g_export_out;
-			if (ui::primary_button("Show in folder")) { if (g_shot_mode) g_shot_done.push_back("open " + export_folder(out)); else open_folder(export_folder(out)); }
+			const std::string where = export_shown_folder(out);   /* (a file: its folder; Windows' export: the folder itself) */
+			if (ui::primary_button("Show in folder")) { if (g_shot_mode) g_shot_done.push_back("open " + where); else open_folder(where); }
+			const ImGuiID first = ImGui::GetItemID();
 			same_line_fits(button_w("Done"));
 			if (ImGui::Button("Done") || dialog_back()) close = true;
+			foot_focus(first, {ImGui::GetItemID()}, state, &page_seen, &body_seen, body);
 		} else {
 			if (ImGui::Button("Try again")) { g_export_shot_state = -1; g_task.kind.clear(); }   /* (back to the first page: the same file, or another) */
+			const ImGuiID first = ImGui::GetItemID();
 			same_line_fits(button_w("Close"));
 			if (ImGui::Button("Close") || dialog_back()) close = true;
+			foot_focus(first, {ImGui::GetItemID()}, state, &page_seen, &body_seen, body);
 		}
 	}
 	dialog_hints();
@@ -3176,7 +3247,7 @@ static void game_page_modal(void) {
 	}
 	if (g.imported) {   /* (EXPORT-01a) only a game that is Ready, like Add to Steam */
 		const bool ok = steam_addable(g);
-		if (action("Export for Steam Deck…", ok ? "One file (an AppImage) that runs this game on a Steam Deck or another Linux PC: a private copy for your own device."
+		if (action("Export…", ok ? "A copy that runs this game on your other devices: a folder for another Windows PC, or one file for a Steam Deck or another Linux PC. Private, for your own devices."
 		                                        : "Build the game first: a game can be exported once it is ready to play.", false, ok && !busy)) { export_open(g); close = true; }
 	}
 	if (g.imported && action("Game settings", "This game's own options (field of view, view distance, ...) and the values it keeps apart from the shared Settings.", false, true)) {

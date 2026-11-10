@@ -24,6 +24,11 @@
                                             handheld (a Steam Deck; pipeline/appimage.py): compiled once more for its
                                             processor (EXPORT_CPU, default znver2) as <base>_deck, packed with the
                                             game's images and app0 -- private: it holds the game. On Windows: in WSL
+  vitarecomp export-win <title> <out-folder> [--cpu LEVEL] [--zip] [--camera light|webcam|dark]   a built game as a folder for the
+                                            player's OWN other Windows PCs (pipeline/portable.py): compiled once
+                                            more for a CPU level other PCs have (default x86-64-v3; native and
+                                            named cores refused) as <base>_<level>, copied with its DLLs, images and
+                                            app0, started by start.cmd; --zip: also <out-folder>.zip -- private
   vitarecomp add       <copy> [--license work.bin] [--no-build] [--in-place]   a game or its update (ux0:app/<title>
                                             or ux0:patch/<title> copied off the Vita, or a PKG with its licence file
                                             (.rif or work.bin); an already-decrypted folder works too), decrypted here
@@ -119,6 +124,7 @@ RECOMPILER, RUNTIME, PACKS, DECRYPT, DEV = (os.path.join(ROOT, d) for d in ("rec
 PACKS = os.environ.get("ATIV_PACKS") or PACKS   # (ATIV_PACKS=<dir>: the packs read from there -- a game run as if it had none, bootstrap's test)
 sys.path.insert(0, R)
 import appimage  # noqa: E402
+import portable  # noqa: E402
 import bootstrap  # noqa: E402
 import hookscan  # noqa: E402
 import packconf  # noqa: E402
@@ -1187,6 +1193,66 @@ def cmd_export_appimage(T, out, rest):
     return 0
 
 
+def cmd_export_win(T, out, rest):
+    """the game as a folder for the player's own other Windows PCs (pipeline/portable.py): its code as it is (made by the
+    launcher's Build: nothing is recompiled) compiled once more for a CPU level other PCs have -- --cpu, default x86-64-v3
+    (a native build, a play build's default, stops with "illegal instruction" on another processor) -- into
+    <base>_<level>.exe beside the play binary (it and .built_version untouched), then the folder: game (a subfolder) with the binary,
+    its DLLs, the game's images, the pack's shader recipes and app0 (copied whole), start.cmd and a README. --zip: the
+    folder as <out>.zip too. Windows only (the Windows build)."""
+    cpu, want_zip, camera, args = portable.DEFAULT_CPU, False, "", list(rest)
+    while args:
+        a = args.pop(0)
+        if a == "--cpu" and args: cpu = args.pop(0)
+        elif a.startswith("--cpu="): cpu = a[6:]
+        elif a == "--zip": want_zip = True
+        elif a == "--camera" and args: camera = args.pop(0)
+        else: die(f"export-win: unknown option {a} (--cpu LEVEL, --zip, --camera light|webcam|dark)")
+    if camera and camera not in portable.CAMERAS: die(f"export-win: --camera {camera}: one of {', '.join(portable.CAMERAS)}")
+    b = portable.portable_bin(cpu)
+    if not b:
+        die(f"export-win: refused --cpu {cpu}: that is one machine's own instruction set, and the game would stop with "
+            f"\"illegal instruction\" on another PC. Use one of: {', '.join(portable.PORTABLE_CPUS)}")
+    out = os.path.abspath(out)
+    if os.path.exists(out) and (not os.path.isdir(out) or os.listdir(out)): die(f"export-win: {out} isn't an empty folder -- choose a new one")
+    if not WINDOWS: die("export-win: makes a Windows folder -- run it on Windows (on Linux: export-appimage)")
+    say("export: " + portable.NOTICE)
+    g = Game(T, "export-win")
+    if not os.path.isfile(os.path.join(g.W, "elf", g.ELF)): die(f"{T}: not added yet (vitarecomp add, or + Add game in the launcher)")
+    stamp = os.path.join(g.OUT, ".recompile_inputs")
+    if not os.path.isfile(stamp) or open(stamp, encoding="utf-8").read().strip() != recompile_inputs(g):
+        die(f"{T}: its code isn't made for these tools yet: build it (vitarecomp ready {T}, or Build in the launcher), then export")
+    n = 4 if want_zip else 3
+    say(f"export 1/{n}: compiling {g.NAME} for other PCs ({cpu}); the first time takes as long as a build")
+    run(SELF + ["build", T], env=env_with({"RECOMP_BIN": b, "RECOMP_CPU": cpu}))
+    exe = f"{g.BASE}_{b}.exe"
+    for f in (exe, g.BASE + ".img"):
+        if not os.path.isfile(os.path.join(g.OUT, f)): die(f"export-win: {f} wasn't made in {g.OUT}")
+    say(f"export 2/{n}: collecting the game's files (app0 is copied whole)")
+    files = [(os.path.join(g.OUT, exe), exe), (os.path.join(g.OUT, g.BASE + ".img"), g.BASE + ".img")]
+    files += [(os.path.join(g.OUT, f), f) for f in sorted(os.listdir(g.OUT)) if f.lower().endswith(".dll")]
+    mods = [m + ".img" for m in g.MODS]
+    lmods = [(g.LPATH[m], m + ".img") for m in g.LMODS]
+    files += [(os.path.join(g.OUT, m), m) for m in mods + [nm for _p, nm in lmods]]
+    shipped = os.path.join(PACKS, g.PACK, "shaders.txt")
+    if os.path.isfile(shipped): files.append((shipped, "shaders.txt"))
+    env = [tuple(w.partition("=")[::2]) for w in g.RUN_ENV.split() if "=" in w] + play_fixed_env(g, "%G%\\shaders.txt")
+    text = portable.start_cmd_text(title=T, name=g.NAME, cpu=cpu, exe=exe, image=g.BASE + ".img", entry=g.entry(), env=env,
+                                   modules=mods, load_modules=lmods, settings=[("camera", camera)] if camera else [])
+    say(f"export 3/{n}: writing the folder and start.cmd")
+    try: portable.make_folder(out, files=files, app0=os.path.realpath(os.path.join(g.W, "app0")), start_cmd=text, readme=portable.readme_text(g.NAME, cpu))
+    except FileExistsError as e: die(f"export-win: {e}")
+    result = out
+    if want_zip:
+        say(f"export 4/{n}: packing it as one .zip")
+        result = portable.make_zip(out)
+    size = os.path.getsize(result) if os.path.isfile(result) else sum(os.path.getsize(os.path.join(d, f)) for d, _ds, fs in os.walk(out) for f in fs)
+    say(f"exported {g.NAME} -> {result} ({size / 1e9:.2f} GB); on the other PC: copy the folder, start start.cmd. "
+        f"Its saves and settings stay in the data folder next to it")
+    say("export: " + portable.NOTICE)
+    return 0
+
+
 def main(argv):
     try:   # (this program's own output UTF-8 too, and never an error over a character it can't write)
         sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace", line_buffering=True)
@@ -1211,6 +1277,9 @@ def main(argv):
     if cmd == "export-appimage":
         if len(argv) < 3: usage(); return 1
         return cmd_export_appimage(T, argv[2], argv[3:])
+    if cmd == "export-win":
+        if len(argv) < 3: usage(); return 1
+        return cmd_export_win(T, argv[2], argv[3:])
     if cmd not in ("import", "analyze", "recompile", "build", "ready", "run", "test", "capture", "replay", "accept", "check", "coverage", "verify", "recipes", "versions"):
         usage(); return 1
     g = Game(T, cmd)

@@ -50,6 +50,21 @@ int main(void) {
 	CHECK(export_file_name("Soul Sacrifice Delta") == "Soul-Sacrifice-Delta.AppImage");
 	CHECK(export_file_name("Uncharted: Golden Abyss") == "Uncharted-Golden-Abyss.AppImage");
 	CHECK(export_file_name("???") == "game.AppImage");
+	/* (EXPORT-02) the targets: the names, the commands, where "Show in folder" goes */
+	CHECK(export_out_name("Soul Sacrifice Delta", EXPORT_WIN) == "Soul-Sacrifice-Delta-Windows");
+	CHECK(export_out_name("Soul Sacrifice Delta", EXPORT_LINUX) == "Soul-Sacrifice-Delta.AppImage");
+	CHECK(export_out_name("???", EXPORT_WIN) == "game-Windows");
+	{	const std::vector<std::string> a = export_command(EXPORT_WIN, "PCSF00532", "D:/out/Soul-Windows", "x86-64-v3", false);
+		CHECK(a.size() == 5 && a[0] == "export-win" && a[1] == "PCSF00532" && a[2] == "D:/out/Soul-Windows" && a[3] == "--cpu" && a[4] == "x86-64-v3"); }
+	{	const std::vector<std::string> a = export_command(EXPORT_WIN, "PCSF00532", "D:/o", "x86-64-v2", true);
+		CHECK(a.size() == 6 && a[4] == "x86-64-v2" && a[5] == "--zip"); }
+	{	const std::vector<std::string> a = export_command(EXPORT_WIN, "PCSF00532", "D:/o", "x86-64-v3", false, "webcam");
+		CHECK(a.size() == 7 && a[5] == "--camera" && a[6] == "webcam"); }
+	{	const std::vector<std::string> a = export_command(EXPORT_LINUX, "PCSF00532", "D:/o/S.AppImage", "x86-64-v3", true);
+		CHECK(a.size() == 3 && a[0] == "export-appimage" && a[2] == "D:/o/S.AppImage"); }   /* (no CPU, no zip for the AppImage) */
+	CHECK(export_shown_folder("D:/out/Soul-Windows") == "D:/out/Soul-Windows");
+	CHECK(export_shown_folder("D:/out/Soul-Windows.zip") == "D:/out");
+	CHECK(export_shown_folder("D:/out/S.AppImage") == "D:/out");
 	printf("export_progress: %d checks, %d failed\n", checks, fails);
 	return fails != 0;
 }
