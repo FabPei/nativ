@@ -156,6 +156,23 @@ static inline uint32_t hle_ngs_player_start(int8_t sb) { return sb >= 0 && sb < 
 static inline int hle_ngs_player_skip_empty(int cur, int16_t next, uint32_t next_data, uint32_t next_bytes, uint32_t frame_bytes) {
 	return next >= 0 && next < 4 && next != cur && next_data && next_bytes >= frame_bytes ? next : -1;
 }
+/* (PTW-CAM) the camera's own frame rate (Vita3K camera.cpp Camera::read): a frame every 1/fps s. A read before the next one
+ * waits for it (SceCameraRead.mode SCE_CAMERA_READ_MODE_WAIT_NEXTFRAME_ON 0), or with WAIT_NEXTFRAME_OFF (1) returns at once with
+ * SCE_CAMERA_STATUS_IS_ALREADY_READ (1) and the last frame's number and timestamp, its buffers untouched. Nativ gave a new frame
+ * on every read: a game reading faster than the camera saw a new picture each time, as fast as it read. (Tearaway's flickering
+ * touch button was tested against this and is not caused by it.) The microseconds until the next frame (0: one is due) */
+#define HLE_CAMERA_READ_WAIT_OFF 1
+#define HLE_CAMERA_STATUS_ALREADY_READ 1
+static inline uint64_t hle_camera_frame_us(uint32_t fps) { return 1000000u / (fps ? fps : 30); }
+static inline uint64_t hle_camera_wait_us(uint64_t now, uint64_t next) {
+	return next > now + 1 ? next - now : 0;
+}
+/* a frame taken at now: its timestamp in *last, the next one due an interval later (a reader late by more than a frame starts the
+ * grid again at now, no burst of stale frames) */
+static inline void hle_camera_take(uint64_t now, uint64_t *next, uint64_t *last, uint64_t interval) {
+	if (!*next || now > *next + interval) *next = now;
+	*last = *next; *next += interval;
+}
 /* HLE-LIB-03: an integer of a PARAM.SFO (little-endian: "\0PSF" +0, key table +8, data table +0xc, entry count +0x10;
  * 16-byte index entries from +0x14: key offset u16, format u16 (0x0404 = u32), length u32, max u32, data offset u32).
  * 1 and *v when the key holds an integer, else 0 */

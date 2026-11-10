@@ -22,6 +22,8 @@
 #include <string.h>
 #include <SDL3/SDL.h>
 #include "hle.h"
+#include "hle_small.h"
+#include "platform.h"
 #include "gfx.h"
 #include "settings.h"
 #include "overlay.h"
@@ -50,6 +52,7 @@ enum { BUF_SETBYOPEN = 0, BUF_SETBYREAD = 1 };
 #define CI_PITCH 0x2c
 #define CI_BUFFER 0x2e
 #define CR_SIZE 0x00
+#define CR_MODE 0x04     /* SCE_CAMERA_READ_MODE_WAIT_NEXTFRAME_ON 0 / _OFF 1 (Vita3K camera.h) */
 #define CR_STATUS 0x0c
 #define CR_FRAME 0x10
 #define CR_TIMESTAMP 0x18
@@ -59,7 +62,7 @@ enum { BUF_SETBYOPEN = 0, BUF_SETBYREAD = 1 };
 #define CR_SIZE_I_NEW 0x30
 #define CR_P_I_NEW 0x3c
 
-typedef struct { int open, started; uint32_t format, width, height, pitch, buffer, range; uint32_t base[3], size[3]; uint64_t frame; } Cam;
+typedef struct { int open, started; uint32_t format, width, height, pitch, buffer, range; uint32_t base[3], size[3]; uint64_t frame; uint64_t next_us, last_us, frame_us; } Cam;   /* (PTW-CAM) its frame grid: hle_small.h */
 static Cam cams[2];   /* SCE_CAMERA_DEVICE_FRONT 0, BACK 1 */
 static int light_on = -1;   /* the `light` source's lamp; -1: not yet set, the game's default (RECOMP_CAMERA_LAMP) */
 
@@ -201,6 +204,7 @@ static void h_open(Cpu *c) {   /* (devnum, SceCameraInfo *) */
 	if (fmt < 1 || fmt > 6) { RET(CAM_ERR_FORMAT_UNKNOWN); return; }
 	if (!res_dims(RD16(ci + CI_RESOLUTION), &w, &h)) { RET(CAM_ERR_RESOLUTION_UNKNOWN); return; }
 	memset(k, 0, sizeof *k);
+	k->frame_us = hle_camera_frame_us(RD16(ci + CI_FRAMERATE));
 	k->open = 1; k->format = fmt; k->width = w; k->height = h; k->pitch = RD16(ci + CI_PITCH); k->buffer = RD16(ci + CI_BUFFER); k->range = RD16(ci + CI_RANGE);
 	for (int i = 0; i < 3; i++) { k->size[i] = RD32(ci + CI_SIZE_I + 4 * i); k->base[i] = RD32(ci + CI_P_I + 4 * i); }
 	WR16(ci + CI_WIDTH, (uint16_t)w); WR16(ci + CI_HEIGHT, (uint16_t)h);
@@ -213,7 +217,7 @@ static void h_start(Cpu *c) {
 	Cam *k = dev(c); if (!k) { RET(CAM_ERR_PARAM); return; }
 	if (!k->open) { RET(CAM_ERR_NOT_OPEN); return; }
 	if (k->started) { RET(CAM_ERR_ALREADY_START); return; }
-	k->started = 1; k->frame = 0;
+	k->started = 1; k->frame = 0; k->next_us = k->last_us = 0;
 	static int said;   /* what the camera sees, once a session: a puzzle may be waiting on it */
 	if (!said) {
 		said = 1; int src = source();
@@ -239,10 +243,25 @@ static void h_read(Cpu *c) {   /* (devnum, SceCameraRead *) */
 		base[i] = have ? RD32(rd + o_base + 4 * i) : k->base[i]; size[i] = have ? RD32(rd + o_size + 4 * i) : k->size[i];
 	}
 	if (!base[0] || !size[0]) { RET(CAM_ERR_PARAM); return; }
+	/* (PTW-CAM) the camera's frame grid (hle_small.h): before the next frame is due, WAIT_NEXTFRAME_ON waits for it and
+	 * WAIT_NEXTFRAME_OFF answers IS_ALREADY_READ with the last frame (Vita3K camera.cpp); a new frame per read was a camera
+	 * as fast as the game's reads */
+	uint64_t now = guest_time_us(), w = k->next_us ? hle_camera_wait_us(now, k->next_us) : 0;
+	if (w) {
+		if (RD32(rd + CR_MODE) == HLE_CAMERA_READ_WAIT_OFF || guest_clock_fixed()) {
+			if (k->frame) {
+				WR32(rd + CR_STATUS, HLE_CAMERA_STATUS_ALREADY_READ);
+				if (sz >= CR_FRAME + 8) { uint64_t f = k->frame - 1; WR32(rd + CR_FRAME, (uint32_t)f); WR32(rd + CR_FRAME + 4, (uint32_t)(f >> 32)); }
+				if (sz >= CR_TIMESTAMP + 8) { WR32(rd + CR_TIMESTAMP, (uint32_t)k->last_us); WR32(rd + CR_TIMESTAMP + 4, (uint32_t)(k->last_us >> 32)); }
+				RET(0); return;
+			}
+		} else { plat_sleep_ns(w * 1000); now = guest_time_us(); }
+	}
+	hle_camera_take(now, &k->next_us, &k->last_us, k->frame_us);
 	write_frame(k, base, size);
 	WR32(rd + CR_STATUS, 0);   /* SCE_CAMERA_STATUS_IS_ACTIVE */
 	if (sz >= CR_FRAME + 8) { uint64_t f = k->frame; WR32(rd + CR_FRAME, (uint32_t)f); WR32(rd + CR_FRAME + 4, (uint32_t)(f >> 32)); }
-	if (sz >= CR_TIMESTAMP + 8) { uint64_t t = guest_time_us(); WR32(rd + CR_TIMESTAMP, (uint32_t)t); WR32(rd + CR_TIMESTAMP + 4, (uint32_t)(t >> 32)); }
+	if (sz >= CR_TIMESTAMP + 8) { WR32(rd + CR_TIMESTAMP, (uint32_t)k->last_us); WR32(rd + CR_TIMESTAMP + 4, (uint32_t)(k->last_us >> 32)); }
 	k->frame++;
 	RET(0);
 }

@@ -17,6 +17,8 @@ void recomp_watch_write(uint32_t a, uint32_t v, int width) { (void)a; (void)v; (
 void gfx_guest_writing(uint32_t addr, uint32_t len) { (void)addr; (void)len; }
 void gfx_guest_written(uint32_t addr, uint32_t len) { (void)addr; (void)len; }
 uint64_t guest_time_us(void) { static uint64_t t; return t += 33333; }
+int guest_clock_fixed(void) { return 0; }   /* (PTW-CAM: the read's frame grid; this clock is one frame per call, so no read waits) */
+void plat_sleep_ns(uint64_t ns) { (void)ns; }
 int settings_int(const char *k, int d) { (void)k; return d; }
 const char *settings_str(const char *k, const char *d, char *b, int n) { (void)k; snprintf(b, (size_t)n, "%s", d); return b; }
 void overlay_toast(const char *msg, double s) { printf("     toast (%.0f s): %s\n", s, msg); }

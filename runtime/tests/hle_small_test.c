@@ -47,6 +47,16 @@ int main(void) {
 	        hle_ngs_player_skip_empty(2, -1, 0, 0, 16) == -1 && hle_ngs_player_skip_empty(0, 1, 0x10000, 0, 16) == -1
 	        && hle_ngs_player_skip_empty(0, 1, 0x10000, 8, 16) == -1 && hle_ngs_player_skip_empty(0, 1, 0, 0x2170, 16) == -1
 	        && hle_ngs_player_skip_empty(1, 1, 0x10000, 0x2170, 16) == -1 && hle_ngs_player_skip_empty(0, 4, 0x10000, 0x2170, 16) == -1); }
+	{ /* (PTW-CAM) a 30 fps camera read by a game at its own rate: one new frame per 33333 us, else ALREADY_READ */
+	  uint64_t next = 0, last = 0, iv = hle_camera_frame_us(30); int fresh = 0, already = 0;
+	  check("camera: 30 fps is a frame every 33333 us (0 fps: 30)", iv == 33333 && hle_camera_frame_us(0) == 33333 && hle_camera_frame_us(60) == 16666);
+	  for (uint64_t t = 1000000; t < 1000000 + 1000000; t += 16667) {   /* a 60 Hz reader for one second */
+	    if (next && hle_camera_wait_us(t, next)) already++; else { hle_camera_take(t, &next, &last, iv); fresh++; } }
+	  check("camera: a 60 Hz reader gets 30 new frames a second, the other reads ALREADY_READ", fresh >= 29 && fresh <= 31 && already >= 29 && already <= 31);
+	  check("camera: the frame taken carries its own time", last >= 1000000 && last < 2000000 && next == last + iv);
+	  next = 5000000; hle_camera_take(9000000, &next, &last, iv);
+	  check("camera: a reader late by seconds starts the grid again (no burst)", last == 9000000 && next == 9000000 + iv);
+	  check("camera: a read 1 us before the frame is due waits for nothing", hle_camera_wait_us(999999, 1000000) == 0 && hle_camera_wait_us(900000, 1000000) == 100000); }
 	uint32_t len[HLE_AUDIO_PORTS] = {0};
 	int ok = 1;
 	for (int k = 0; k < HLE_AUDIO_PORTS; k++) { int s = hle_audio_port_free_slot(len); ok &= s == k; if (s >= 0) len[s] = 256; }
