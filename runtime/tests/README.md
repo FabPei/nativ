@@ -402,6 +402,20 @@ a plain copy). No SDL:
 
 It prints `all passed (17 ok)` and exits 0.
 
+## A stick's sensitivity and dead zone: `stick_curve_test.c`
+
+`runtime/ui/stick_curve.h` turns a controller stick's two SDL axes (-32768..32767) into the Vita's two stick bytes
+(0..255, centre 128) with the player's settings `stick_l_sens` / `stick_l_dead` and `stick_r_sens` / `stick_r_dead`
+(Controls, in the launcher and the in-game menu; window.c reads them at start and as the menu closes). The test
+checks that the defaults (1x, 0 %) give `(axis + 32768) >> 8` -- the mapping the runtime always had -- for every
+axis value whatever the other axis is; the centre; a round dead zone (centred inside, barely moved just past it, full
+tilt still 0 / 255); a gain above 1 clamps instead of wrapping, below 1 never reaches full tilt; bytes never go down
+as the stick goes further; left mirrors right. No SDL:
+
+    cc -O1 -g -Wall -I ../ui stick_curve_test.c -lm -o /tmp/stick_curve_test && /tmp/stick_curve_test
+
+It prints `17 checks, 0 failed` and exits 0.
+
 ## The in-game overlay's scale: `overlay_scale_test.c`
 
 `runtime/ui/ui_scale.h` gives the overlay's scale from the window height and the display's content scale (overlay.cpp's

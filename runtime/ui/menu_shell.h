@@ -1,6 +1,6 @@
 /*
  * menu_shell.h - the in-game menu's (F10) frame around its pages (UI-03): the sections as tabs ACROSS THE TOP, the page's
- * rows under them, one pad flow for all of it. L1 / R1 step the tabs; left / right on the tabs pick one (ui::segmented's
+ * rows under them, one pad flow for all of it. L1 / R1 step the tabs; left / right on the tabs pick one (ui::tabs_row's
  * rule); D-pad down from the tabs enters the page's rows, up from the first row comes back to the tab in use; Circle in
  * the page goes up one level to that tab, Circle on the tabs closes the menu. It replaced a sidebar on the left, which
  * the D-pad reached from the page only sideways and into the page at whichever row sat level with the entry (the owner,
@@ -24,7 +24,7 @@ static inline void menu_tabs(int *section, const int *order, int n, const char *
 	if (n > MENU_TABS_MAX) n = MENU_TABS_MAX;
 	for (int k = 0; k < n; k++) { snprintf(lb[k], sizeof lb[k], "%s##tab%d", labels[order[k]], k); p[k] = lb[k]; ids[k] = ImGui::GetID(lb[k]); }
 	int v = menu_tab_place(*section, order, n);
-	if (ui::segmented(p, n, &v)) *section = order[v];
+	if (ui::tabs_row(p, n, &v)) *section = order[v];
 }
 /* (the tabs had the focus at the end of the last frame: tabs_down_enters' argument for the page) */
 static inline bool menu_tab_focused(const ImGuiID *ids, int n) { const ImGuiID nav = GImGui->NavId; for (int k = 0; k < n; k++) if (ids[k] == nav) return true; return false; }

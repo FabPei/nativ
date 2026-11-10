@@ -48,6 +48,7 @@
 #include "dump_fit.h"
 #include "touch_controls.h"
 #include "device_pick.h"   /* (UI-02b) the chosen controller by name, else the first */
+#include "stick_curve.h"   /* (UI-04b) each stick's sensitivity and dead zone */
 
 enum { SELECT = 0x1, START = 0x8, UP = 0x10, RIGHT = 0x20, DOWN = 0x40, LEFT = 0x80, LTRIG = 0x100, RTRIG = 0x200,
        TRIANGLE = 0x1000, CIRCLE = 0x2000, CROSS = 0x4000, SQUARE = 0x8000,
@@ -64,6 +65,18 @@ static uint8_t *frame;                 /* RGBA, the latest presented frame */
 static uint32_t fw, fh, new_frame;
 static volatile uint32_t buttons;
 static volatile uint8_t sticks[4] = {128, 128, 128, 128};
+/* (UI-04b) the pad's own axes as SDL gave them, and each stick's curve (settings stick_l_* / stick_r_*: read with the keys,
+ * at start and as the menu closes); a stick's two bytes are made from both its axes (the dead zone is round) */
+static int16_t raw_axis[4];
+static float stick_sens[2] = {1.0f, 1.0f}, stick_dead[2] = {0.0f, 0.0f};
+static void stick_set(int k) {
+	uint8_t x, y; stick_curve(raw_axis[2 * k], raw_axis[2 * k + 1], stick_sens[k], stick_dead[k], &x, &y);
+	sticks[2 * k] = x; sticks[2 * k + 1] = y;
+}
+static void stick_reload(void) {
+	stick_sens[0] = (float)settings_float("stick_l_sens", 1.0); stick_dead[0] = (float)settings_float("stick_l_dead", 0.0);
+	stick_sens[1] = (float)settings_float("stick_r_sens", 1.0); stick_dead[1] = (float)settings_float("stick_r_dead", 0.0);
+}
 static int active;
 static int self_paced; static uint64_t last_paced_us;
 static const char *present_mode_v = "-";   /* the swapchain's present mode, for the full performance overlay (window_present_mode) */
@@ -216,6 +229,7 @@ static void kb_reload(void) {   /* the bindings from settings (at start, and whe
 	}
 	char sb[16]; shoulders_swapped = !strcmp(settings_str("shoulder_buttons", "triggers", sb, sizeof sb), "bumpers");
 	osb_reload();
+	stick_reload();   /* (UI-04b) */
 	{	char b[128]; snprintf(pad_want, sizeof pad_want, "%s", settings_str("pad_device", "", b, sizeof b)); pad_rechoose = 1; }   /* (UI-02b) */
 }
 int window_kb_count(void) { return KB_N; }
@@ -1022,7 +1036,7 @@ static int pad_connected;   /* (the window loop's gamepad, for other threads) */
 static void pad_close(SDL_Gamepad **pp) {   /* the player's controller let go: nothing it held stays held */
 	if (!*pp) return;
 	SDL_CloseGamepad(*pp); *pp = 0;
-	__atomic_store_n(&pad_connected, 0, __ATOMIC_RELAXED); pad_gyro = 0; motion_lost(); gamepad_touch_release(); buttons = 0; for (int i = 0; i < 4; i++) sticks[i] = 128;
+	__atomic_store_n(&pad_connected, 0, __ATOMIC_RELAXED); pad_gyro = 0; motion_lost(); gamepad_touch_release(); buttons = 0; for (int i = 0; i < 4; i++) { sticks[i] = 128; raw_axis[i] = 0; }
 }
 static void pad_choose(SDL_Gamepad **pp) {   /* (UI-02b) open the chosen controller, else the first connected one */
 	int n = 0; SDL_JoystickID *ids = SDL_GetGamepads(&n);
@@ -1330,8 +1344,7 @@ void window_run(void *(*fn)(void *), void *arg) {
 			if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_RIGHT && mouse_to_touch(e.button.x, e.button.y, 0, &tx, &ty)) { mouse_rear_x = tx; mouse_rear_y = clampi(ty, REAR_Y0, REAR_Y1); mouse_rear_down = 1; }
 			if (e.type == SDL_EVENT_MOUSE_BUTTON_UP && e.button.button == SDL_BUTTON_RIGHT) mouse_rear_down = 0;
 			if (e.type == SDL_EVENT_MOUSE_MOTION && mouse_rear_down && mouse_to_touch(e.motion.x, e.motion.y, 1, &tx, &ty)) { mouse_rear_x = tx; mouse_rear_y = clampi(ty, REAR_Y0, REAR_Y1); }
-			if (e.type == SDL_EVENT_GAMEPAD_AXIS_MOTION && e.gaxis.axis < 4)
-				sticks[e.gaxis.axis] = (uint8_t)((e.gaxis.value + 32768) >> 8);
+			if (e.type == SDL_EVENT_GAMEPAD_AXIS_MOTION && e.gaxis.axis < 4) { raw_axis[e.gaxis.axis] = e.gaxis.value; stick_set(e.gaxis.axis >> 1); }   /* (UI-04b: through the stick's curve) */
 		}
 		{	/* keyboard + mouse, once a loop: which scheme, the capture, WASD as the left stick, the look's stand-in */
 			static uint64_t last; uint64_t t = now_us(); double dt = last ? (t - last) / 1e6 : 0; last = t;
@@ -1537,7 +1550,8 @@ void window_run(void *(*fn)(void *), void *arg) {
 			if (was_open && !open) {
 				overlay_input_lost();   /* (a press that closed it -- Cross on Resume -- is released to the game: ImGui must not keep it held) */
 				kb_reload();   /* (the Controls page may have rebound keys) */
-				for (int i = 0; i < 4; i++) sticks[i] = pad ? (uint8_t)((SDL_GetGamepadAxis(pad, (SDL_GamepadAxis)i) + 32768) >> 8) : 128;
+				for (int i = 0; i < 4; i++) raw_axis[i] = pad ? SDL_GetGamepadAxis(pad, (SDL_GamepadAxis)i) : 0;
+				stick_set(0); stick_set(1);   /* (UI-04b; with no pad: 128, as before) */
 				pad_resync(pad);   /* and L and R: one held through the menu sends no new event (the other pair, held through, waits for a new press) */
 			}
 			was_open = open;

@@ -39,6 +39,11 @@ static const Str catalog[] = {
 	{"foot.hint", "Ctrl+Tab: sections   Esc or F10 closes this menu", "Strg+Tab: Seiten   Esc oder F10 schließt dieses Menü"},
 	/* (UI-01e: the pad's own names, pad_family.h: shoulder L, shoulder R, back, menu, menu, view -- "LB / RB: sections   B, Menu or Menu+View ...") */
 	{"foot.hint_pad", "%s / %s: sections   %s, %s or %s with %s closes this menu", "%s / %s: Seiten   %s, %s oder %s mit %s schließt dieses Menü"},
+	/* (UI-04: a value is changed only after Cross -- the foot while one is focused, and while it is being edited) */
+	{"foot.change_pad", "%s: change   %s / %s: sections   %s: back", "%s: ändern   %s / %s: Seiten   %s: zurück"},
+	{"foot.change_key", "Enter: change   Ctrl+Tab: sections   Esc: back", "Enter: ändern   Strg+Tab: Seiten   Esc: zurück"},
+	{"foot.edit_pad", "D-pad: choose   %s: OK   %s: cancel", "Steuerkreuz: wählen   %s: übernehmen   %s: abbrechen"},
+	{"foot.edit_key", "Arrows: choose   Enter: OK   Esc: cancel", "Pfeiltasten: wählen   Enter: übernehmen   Esc: abbrechen"},
 	{"foot.save_failed", "Settings could not be saved", "Einstellungen konnten nicht gespeichert werden"},
 	{"foot.quit_game", "Quit game", "Spiel beenden"},
 	{"foot.quit_launcher", "Back to the library", "Zurück zur Bibliothek"},
@@ -146,6 +151,14 @@ static const Str catalog[] = {
 	{"ctrl.gyro_pose_help", "Upright, as in your hands, or flat on a table.", "Aufrecht, wie in deinen Händen, oder flach auf einem Tisch."},
 	{"ctrl.gyro_upright", "Upright", "Aufrecht"},
 	{"ctrl.gyro_sens", "Gyro sensitivity", "Gyro-Empfindlichkeit"},
+	/* (UI-04b) the sticks */
+	{"ctrl.sticks", "Sticks", "Sticks"},
+	{"ctrl.stick_l_sens", "Left stick sensitivity", "Empfindlichkeit linker Stick"},
+	{"ctrl.stick_r_sens", "Right stick sensitivity", "Empfindlichkeit rechter Stick"},
+	{"ctrl.stick_sens_help", "How far the game sees the stick pushed: above 1x it reaches full tilt sooner, below 1x never quite.", "Wie weit das Spiel den Stick gedrückt sieht: über 1x erreicht er den Anschlag früher, unter 1x nie ganz."},
+	{"ctrl.stick_l_dead", "Left stick dead zone", "Totzone linker Stick"},
+	{"ctrl.stick_r_dead", "Right stick dead zone", "Totzone rechter Stick"},
+	{"ctrl.stick_dead_help", "A stick this close to its centre counts as let go: against a drifting stick. 0 % is the stick as it is.", "So nah an der Mitte gilt der Stick als losgelassen: gegen einen driftenden Stick. 0 % ist der Stick, wie er ist."},
 	{"ctrl.recentre", "Recentre", "Neu zentrieren"},
 	{"ctrl.recentre_help", "Makes the way the controller points now the centre. R3 does the same.", "Macht die jetzige Richtung des Controllers zur Mitte. R3 tut dasselbe."},
 	{"ctrl.recentre_btn", "Recentre the gyro", "Gyro neu zentrieren"},

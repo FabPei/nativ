@@ -632,7 +632,7 @@ static void library_scan(void) {
 			}
 		if (g.imported) art_paths(g);
 		if (g.name.empty() && g.imported) g.name = sfo_title_file(w + "/recomp/fs/app0/sce_sys/param.sfo");   /* (no game pack: the game's own title, not its id) */
-		if (g.name.empty()) g.name = g.id;
+		if (g.name.empty() || !ui::text_drawable(g.name.c_str())) g.name = g.id;   /* (UI-05: a title no face here can draw -- no CJK font installed -- reads as its id, not as boxes) */
 		g_games.push_back(g);
 	}
 	/* a console dump's modules, or a firmware update file's from setup (dump/firmware/<version>/) */
@@ -826,7 +826,9 @@ static void badge_draw(ImDrawList *dl, ImVec2 p, const char *name) {
 /* "<select> Select  <back> Back": as one row, its width first (a place that has room for it) */
 static std::vector<std::pair<std::string, std::string>> hint_items(bool back) {
 	const PadNames *n = pad_names_of(g_pad_fam); const bool kb = hints_keyboard();
-	std::vector<std::pair<std::string, std::string>> v{{kb ? "Enter" : n->select, "Select"}};
+	if (ui::editing())   /* (UI-04: a value open for editing -- the D-pad picks, Cross takes it, Circle leaves the old one) */
+		return {{kb ? "Arrows" : "D-pad", "Choose"}, {kb ? "Enter" : n->select, "OK"}, {kb ? "Esc" : n->back, "Cancel"}};
+	std::vector<std::pair<std::string, std::string>> v{{kb ? "Enter" : n->select, ui::value_focused() ? "Change" : "Select"}};
 	if (back) v.push_back({kb ? "Esc" : n->back, "Back"});
 	return v;
 }
@@ -1413,7 +1415,7 @@ static bool search_form(SDL_Window *win) {   /* a folder searched for games, upd
 }
 static bool add_form(SDL_Window *win) {   /* a player's own copy -> decrypted, imported, analysed, recompiled, built; true when started */
 	static const char *const kinds[] = {"Search a folder", "A PKG file", "A game folder"};
-	ui::segmented(kinds, 3, &g_add_kind); tab_hint();
+	ui::tabs_row(kinds, 3, &g_add_kind); tab_hint();
 	g_add_kind = (g_add_kind + tab_step() + 3) % 3;
 	ImGui::Dummy(ImVec2(0, ImGui::GetFontSize() * 0.15f));
 	if (g_add_kind == 0) return search_form(win);
@@ -1666,7 +1668,7 @@ static void slider_row(const SetTarget &t, const char *label, const char *expl, 
 	ImGui::SetNextItemWidth(-FLT_MIN);
 	std::string id = std::string("##") + key;
 	if (ui::slider_float(id.c_str(), &v, lo, hi, fmt, fl)) ini_set(*t.x, key, fmt_g(v / shown));
-	if (ImGui::IsItemDeactivatedAfterEdit()) target_write(t, key, tget(t, key, ""));   /* (written once the drag ends) */
+	if (ImGui::IsItemDeactivatedAfterEdit() || ui::edit_done()) target_write(t, key, tget(t, key, ""));   /* (written once the drag ends, or the pad's edit -- UI-04) */
 }
 static bool g_settings_open; static int g_settings_tab; static Ini g_shared;
 static bool g_setup_online = true;   /* setup's Play online, written with the name */
@@ -2030,7 +2032,7 @@ static void spot_modal(const SetTarget &t) {   /* "What does <button> do?" (insi
 static void mapping_rows(const SetTarget &t) {   /* (Controls tab, after its rows) */
 	const float em = ImGui::GetFontSize();
 	ui::row("Mapping for", "Each way of playing has its own mapping; the game's own menu (F10, Controls) changes the same.");
-	{	static const char *const types[] = {"Controller##mt", "Keyboard & mouse##mt", "Touch##mt"}; ui::segmented(types, 3, &g_map_type); }
+	{	static const char *const types[] = {"Controller##mt", "Keyboard & mouse##mt", "Touch##mt"}; ui::tabs_row(types, 3, &g_map_type); }
 	ui::rows_end();
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
 	if (g_map_type == 2) {   /* (UI-01n) the on-screen buttons: when they show, how big; the rest of the screen is the Vita's front touch screen */
@@ -2077,7 +2079,7 @@ static void settings_modal(void) {
 	static const char *const tabs[] = {"Display##st", "Controls##st", "Sound & online##st", "Library##st", "About##st"};
 	ImGuiID tab_ids[5]; for (int i = 0; i < 5; i++) tab_ids[i] = ImGui::GetID(tabs[i]);   /* (UI-03: B in a row comes back to its tab) */
 	ImGuiWindow *settings_win = ImGui::GetCurrentWindow(); ImGuiWindow *rows_win = nullptr;
-	ui::segmented(tabs, 5, &g_settings_tab); tab_hint();
+	ui::tabs_row(tabs, 5, &g_settings_tab); tab_hint();
 	g_settings_tab = (g_settings_tab + tab_step() + 5) % 5;
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
 	SetTarget t{&g_shared, shared_path(), SHARED_HEADER};
@@ -2116,6 +2118,11 @@ static void settings_modal(void) {
 		} else if (g_settings_tab == 1) {
 			seg_row(t, "Play with", "Automatic follows the last device you touch.", "input_mode", "auto", {{"auto", "Automatic"}, {"pad", "Controller"}, {"kbm", "Keyboard & mouse"}});
 			controller_row(t);   /* (UI-02b) */
+			/* (UI-04b) each stick: how far the game sees it pushed, and a dead zone around its centre (window.c: stick_curve.h) */
+			slider_row(t, "Left stick sensitivity", "How far the game sees the stick pushed: above 1× it reaches full tilt sooner, below 1× never quite.", "stick_l_sens", 1.0, 0.5f, 2.0f, "%.2f×");
+			slider_row(t, "Left stick dead zone", "A stick this close to its centre counts as let go: against a drifting stick. 0 % is the stick as it is.", "stick_l_dead", 0.0, 0.0f, 30.0f, "%.0f%%", 100.0f);
+			slider_row(t, "Right stick sensitivity", nullptr, "stick_r_sens", 1.0, 0.5f, 2.0f, "%.2f×");
+			slider_row(t, "Right stick dead zone", nullptr, "stick_r_dead", 0.0, 0.0f, 30.0f, "%.0f%%", 100.0f);
 			toggle_row(t, "Mouse look", "The mouse turns the camera and aims; left button R, right button L.", "mouse_look", true);
 			seg_row(t, "Mouse aim", "Direct: the game turns exactly as far as the mouse moves (Uncharted, Unit 13, Killzone). Stick: the mouse moves the right stick. F8 switches in a game.", "raw_look", "1", {{"1", "Direct"}, {"0", "Stick"}});
 			slider_row(t, "Mouse sensitivity", nullptr, "mouse_sens", 1.0, 0.1f, 5.0f, "%.2f×", 1, ImGuiSliderFlags_Logarithmic);
@@ -2185,7 +2192,8 @@ static const char *setting_name(const std::string &k) {
 		{"anisotropy", "Texture filtering"}, {"shadow_filter", "Shadow edges"}, {"full_res_world", "Full-resolution world"}, {"ssao", "Ambient occlusion"},
 		{"ssao_strength", "Occlusion strength"}, {"osd", "On-screen stats"}, {"input_mode", "Play with"}, {"mouse_look", "Mouse look"}, {"raw_look", "Mouse aim"},
 		{"mouse_sens", "Mouse sensitivity"}, {"mouse_invert", "Invert vertical look"}, {"shoulder_buttons", "L and R buttons"}, {"volume", "Volume"}, {"online_id", "Online name"}, {"online", "Play online"}, {"gyro", "Gyro"},
-		{"gyro_sens", "Gyro sensitivity"}, {"camera", "Rear camera"}};
+		{"gyro_sens", "Gyro sensitivity"}, {"camera", "Rear camera"}, {"stick_l_sens", "Left stick sensitivity"}, {"stick_l_dead", "Left stick dead zone"},
+		{"stick_r_sens", "Right stick sensitivity"}, {"stick_r_dead", "Right stick dead zone"}};
 	for (auto &n : names) if (k == n.first) return n.second;
 	return nullptr;
 }
@@ -3467,7 +3475,7 @@ static void hub_ui(SDL_Window *win) {
 	{	/* the focus on the Sort / Size bar: the list all the way up (nav scrolls just enough to show the bar; the header is
 		 * reached from the very top) */
 		ImGuiWindow *lw = ImGui::GetCurrentWindow(); ImGuiContext &g = *GImGui;
-		if (g.NavWindow == lw && g.NavId && ImGui::GetScrollY() > 0 && ImGui::WindowRectRelToAbs(lw, lw->NavRectRel[0]).Min.y < toolbar_end) ImGui::SetScrollY(0);
+		if (g.NavWindow == lw && g.NavId && ui::nav_just_moved() && ImGui::GetScrollY() > 0 && ImGui::WindowRectRelToAbs(lw, lw->NavRectRel[0]).Min.y < toolbar_end) ImGui::SetScrollY(0);   /* (UI-05: only as the pad / the keys move the focus there -- the wheel scrolled back to 0 every frame while a card above the edge had the focus) */
 	}
 	g_lib_scroll = ImGui::GetScrollY(); g_lib_scroll_max = ImGui::GetScrollMaxY();
 	ImGui::EndChild();
@@ -3664,7 +3672,8 @@ static int shot(SDL_Window *win, const char *path, int w, int h) {
 	 * them -- the item with the focus, the dialogs and menus open, and what a button would have done (g_shot_done) */
 	/* touch: tap:x:y, swipe:x1:y1:x2:y2 (pixels; a touch-screen pointer, the swipe over 8 frames); ATIV_SHOT_TOUCH=1: the
 	 * whole run in touch mode (the touch screen the last pointer used: finger-sized targets) */
-	struct Press { int kind; ImGuiKey key; float x1, y1, x2, y2; };   /* (kind: 0 a button, 1 a tap, 2 a swipe, 3 wait:<ms> -- real time, so a task can finish) */
+	/* (UI-05) mouse: click:x:y (a left click), wheel:x:y:n (the pointer there, n notches down; negative: up) */
+	struct Press { int kind; ImGuiKey key; float x1, y1, x2, y2; };   /* (kind: 0 a button, 1 a tap, 2 a swipe, 3 wait:<ms> -- real time, so a task can finish; 4 a click, 5 the wheel) */
 	std::vector<Press> keys;
 	if (const char *ks = getenv("ATIV_SHOT_KEYS")) {
 		static const std::pair<const char *, ImGuiKey> names[] = {{"up", ImGuiKey_GamepadDpadUp}, {"down", ImGuiKey_GamepadDpadDown}, {"left", ImGuiKey_GamepadDpadLeft},
@@ -3680,6 +3689,8 @@ static int shot(SDL_Window *win, const char *path, int w, int h) {
 			if (sscanf(tok.c_str(), "swipe:%f:%f:%f:%f", &pr.x1, &pr.y1, &pr.x2, &pr.y2) == 4) { pr.kind = 2; known = true; }
 			else if (sscanf(tok.c_str(), "tap:%f:%f", &pr.x1, &pr.y1) == 2) { pr.kind = 1; known = true; }
 			else if (sscanf(tok.c_str(), "wait:%f", &pr.x1) == 1) { pr.kind = 3; known = true; }
+			else if (sscanf(tok.c_str(), "click:%f:%f", &pr.x1, &pr.y1) == 2) { pr.kind = 4; known = true; }
+			else if (sscanf(tok.c_str(), "wheel:%f:%f:%f", &pr.x1, &pr.y1, &pr.x2) == 3) { pr.kind = 5; known = true; }
 			else for (auto &kv : names) if (tok == kv.first) { pr.key = kv.second; known = true; }
 			if (known) for (int i = 0; i < n; i++) keys.push_back(pr);
 			if (!known && !tok.empty()) { fprintf(stderr, "ATIV_SHOT_KEYS: no button \"%s\"\n", tok.c_str()); return 1; }
@@ -3705,6 +3716,12 @@ static int shot(SDL_Window *win, const char *path, int w, int h) {
 			if (f >= settle && k < (int)keys.size()) {
 				const Press &pr = keys[k];
 				if (pr.kind == 3) { if (at == 0) SDL_Delay((Uint32)pr.x1); }   /* (wait:<ms>) */
+				else if (pr.kind == 4 || pr.kind == 5) {   /* (a mouse: moved there, then a click or the wheel) */
+					io.AddMouseSourceEvent(ImGuiMouseSource_Mouse); io.AddMousePosEvent(pr.x1, pr.y1);
+					if (pr.kind == 4 && at == 1) io.AddMouseButtonEvent(0, true);
+					if (pr.kind == 4 && at == 3) io.AddMouseButtonEvent(0, false);
+					if (pr.kind == 5 && at == 1) io.AddMouseWheelEvent(0, -pr.x2);
+				}
 				else if (pr.kind == 0) { if (at < 2) io.AddKeyEvent(pr.key, at == 0); }
 				else if (pr.kind == 1 || at <= 9) {
 					const float t = pr.kind == 2 ? std::min(at, 8) / 8.0f : 0;
@@ -3727,7 +3744,11 @@ static int shot(SDL_Window *win, const char *path, int w, int h) {
 			ImGuiContext &g = *GImGui; static std::vector<std::string> *tr = nullptr; if (!tr) tr = new std::vector<std::string>();
 			auto it = g_nav_labels.find(g.NavId);
 			std::string open; for (const ImGuiPopupData &pp : g.OpenPopupStack) open += (open.empty() ? "" : ",") + (pp.Window ? fit_name(pp.Window) : std::string("?"));
-			tr->push_back("trace " + std::to_string((f - settle) / per_key) + " " + (g.NavWindow ? fit_name(g.NavWindow) : std::string("-")) + " | " + (it != g_nav_labels.end() ? it->second : std::string("-")) + " | open " + (open.empty() ? "none" : open));
+			/* (UI-05: and the scroll of the window under the pointer -- or the focus's -- as "scroll <window> <y> <max>") */
+			ImGuiWindow *sw = g.HoveredWindow ? g.HoveredWindow : g.NavWindow;
+			while (sw && sw->ScrollMax.y <= 0 && sw->ParentWindow && (sw->Flags & ImGuiWindowFlags_ChildWindow)) sw = sw->ParentWindow;
+			char sc[160]; snprintf(sc, sizeof sc, " | scroll %s %.0f %.0f", sw ? fit_name(sw).c_str() : "-", sw ? sw->Scroll.y : 0.0f, sw ? sw->ScrollMax.y : 0.0f);
+			tr->push_back("trace " + std::to_string((f - settle) / per_key) + " " + (g.NavWindow ? fit_name(g.NavWindow) : std::string("-")) + " | " + (it != g_nav_labels.end() ? it->second : std::string("-")) + " | open " + (open.empty() ? "none" : open) + sc);
 			g_nav_trace = tr;
 		}
 		if (g_fit_on) {
@@ -3752,6 +3773,7 @@ static int shot(SDL_Window *win, const char *path, int w, int h) {
 				if (!rect.empty()) fprintf(fn, "%s\n", rect.c_str());
 				fprintf(fn, "pointer %d %d %s over %s\n", (int)io.MousePos.x, (int)io.MousePos.y, io.MouseSource == ImGuiMouseSource_TouchScreen ? "touch" : "mouse", g.HoveredWindow ? fit_name(g.HoveredWindow).c_str() : "-");
 				for (const std::string &d : g_shot_done) fprintf(fn, "did %s\n", d.c_str());
+				for (const Game &gm : g_games) fprintf(fn, "game %s | %s\n", gm.id.c_str(), gm.name.c_str());   /* (UI-05: the name as shown) */
 				if (g_nav_trace) for (const std::string &l : *g_nav_trace) fprintf(fn, "%s\n", l.c_str());
 				if (g_export_open) fprintf(fn, "%s\n", g_export_report.c_str());
 				if (g_browse.open) fprintf(fn, "browse %s (%zu)\n", g_browse.dir.empty() ? "places" : g_browse.dir.c_str(), g_browse.items.size());
@@ -3911,6 +3933,7 @@ static bool mac_preflight(void) {
 int main(int argc, char **argv) {
 	g_root = find_root();
 	if (!exists(g_root + "/pipeline/vitarecomp.py")) {   /* (the launcher apart from its folder: run from inside the zip, or copied out alone) */
+		if (getenv("ATIV_SHOT")) { fprintf(stderr, "Project Nativ can't find the rest of its files (%s): a screenshot run, no message box\n", g_root.c_str()); return 1; }   /* (a test never puts a box on the desktop) */
 		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Project Nativ", "Project Nativ can't find the rest of its files.\n\nIf you opened it from inside the zip, extract the whole zip first (on Windows: right-click it, Extract All), then open Project Nativ from the extracted folder.", nullptr);
 		return 1;
 	}

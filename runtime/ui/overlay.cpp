@@ -131,6 +131,7 @@ extern const char *const settings_default_keep[];
 /* (UI-02b) a device choice by name: "Automatic" (the first one), each connected device, and the chosen one marked "not
  * connected" while it isn't (the game then uses the first one) -- key: "pad_device" or "camera_device" */
 static void save_settings(void);   /* (below) */
+static volatile bool g_value_edit;   /* (UI-04: a value is being edited with the pad / the keys -- Esc ends that, not the menu: overlay_modal_open) */
 static void device_choice(const char *id, const char *key, const std::vector<std::string> &names) {
 	char want[128]; settings_str(key, "", want, sizeof want);
 	std::vector<std::string> opts{ui_tr("ctrl.in_auto")}; for (const std::string &n : names) opts.push_back(n);
@@ -649,6 +650,23 @@ static void page_controls(void) {
 		  if (ui::slider_float("##osbs", &sz, 0.75f, 1.5f, "%.2f×")) { settings_set_float("osb_size", sz); save_settings(); } }
 		ui::rows_end();
 	}
+	section_label(ui_tr("ctrl.sticks"));   /* (UI-04b: each stick's sensitivity and dead zone -- window.c reads them as the menu closes) */
+	if (ui::rows_begin("sticks")) {
+		static const char *const keys[4] = {"stick_l_sens", "stick_l_dead", "stick_r_sens", "stick_r_dead"};
+		static const char *const names[4] = {"ctrl.stick_l_sens", "ctrl.stick_l_dead", "ctrl.stick_r_sens", "ctrl.stick_r_dead"};
+		static float val[4]; static int epoch = -1;
+		if (epoch != g_prefs_epoch) { for (int i = 0; i < 4; i++) val[i] = (float)settings_float(keys[i], i & 1 ? 0.0 : 1.0) * (i & 1 ? 100.0f : 1.0f); epoch = g_prefs_epoch; }
+		for (int i = 0; i < 4; i++) {
+			const bool dead = i & 1;
+			ui::row(ui_tr(names[i]), ui_tr(dead ? "ctrl.stick_dead_help" : "ctrl.stick_sens_help"), note_flt(keys[i], settings_float(keys[i], dead ? 0.0 : 1.0)));
+			char id[16]; std::snprintf(id, sizeof id, "##stk%d", i);
+			ImGui::SetNextItemWidth(-FLT_MIN);
+			if (dead ? ui::slider_float(id, &val[i], 0.0f, 30.0f, "%.0f%%") : ui::slider_float(id, &val[i], 0.5f, 2.0f, "%.2f×")) {
+				settings_set_float(keys[i], dead ? val[i] / 100.0f : val[i]); save_settings();
+			}
+		}
+		ui::rows_end();
+	}
 	section_label(ui_tr("ctrl.motion"));
 	if (ui::rows_begin("motion")) {
 		ui::row(ui_tr("ctrl.gyro"), window_gyro_present() ? ui_tr("ctrl.gyro_present") : ui_tr("ctrl.gyro_absent"), note_int("gyro", P.gyro));
@@ -903,9 +921,16 @@ static void build_ui(void) {
 		SDL_free(ids);
 		const char *deck = std::getenv("SteamDeck");
 		const PadNames *pn = pad_names_of(pad_family(type, deck && !strcmp(deck, "1")));
-		char hint[160]; snprintf(hint, sizeof hint, ui_tr("foot.hint_pad"), pn->l, pn->r, pn->back, pn->menu, pn->menu, pn->view);
+		const bool keys = GImGui->NavInputSource == ImGuiInputSource_Keyboard;
+		char hint[200];
+		if (ui::editing()) { if (keys) snprintf(hint, sizeof hint, "%s", ui_tr("foot.edit_key")); else snprintf(hint, sizeof hint, ui_tr("foot.edit_pad"), pn->select, pn->back); }   /* (UI-04) */
+		else if (ui::value_focused() && ui::nav_by_pad()) { if (keys) snprintf(hint, sizeof hint, "%s", ui_tr("foot.change_key")); else snprintf(hint, sizeof hint, ui_tr("foot.change_pad"), pn->select, pn->l, pn->r, pn->back); }
+		else snprintf(hint, sizeof hint, ui_tr("foot.hint_pad"), pn->l, pn->r, pn->back, pn->menu, pn->menu, pn->view);
 		ImGui::SameLine(); ImGui::TextDisabled("%s", hint);
-	} else { ImGui::SameLine(); ImGui::TextDisabled("%s", ui_tr("foot.hint")); }
+	} else {   /* (no pad: the keys' words) */
+		const char *h = ui::editing() ? ui_tr("foot.edit_key") : ui::value_focused() && ui::nav_by_pad() ? ui_tr("foot.change_key") : ui_tr("foot.hint");
+		ImGui::SameLine(); ImGui::TextDisabled("%s", h);
+	}
 	if (g_save_failed) {   /* (U8: until a later save succeeds) */
 		ImGui::SameLine();
 		ImGui::PushStyleColor(ImGuiCol_Text, ui::error);
@@ -919,6 +944,7 @@ static void build_ui(void) {
 	if (ImGui::Button(quit)) g_want_quit = true;
 	ImGui::PopStyleColor();
 	busy_before = ImGui::IsAnyItemActive() || ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) || g_modal_open || g_rebind >= 0 || g_pad_rebind >= 0;
+	g_value_edit = ui::editing();
 	ImGui::End();
 }
 
@@ -1427,7 +1453,7 @@ static void build_marks(void) {
 /* overlay_modal_open: one of our modal dialogs is up (the menu's "Reset all settings…") -- window.c leaves Esc to
  * it so the dialog cancels instead of the whole menu closing (U6) */
 int overlay_modal_open(void) {
-	return g_modal_open;
+	return g_modal_open || g_value_edit;
 }
 /* overlay_dialog_active: the save-data dialog is waiting on the player (the dialog itself is drawn
  * and answered by savedlg_ui.cpp) */

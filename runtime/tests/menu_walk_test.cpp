@@ -1,8 +1,11 @@
 /* menu_walk_test.cpp -- the in-game menu's pad flow (UI-03), walked with the pad alone: the menu opens on the tab in use;
  * D-pad down enters each page at its first row and visits every row in order (a list that stacks is walked through);
- * up from the first row comes back to the tab; L1 / R1 step the tabs; left / right change a choice and a slider; Circle
- * in a row goes back to the tab, Circle on the tabs closes. Every control kind the menu has is on the pages: an Off / On
- * toggle, a choice of three, a list that stacks (long names), a slider, a logarithmic slider, a button.
+ * up from the first row comes back to the tab; L1 / R1 step the tabs; Circle in a row goes back to the tab, Circle on the
+ * tabs closes. Every control kind the menu has is on the pages: an Off / On toggle, a choice of three, a list that stacks
+ * (long names), a slider, a logarithmic slider, a button.
+ * UI-04 (owner 2026-11-10): moving never changes a value -- left / right on a switch, a choice, a slider change nothing;
+ * Cross flips a switch, opens a choice / a list / a slider for editing (the D-pad picks, Cross takes it, Circle leaves the
+ * old value and stays on the row). Built against the ui_theme.h before UI-04 (cf13bd5) these checks FAIL.
  * -DMENU_WALK_OLD=1: the same pages in the frame as it was (the sections in a sidebar on the left: menu_sidebar.h,
  * Circle closing the menu from anywhere) -- the owner's report (2026-11-09) -> FAILED.
  * Focus is read by label: ImGui's test-engine hooks (-DIMGUI_ENABLE_TEST_ENGINE) record each item's label.
@@ -18,6 +21,9 @@
 #include "imgui_internal.h"
 extern "C" const char *ui_tr(const char *id) { return !strcmp(id, "common.off") ? "Off" : !strcmp(id, "common.on") ? "On" : id; }
 #include "ui_theme.h"
+#ifdef UI04_OLD   /* (fail-before: built against cf13bd5's ui_theme.h / menu_shell.h, which had no edit state) */
+namespace ui { inline bool editing(void) { return false; } }
+#endif
 #ifndef MENU_WALK_OLD
 #define MENU_WALK_OLD 0
 #endif
@@ -66,7 +72,7 @@ static void menu(void) {
 	ImGui::SetCursorPosX(1100); ImGui::Button("Resume##hdr");
 	const float foot = ImGui::GetFrameHeightWithSpacing() * 2;
 	/* L1 / R1: the tabs in order, the new page's first row takes the focus (as overlay.cpp does) */
-	int step = ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) ? -1 : ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) ? 1 : 0;
+	int step = ImGui::IsAnyItemActive() ? 0 : ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) ? -1 : ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) ? 1 : 0;   /* (as overlay.cpp: not while a control is busy) */
 	if (step) { g_section = order[(g_section + step + T_N) % T_N]; g_focus_page = true; }
 	ImGuiWindow *pagew = nullptr;
 #if MENU_WALK_OLD
@@ -91,7 +97,9 @@ static void menu(void) {
 	page(g_section);
 	ui::nav_keep_visible();
 	ImGui::EndChild();
-	if (menu_back(pagew, menuw, g_tab_ids[menu_tab_place(g_section, order, T_N)])) g_closed = true;
+	static bool busy_before;   /* (as overlay.cpp: Circle that ended an edit -- ImGui took it, a control was busy the frame before -- goes nowhere else) */
+	if (!busy_before && menu_back(pagew, menuw, g_tab_ids[menu_tab_place(g_section, order, T_N)])) g_closed = true;
+	busy_before = ImGui::IsAnyItemActive();
 	tabs_had_focus = menu_tab_focused(g_tab_ids, T_N);
 #endif
 	ImGui::Button("Capture##foot");
@@ -148,19 +156,44 @@ int main(void) {
 		snprintf(w, sizeof w, "tab %d: up from the rows comes back to tab %d", t, t);
 		check(w, at(tok));
 	}
-	/* left / right change values: tab 0's choice of three and its slider */
-	press(ImGuiKey_GamepadL1); press(ImGuiKey_GamepadL1);   /* (back to tab 0: its first row) */
+	/* UI-04: values change only after Cross -- tab 0's switch, choice and slider, tab 1's list */
+	press(ImGuiKey_GamepadL1); press(ImGuiKey_GamepadL1);   /* (back to tab 0: its first row, the switch) */
+	const bool f0 = g_full; press(ImGuiKey_GamepadDpadRight); press(ImGuiKey_GamepadDpadLeft);
+	check("UI-04: right / left on a switch change nothing", g_full == f0 && row_of(focus()) == 0);
+	press(ImGuiKey_GamepadFaceDown);
+	check("UI-04: Cross on a switch flips it, the focus stays on its row", g_full != f0 && row_of(focus()) == 0);
 	press(ImGuiKey_GamepadDpadDown);   /* (row 1: the choice, on its value Fit) */
-	const int c0 = g_choice; press(ImGuiKey_GamepadDpadRight);
-	check("right on a choice picks the next value (Fit -> Stretch)", c0 == 0 && g_choice == 1);
+	const int c0 = g_choice; press(ImGuiKey_GamepadDpadRight); press(ImGuiKey_GamepadDpadRight);
+	check("UI-04: right on a choice changes nothing without Cross", c0 == 0 && g_choice == 0 && row_of(focus()) == 1);
+	press(ImGuiKey_GamepadFaceDown); press(ImGuiKey_GamepadDpadRight);
+	check("UI-04: Cross, right -- the pick moves to Stretch, the value not yet", g_choice == 0 && ui::editing() && focus().find("Stretch##t0_r1") == 0);
+	press(ImGuiKey_GamepadDpadDown); press(ImGuiKey_GamepadDpadUp);
+	check("UI-04: while editing, down / up step the pick (Fill, back to Stretch), never leave the row", g_choice == 0 && ui::editing() && focus().find("Stretch##t0_r1") == 0);
+	press(ImGuiKey_GamepadFaceDown);
+	check("UI-04: Cross takes the pick (Fit -> Stretch), the edit ends", g_choice == 1 && !ui::editing() && focus().find("Stretch##t0_r1") == 0);
+	press(ImGuiKey_GamepadFaceDown); press(ImGuiKey_GamepadDpadRight); press(ImGuiKey_GamepadFaceRight);
+	check("UI-04: Cross, right, Circle -- the old value (Stretch), the menu and the row stay", g_choice == 1 && !ui::editing() && !g_closed && focus().find("Stretch##t0_r1") == 0);
 	press(ImGuiKey_GamepadDpadDown);   /* (row 2: the slider) */
 	const float s0 = g_scale; press(ImGuiKey_GamepadDpadRight);
-	check("right on a slider raises it, without taking it first", g_scale > s0 && row_of(focus()) == 2);
+	check("UI-04: right on a slider changes nothing without Cross", g_scale == s0 && row_of(focus()) == 2);
+	press(ImGuiKey_GamepadFaceDown); press(ImGuiKey_GamepadDpadRight); press(ImGuiKey_GamepadDpadRight);
+	check("UI-04: Cross, right x2 -- the slider moves while edited", g_scale > s0 && ui::editing());
+	press(ImGuiKey_GamepadFaceRight);
+	check("UI-04: Circle puts the slider back, the menu and the row stay", g_scale == s0 && !ui::editing() && !g_closed && row_of(focus()) == 2);
+	press(ImGuiKey_GamepadFaceDown); press(ImGuiKey_GamepadDpadRight); press(ImGuiKey_GamepadFaceDown);
+	check("UI-04: Cross, right, Cross keeps the slider's new value", g_scale > s0 && !ui::editing() && row_of(focus()) == 2);
 	press(ImGuiKey_GamepadDpadUp);
-	check("up from a changed choice's neighbour lands on its value (Stretch)", focus().find("Stretch##t0_r1") == 0);
+	check("up from the slider lands on the choice's value (Stretch)", focus().find("Stretch##t0_r1") == 0);
+	press(ImGuiKey_GamepadR1);   /* (tab 1: the list, on Automatic) */
+	const int l0 = g_list; press(ImGuiKey_GamepadDpadDown);
+	check("UI-04: down on a list leaves it (one stop), nothing picked", g_list == l0 && row_of(focus()) == 1);
+	press(ImGuiKey_GamepadDpadUp); press(ImGuiKey_GamepadFaceDown); press(ImGuiKey_GamepadDpadDown); press(ImGuiKey_GamepadDpadDown);
+	check("UI-04: Cross, down x2 in a list -- the pick on the DualSense, the value not yet", g_list == l0 && ui::editing() && focus().find("DualSense") == 0);
+	press(ImGuiKey_GamepadFaceDown);
+	check("UI-04: Cross takes it (Automatic -> the DualSense)", g_list == 2 && !ui::editing());
 	/* Circle: a row -> its tab; the tab -> closed */
 	press(ImGuiKey_GamepadFaceRight);
-	check("Circle in a row goes back to the tab in use, the menu stays", at("##tab0") && !g_closed);
+	check("Circle in a row goes back to the tab in use, the menu stays", at("##tab1") && !g_closed);
 	press(ImGuiKey_GamepadFaceRight);
 	check("Circle on the tabs closes the menu", g_closed);
 	ImGui::DestroyContext();
