@@ -60,6 +60,7 @@
 #include "touch_controls.h"   /* (UI-01n) the on-screen buttons' layout, shared with window.c */
 #include "menu_shell.h"   /* (UI-03) the sections as tabs across the top, one pad flow (menu_walk_test) */
 #include "menu_hint.h"   /* (UI-02a) the start hint, per device */
+#include "intro_skip.h"   /* (INTRO-01) the touch card ends by itself */
 #include "device_pick.h"   /* (UI-02b) the chosen controller / camera, "not connected" */
 #include <string>
 #include <vector>
@@ -265,6 +266,8 @@ static void intro_end(void) {   /* the touch card, done or skipped: never again 
 	g_intro = false; settings_set_int("touch_intro_shown", 1); save_settings();
 	g_paused = false; apply_pause();
 }
+int overlay_intro_up(void) { return g_ctx && g_intro; }   /* (INTRO-01) */
+void overlay_intro_skip(void) { if (g_ctx) intro_end(); }
 void overlay_close(void) {   /* closing the menu resumes: a Game > Pause doesn't outlive it */
 	if (g_layout_card) { g_layout_card = false; g_layout_ask = 0; g_layout_answer = 1; }   /* (Escape on the layout card: touch, the default) */
 	intro_end();
@@ -1613,6 +1616,7 @@ static void render_frame(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *target, uint
 /* ---- the touch card (this file's header): the three ways to touch, the device last used highlighted */
 enum { DEV_KBM, DEV_PAD, DEV_TOUCH };
 static int g_intro_dev = -1; static double g_intro_done = -1;   /* the device highlighted (-1: not yet chosen); when the touch was made */
+static double g_intro_since = -1;   /* (INTRO-01) when the card first showed: it ends by itself after INTRO_SKIP_S */
 static double g_intro_at = -1;   /* headless (RECOMP_OVERLAY_DUMP_UI=intro@<seconds>): the moment of the loops drawn */
 extern "C" int window_touch_contacts(int port, int *keys, int *xs, int *ys, int max);
 /* the card's input icons: Kenney's Input Prompts (CC0), third_party/kenney-prompts/make.py's ICONS in this order, white
@@ -1732,6 +1736,11 @@ static void build_intro(void) {
 			if (n > 0) { const int k = keys[0]; g_intro_dev = k == 1 ? DEV_KBM : k >= 20 ? DEV_TOUCH : (k >= 4 && k <= 6) ? (window_kbm_active() ? DEV_KBM : DEV_PAD) : DEV_PAD; g_intro_done = t; }
 		}
 	} else if (g_has_window && g_intro_done >= 0 && t - g_intro_done > 1.2) intro_end();   /* (a moment to see it worked, then the game) */
+	if (g_has_window && g_intro_at < 0) {   /* (INTRO-01) untouched: it ends by itself */
+		if (g_intro_since < 0) g_intro_since = t;
+		if (g_intro_done < 0 && intro_timed_out(g_intro_since, t)) { intro_end(); return; }
+	}
+	const double left = g_intro_since >= 0 ? INTRO_SKIP_S - (t - g_intro_since) : INTRO_SKIP_S;
 	const char *pl, *pr, *pa; bool tp; int fam; pad_names(&pl, &pr, &pa, &tp, &fam);
 #ifdef __APPLE__
 	const char *alt = "Option";
@@ -1741,7 +1750,7 @@ static void build_intro(void) {
 	char kbm[200], padb[240];
 	snprintf(kbm, sizeof kbm, "Hold %s and click to touch the screen. Right-click instead to touch the rear pad.", alt);
 	snprintf(padb, sizeof padb, "Hold %s and steer the cursor with a stick, then press %s to touch. %s does the same on the rear pad.%s", pl, pa, pr, tp ? " The touchpad works too." : "");
-	const struct { const char *name, *how; } devs[3] = {{"Keyboard and mouse", kbm}, {"Controller", padb}, {"Touch screen", "Touch the picture, as you would the Vita's own screen."}};
+	const struct { const char *name, *how; } devs[3] = {{"With keyboard and mouse", kbm}, {"With a controller", padb}, {"On a touch screen", "Touch the picture, as you would the Vita's own screen."}};   /* (INTRO-01: "With ..." -- three ways to touch, not a choice of what to play with) */
 	const ImGuiViewport *vp = ImGui::GetMainViewport(); const float em = ImGui::GetFontSize();
 	ImGui::GetBackgroundDrawList()->AddRectFilled(vp->Pos, ImVec2(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y), ui::u32(ui::bg, 0.55f));   /* (the paused game, dimmed behind it) */
 	const float cw = fminf(vp->Size.x - 2 * em, 38 * em);
@@ -1749,7 +1758,7 @@ static void build_intro(void) {
 	ImGui::SetNextWindowSizeConstraints(ImVec2(cw, 0), ImVec2(cw, vp->Size.y - 2 * em));
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(em * 1.4f, em * 1.2f));
 	ImGui::Begin("##touchcard", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs);   /* (a click anywhere, the card too, is a touch) */
-	ui::heading(g_intro_done < 0 ? "Touching the screen" : "That's it", em * 1.35f);
+	ui::heading(g_intro_done < 0 ? "How to touch the screen" : "That's it", em * 1.35f);
 	ui::muted_wrapped("Vita games are played with the touch screen as well as buttons. Here's how to touch it:");
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
 	const float dh = em * 3.8f, dw = dh * 3.3f;   /* each row's demonstration strip (intro_demo), at its right */
@@ -1773,9 +1782,11 @@ static void build_intro(void) {
 		ImGui::PopStyleVar(); ImGui::PopStyleColor(2);
 	}
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
-	if (g_intro_done < 0) { ImGui::PushStyleColor(ImGuiCol_Text, ui::accent); ImGui::TextUnformatted("Try it now to continue."); ImGui::PopStyleColor(); }
-	else ImGui::TextUnformatted("Back to the game.");
-	ui::muted_wrapped("F10 opens the menu, with every control. Esc skips this.");
+	if (g_intro_done < 0) {
+		char go[96]; snprintf(go, sizeof go, "Try a touch now, or press any key or button to start playing (by itself in %d s).", (int)ceil(left > 0 ? left : 0));
+		ImGui::PushStyleColor(ImGuiCol_Text, ui::accent); ImGui::TextWrapped("%s", go); ImGui::PopStyleColor();
+	} else ImGui::TextUnformatted("Back to the game.");
+	ui::muted_wrapped("You don't choose anything here: every way works whenever you like. F10 opens the menu, with every control.");
 	ImGui::End();
 	ImGui::PopStyleVar();
 }

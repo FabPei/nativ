@@ -70,6 +70,10 @@ int overlay_game_paused(void);
  * menu and hides the bar. */
 int overlay_mouse_captured(void);
 void overlay_bar_dismiss(void);
+/* (INTRO-01) the first-start touch card is up (the game paused under it); overlay_intro_skip ends it -- window.c calls it for a
+ * key or a pad button that isn't part of a touch (intro_skip.h) */
+int overlay_intro_up(void);
+void overlay_intro_skip(void);
 
 /* one-shot flags the Quit and Capture frame buttons set; window.c polls and clears them once a loop
  * iteration, the same way it reacts to SDL_EVENT_QUIT and F12 */

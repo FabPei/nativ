@@ -48,6 +48,7 @@
 #include "dump_fit.h"
 #include "touch_controls.h"
 #include "device_pick.h"   /* (UI-02b) the chosen controller by name, else the first */
+#include "intro_skip.h"   /* (INTRO-01) which press ends the first-start touch card */
 #include "stick_curve.h"   /* (UI-04b) each stick's sensitivity and dead zone */
 
 enum { SELECT = 0x1, START = 0x8, UP = 0x10, RIGHT = 0x20, DOWN = 0x40, LEFT = 0x80, LTRIG = 0x100, RTRIG = 0x200,
@@ -1202,6 +1203,22 @@ void window_run(void *(*fn)(void *), void *arg) {
 			/* Start + Select (Back on an Xbox pad, Create/Share on a DualSense), either order: the menu opens or closes
 			 * (for pads whose PS / Guide button the system keeps, e.g. the Game Bar or Steam) */
 			if (pad_back && pad_start && !pad_combo_latch) { pad_combo_latch = 1; pad_start_solo = 0; overlay_toggle(); if (overlay_is_open()) { buttons = 0; touch_down = 0; gamepad_touch_release(); } }
+			/* (INTRO-01) the first-start touch card: a key or a pad button that isn't part of a touch ends it, and reaches
+			 * nothing else (the game is paused under it; before, only a touch, Esc or F10 did, and a player pressing keys
+			 * saw a game that seemed hung) */
+			if (!overlay_is_open() && overlay_intro_up() && ((e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) || e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN)) {
+				int skip;
+				if (e.type == SDL_EVENT_KEY_DOWN) {
+					const SDL_Keycode k = e.key.key;
+					const int what = (k == SDLK_LALT || k == SDLK_RALT) ? INTRO_K_ALT
+					               : (k == SDLK_LCTRL || k == SDLK_RCTRL || k == SDLK_LSHIFT || k == SDLK_RSHIFT || k == SDLK_LGUI || k == SDLK_RGUI) ? INTRO_K_MODIFIER : INTRO_K_OTHER;
+					skip = intro_press_skips(INTRO_KEY, what, 0);
+				} else {
+					const int b = e.gbutton.button;
+					skip = intro_press_skips(INTRO_PAD, (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER || b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) ? INTRO_B_SHOULDER : INTRO_B_OTHER, cur_mode != 0);
+				}
+				if (skip) { overlay_intro_skip(); continue; }
+			}
 			/* exclusive while open: the menu gets every key/mouse/gamepad event instead of the game
 			 * (which is paused anyway -- display.c) */
 			if (overlay_is_open()) { overlay_process_event(&e); continue; }
