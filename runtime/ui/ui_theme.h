@@ -9,7 +9,11 @@
 #ifndef ATIV_UI_THEME_H
 #define ATIV_UI_THEME_H
 #include "imgui.h"
+#include "imgui_internal.h"   /* (UI-03: SetFocusID, the nav state) */
+#include "ui_text.h"   /* (U12b) ui_tr for the toggle's Off/On */
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <initializer_list>
 #include <sys/stat.h>
 
@@ -53,8 +57,41 @@ inline ImFont *load_system_font(ImGuiIO &io) {
 	static const char *const faces[] = {"/System/Library/Fonts/SFNS.ttf", "/System/Library/Fonts/Helvetica.ttc", "C:\\Windows\\Fonts\\segoeui.ttf",
 		"/usr/share/fonts/noto/NotoSans-Regular.ttf", "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf",
 		"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/cantarell/Cantarell-VF.otf", 0};
-	for (int i = 0; faces[i]; i++) { struct stat st; if (stat(faces[i], &st) == 0) if (ImFont *f = io.Fonts->AddFontFromFileTTF(faces[i])) return f; }
-	return io.Fonts->AddFontDefaultVector();
+	ImFont *font = nullptr;
+	for (int i = 0; faces[i] && !font; i++) { struct stat st; if (stat(faces[i], &st) == 0) font = io.Fonts->AddFontFromFileTTF(faces[i], 0, nullptr, io.Fonts->GetGlyphRangesDefault()); }   /* (U12a: the default ranges -- Basic Latin + Latin-1 -- are the catalog's contract: English and German both; ui_text_test asserts every string stays in them) */
+	if (!font) font = io.Fonts->AddFontDefaultVector();
+	/* (UI-05) names the catalog doesn't write -- a game's title, a device's name -- may be Chinese, Japanese or Korean: the
+	 * system's CJK faces merged in behind it (ImGui 1.92 loads each glyph as it is first drawn, from the first face that has
+	 * it). One face per script group, the first one found; nothing shipped. None there: text_drawable() says so. */
+	static const char *const han[] = {"C:\\Windows\\Fonts\\msyh.ttc", "C:\\Windows\\Fonts\\YuGothR.ttc", "C:\\Windows\\Fonts\\msjh.ttc",
+		"/System/Library/Fonts/PingFang.ttc", "/System/Library/Fonts/Hiragino Sans GB.ttc",
+		"/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+		"/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc", "/usr/share/fonts/noto-cjk/NotoSansCJKsc-Regular.otf", 0};
+	static const char *const hangul[] = {"C:\\Windows\\Fonts\\malgun.ttf", "/System/Library/Fonts/AppleSDGothicNeo.ttc", 0};   /* (a Noto CJK face above has Hangul already) */
+	const char *picked = nullptr;
+	if (const char *e = getenv("ATIV_SHOT_NO_CJK")) if (*e == '1') return font;   /* (a screenshot run as on a system without them: the title-id fallback) */
+	for (const char *const *grp : {han, hangul})
+		for (int i = 0; grp[i]; i++) {
+			struct stat st; if (stat(grp[i], &st) != 0) continue;
+			if (grp == hangul && picked && strstr(picked, "Noto")) break;
+			ImFontConfig cfg; cfg.MergeMode = true;
+			if (io.Fonts->AddFontFromFileTTF(grp[i], 0, &cfg, nullptr)) { if (grp == han) picked = grp[i]; break; }
+		}
+	return font;
+}
+/* (UI-05) can the face draw every character of s (UTF-8)? A name it can't is better shown another way (the launcher: the
+ * game's title id) than as boxes / question marks */
+inline bool text_drawable(const char *s) {
+	ImGuiIO &io = ImGui::GetIO();
+	if (io.Fonts->Fonts.Size == 0) return true;
+	ImFont *f = io.Fonts->Fonts[0];
+	for (const char *p = s; *p;) {
+		unsigned int c = 0; const int n = ImTextCharFromUtf8(&c, p, nullptr);
+		if (n <= 0 || c == IM_UNICODE_CODEPOINT_INVALID || c > IM_UNICODE_CODEPOINT_MAX) return false;
+		p += n;
+		if (c >= 0x80 && !f->IsGlyphInFont((ImWchar)c)) return false;
+	}
+	return true;
 }
 
 inline bool primary_button(const char *label, ImVec2 size = ImVec2(0, 0)) {   /* the one amber button a view offers */
@@ -64,28 +101,274 @@ inline bool primary_button(const char *label, ImVec2 size = ImVec2(0, 0)) {   /*
 	ImGui::PopStyleColor(4);
 	return r;
 }
-/* a choice of n as one joined control; true when it changes. ids: labels may carry "##" suffixes */
-inline bool segmented(const char *const *labels, int n, int *v) {
+/* a choice of n as one joined control; true when it changes. ids: labels may carry "##" suffixes.
+ * (2026-11-07: wraps to the next line when the row would overflow the column -- six widescreen
+ * segments clipped at 1280x800's narrower settings column before this.) */
+/* (UI-03) one pad flow for every choice: up / down reach a choice ON its current value (a focus arriving from another row
+ * is moved there -- it never lands on, nor picks, a neighbour by where it came from), left / right (or up / down
+ * through a list that stacks) pick the value as they move, Cross on one picks it too; a mouse or a finger click as
+ * before. The focus a group had last frame is kept in ImGui's state storage, keyed by the group's first label. */
+/* (UI-04: this rule now is only the tabs' -- a row of tabs is where you are, not a value; every value is ui::segmented below) */
+inline bool tabs_row(const char *const *labels, int n, int *v) {
 	bool ch = false;
+	ImGuiContext &g = *GImGui;
+	const ImGuiID key = ImGui::GetID(labels[0]) ^ 0x5e6d0001u;
+	ImGuiStorage *st = ImGui::GetStateStorage();
+	const int prev = st->GetInt(key, -1);
+	const bool pad_nav = g.NavCursorVisible && (g.NavInputSource == ImGuiInputSource_Gamepad || g.NavInputSource == ImGuiInputSource_Keyboard);
+	int fi = -1; ImGuiID cur_id = 0;
 	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x * 0.25f, 0));
+	const float sp = ImGui::GetStyle().ItemSpacing.x, avail = ImGui::GetContentRegionAvail().x, x0 = ImGui::GetCursorPosX();
+	float xnext = x0;   /* where the next button would start on this line (after Button() the cursor is at the next line's start, so track it) */
+	/* (2026-11-10) a list with every value on a line of its own (a device list) keeps up / down through its values; a row of
+	 * values -- also one that wraps part of it to a second line -- is one D-pad stop: left / right pick, up / down leave */
+	bool one_per_line = n > 1;
+	{	float xs = x0;
+		for (int i = 0; i < n; i++) {
+			const float w = ImGui::CalcTextSize(labels[i]).x + 2.0f * ImGui::GetStyle().FramePadding.x;
+			const bool same = i && (xs + w <= x0 + avail + 0.5f);
+			if (same) one_per_line = false;
+			xs = (same ? xs : x0) + w + sp;
+		}
+	}
+	const bool row_stop = pad_nav && !one_per_line;
 	for (int i = 0; i < n; i++) {
-		if (i) ImGui::SameLine();
+		ImVec2 ts = ImGui::CalcTextSize(labels[i]);
+		float w = ts.x + 2.0f * ImGui::GetStyle().FramePadding.x;
+		bool same = i && (xnext + w <= x0 + avail + 0.5f);
+		if (same) ImGui::SameLine();
+		float placed = same ? xnext : x0;
 		bool on = *v == i;
 		ImGui::PushStyleColor(ImGuiCol_Button, on ? with_alpha(accent, 0.18f) : card);
 		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, on ? with_alpha(accent, 0.24f) : card_hi);
 		ImGui::PushStyleColor(ImGuiCol_ButtonActive, with_alpha(accent, 0.30f));
 		ImGui::PushStyleColor(ImGuiCol_Text, on ? accent : muted);
+		/* (2026-11-10, NIGHT-02) only the current value is a D-pad stop: up / down always leave the choice, also when it
+		 * stacks over two lines (a wrapped "Controller | Keyboard & mouse / Touch" took down onto Touch, picked it, and the
+		 * drawn controller below became unreachable); left / right pick (below). A click or a tap reaches every segment. */
+		const bool nonav = row_stop && !on;
+		if (nonav) ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
 		if (ImGui::Button(labels[i]) && !on) { *v = i; ch = true; }
+		if (nonav) ImGui::PopItemFlag();
+		if (ImGui::IsItemFocused()) fi = i;
+		if (i == *v) cur_id = ImGui::GetItemID();
 		ImGui::PopStyleColor(4);
+		xnext = placed + w + sp;
 	}
 	ImGui::PopStyleVar();
+	int keep = fi;
+	const bool following = prev == -2 && cur_id && row_stop;   /* (the frame after a left / right pick: the focus follows the value) */
+	if (following) { ImGui::SetFocusID(cur_id, ImGui::GetCurrentWindow()); ImGui::SetNavCursorVisible(true); keep = *v; }   /* (SetFocusID hides the nav cursor: the next press would no longer count as a pad press) */
+	else if (fi >= 0 && pad_nav && !ch) {
+		if (prev < 0) { if (fi != *v && cur_id) { ImGui::SetFocusID(cur_id, ImGui::GetCurrentWindow()); keep = *v; } }   /* (arrived: onto the value) */
+		else if (fi != prev && fi != *v) { *v = fi; ch = true; }   /* (moved within: that value) */
+	}
+	if (row_stop && !ch && (following || (fi >= 0 && fi == *v))) {   /* left / right on the value: the next / previous one (no wrap), the focus stays on the choice -- also in the frame the focus is still following (a quick second press is not lost) */
+		int dir = 0;
+		if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft, true) || ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true)) dir = -1;
+		if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight, true) || ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) dir = 1;
+		if (dir && *v + dir >= 0 && *v + dir < n) { *v += dir; ch = true; keep = -2; ImGui::NavMoveRequestCancel(); }
+		else if (dir) ImGui::NavMoveRequestCancel();   /* (at an end: stay, not off to a neighbour row) */
+	}
+	st->SetInt(key, keep);
 	return ch;
 }
-inline bool toggle(const char *id, bool *on) {   /* Off / On as a segmented pair */
-	char a[64], b[64]; snprintf(a, sizeof a, "Off##%s", id); snprintf(b, sizeof b, "On##%s", id);
+
+/* (UI-04) a value changes only when the player says so (the owner, 2026-11-10: "wieso muss ich mit controller nicht die
+ * Auswahl der Optionen mit X o.ä. bestätigen? ... ich navigiere ja durch das Menü"). With the pad (or the arrow keys):
+ * moving never changes a value -- a choice, a list or a slider is ONE stop, on its current value; Cross (Enter, Space)
+ * opens it for editing: the D-pad then picks (all four ways), Cross takes the pick, Circle (Esc) leaves the old
+ * value; an Off / On switch flips on Cross. A mouse click or a finger picks directly, as before.
+ * While editing, the control is ImGui's active item (an id of its own): ImGui's D-pad navigation stops (all four
+ * directions "used" by it), ImGui's own Circle / Esc only ends it, and every "an item was busy last frame" check the
+ * menus have (B goes up a level, L1 / R1 step the tabs) leaves that press to the edit. */
+struct edit_t { ImGuiID id = 0; int cand = 0; float orig = 0; };
+inline edit_t g_edit;
+inline int g_value_focus_frame = -1;   /* the frame a value control last had the focus (the foot's hints: "Cross Change") */
+inline bool editing(void) { return g_edit.id && GImGui->ActiveId == g_edit.id; }
+/* (UI-05) scrolling has ONE rule: the list follows the focus only in a frame the pad / the keys moved it (ImGui's nav moved
+ * it, or a control put it on an edit's pick / back on its value) -- never because of the wheel, a swipe or a click: a
+ * focused item scrolled away by the wheel pulled the list back each frame (the owner: "Wieso kann man manchmal im
+ * Launcher nicht scrollen?") */
+inline int g_focus_set_frame = -100;
+inline bool nav_just_moved(void) { return GImGui->NavJustMovedToId != 0 || g_focus_set_frame >= ImGui::GetFrameCount() - 1; }
+inline void focus_set(ImGuiID id, ImGuiWindow *win) { ImGui::SetFocusID(id, win); ImGui::SetNavCursorVisible(true); g_focus_set_frame = ImGui::GetFrameCount(); }
+inline bool value_focused(void) { return g_value_focus_frame == ImGui::GetFrameCount(); }
+inline bool nav_by_pad(void) {   /* the focus is moved by the pad or the keys (not the mouse, not a finger) */
+	const ImGuiContext &g = *GImGui;
+	return g.NavCursorVisible && (g.NavInputSource == ImGuiInputSource_Gamepad || g.NavInputSource == ImGuiInputSource_Keyboard);
+}
+inline void edit_begin(ImGuiID id) {
+	ImGuiContext &g = *GImGui; const ImGuiInputSource src = g.NavInputSource;
+	g_edit.id = id;
+	ImGui::SetActiveID(id, ImGui::GetCurrentWindow());
+	g.ActiveIdSource = src; g.ActiveIdUsingNavDirMask = (1 << ImGuiDir_COUNT) - 1;
+	ImGui::SetNavCursorVisible(true);
+}
+inline void edit_keep(void) { ImGui::KeepAliveID(g_edit.id); GImGui->ActiveIdUsingNavDirMask = (1 << ImGuiDir_COUNT) - 1; }
+inline void edit_end(void) { if (GImGui->ActiveId == g_edit.id) ImGui::ClearActiveID(); g_edit.id = 0; }
+inline bool edit_ok_pressed(void) {
+	return ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false) || ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false)
+	    || ImGui::IsKeyPressed(ImGuiKey_Space, false);
+}
+inline int edit_step_pressed(bool vertical_too) {   /* -1 / +1 (held: repeats) */
+	int d = 0;
+	if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft, true) || ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true)) d = -1;
+	if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight, true) || ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) d = 1;
+	if (vertical_too) {
+		if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadUp, true) || ImGui::IsKeyPressed(ImGuiKey_UpArrow, true)) d = -1;
+		if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadDown, true) || ImGui::IsKeyPressed(ImGuiKey_DownArrow, true)) d = 1;
+	}
+	return d;
+}
+/* left / right on a value that isn't being edited: nothing (not off to whatever lies that way) */
+inline void sideways_stays(void) {
+	if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft, true) || ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true)
+	    || ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight, true) || ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) ImGui::NavMoveRequestCancel();
+}
+inline void edit_frame(ImVec2 a, ImVec2 b) {   /* the mark of a control being edited: an amber frame around it */
+	const float k = ImGui::GetFontSize() * 0.18f;
+	ImGui::GetWindowDrawList()->AddRect(ImVec2(a.x - k, a.y - k), ImVec2(b.x + k, b.y + k), u32(accent), ImGui::GetStyle().FrameRounding + k, 0, ImMax(2.0f, k * 0.8f));
+}
+/* a choice of n as one joined control (wrapping to more lines, down to one value a line: a list); true when *v changes.
+ * ids: labels may carry "##" suffixes. switch_: an Off / On pair -- Cross flips it, no edit (ui::toggle).
+ * (2026-11-07: wraps to the next line when the row would overflow the column -- six widescreen segments clipped at
+ * 1280x800's narrower settings column before this.) */
+inline bool segmented(const char *const *labels, int n, int *v, bool switch_ = false) {
+	ImGuiContext &g = *GImGui;
+	bool ch = false;
+	const ImGuiID eid = ImGui::GetID(labels[0]) ^ 0x5e6d0004u;
+	bool ed = g_edit.id == eid, refocus = false;
+	if (ed && g.ActiveId != eid) { g_edit.id = 0; ed = false; refocus = g.ActiveId == 0; }   /* (Circle / Esc, or a click elsewhere: the value stays as it was) */
+	const bool pad = nav_by_pad() || ed;
+	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x * 0.25f, 0));
+	const float sp = ImGui::GetStyle().ItemSpacing.x, avail = ImGui::GetContentRegionAvail().x, x0 = ImGui::GetCursorPosX();
+	if (ed) {   /* (read before drawing: this frame shows the pick) */
+		edit_keep();
+		const int d = edit_step_pressed(true);   /* (every direction: up / left the one before, down / right the next -- a choice that wraps reads on) */
+		if (d && g_edit.cand + d >= 0 && g_edit.cand + d < n) g_edit.cand += d;
+		if (edit_ok_pressed()) {
+			if (g_edit.cand != *v) { *v = g_edit.cand; ch = true; }
+			edit_end(); ed = false;
+		}
+	}
+	const int cand = ed ? g_edit.cand : *v;
+	float xnext = x0;
+	int fi = -1; ImGuiID cur_id = 0, cand_id = 0; ImVec2 mn(FLT_MAX, FLT_MAX), mx(-FLT_MAX, -FLT_MAX);
+	bool nav_press = false; int clicked = -1;
+	ImGuiWindow *win = ImGui::GetCurrentWindow();
+	for (int i = 0; i < n; i++) {
+		const float w = ImGui::CalcTextSize(labels[i], nullptr, true).x + 2.0f * ImGui::GetStyle().FramePadding.x;
+		const bool same = i && (xnext + w <= x0 + avail + 0.5f);
+		if (same) ImGui::SameLine();
+		const float placed = same ? xnext : x0;
+		const bool on = *v == i, pick = ed && cand == i;
+		ImGui::PushStyleColor(ImGuiCol_Button, pick ? accent : on ? with_alpha(accent, 0.18f) : card);
+		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, pick ? accent_hi : on ? with_alpha(accent, 0.24f) : card_hi);
+		ImGui::PushStyleColor(ImGuiCol_ButtonActive, pick ? accent : with_alpha(accent, 0.30f));
+		ImGui::PushStyleColor(ImGuiCol_Text, pick ? accent_ink : on ? accent : muted);
+		/* only the current value is a stop for the pad: the choice is one row, also a list or one that wraps (UI-03, NIGHT-02) */
+		const bool nonav = pad && !ed && !on;
+		if (nonav) ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
+		if (ImGui::Button(labels[i])) {
+			if (g.ActiveId == ImGui::GetItemID() && g.ActiveIdSource != ImGuiInputSource_Mouse) nav_press = true;   /* (Cross / Enter: pressed by the nav) */
+			else clicked = i;   /* (a click or a tap: that value) */
+		}
+		if (nonav) ImGui::PopItemFlag();
+		if (ImGui::IsItemFocused()) fi = i;
+		if (on) cur_id = ImGui::GetItemID();
+		if (i == cand) cand_id = ImGui::GetItemID();
+		/* the pad's focus: on the pick while editing; back on the value after an edit */
+		if ((ed && i == cand && g.NavId != cand_id) || (!ed && refocus && on && g.NavId != cur_id)) focus_set(ImGui::GetItemID(), win);
+		mn = ImMin(mn, ImGui::GetItemRectMin()); mx = ImMax(mx, ImGui::GetItemRectMax());
+		ImGui::PopStyleColor(4);
+		xnext = placed + w + sp;
+	}
+	ImGui::PopStyleVar();
+	if (clicked >= 0) {
+		if (ed) { edit_end(); ed = false; }
+		if (clicked != *v) { *v = clicked; ch = true; }
+	} else if (nav_press && !ch) {
+		if (switch_) { *v = *v ? 0 : 1; ch = true; }   /* (an Off / On switch: Cross flips it; the focus moves onto the new value next frame) */
+		else { g_edit.cand = *v; g_edit.orig = (float)*v; edit_begin(eid); ed = true; }
+	}
+	if (ed) edit_frame(mn, mx);   /* the mark of the edit */
+	else if (pad && cur_id && !ch && fi >= 0 && fi != *v) focus_set(cur_id, win);   /* (a focus that came in sideways, or stayed on a flipped switch's old value: onto the value) */
+	if (fi >= 0 || ed) {
+		g_value_focus_frame = ImGui::GetFrameCount();
+		if (!ed && pad) sideways_stays();
+	}
+	return ch;
+}
+/* (UI-03) in a scrolling list of rows (call it last, inside its window): the focused control is kept in view with a margin
+ * of rows below and above it, so a D-pad press always moves to the next one -- with the next one out of view, ImGui
+ * spent the press scrolling to it first, and the player pressed twice (the walk test's "stalls"). (UI-05: only in a frame
+ * the focus moved by the pad / the keys -- nav_just_moved -- so the wheel and a swipe scroll freely) */
+inline void nav_keep_visible(float margin_rows = 2.5f) {
+	ImGuiContext &g = *GImGui; ImGuiWindow *w = ImGui::GetCurrentWindow();
+	if (!g.NavId || g.NavWindow != w || !g.NavCursorVisible || !nav_just_moved()) return;
+	const ImRect r = ImGui::WindowRectRelToAbs(w, w->NavRectRel[0]);
+	const float m = ImGui::GetFrameHeightWithSpacing() * margin_rows, top = w->InnerClipRect.Min.y, bot = w->InnerClipRect.Max.y;
+	if (r.Max.y + m > bot) ImGui::SetScrollY(w, ImMin(w->ScrollMax.y, w->Scroll.y + (r.Max.y + m - bot)));
+	else if (r.Min.y - m < top) ImGui::SetScrollY(w, ImMax(0.0f, w->Scroll.y - (top - (r.Min.y - m))));
+}
+/* (UI-03) the focus to the next control submitted, as SetKeyboardFocusHere() but without taking it: ImGui's own call
+ * activates what it lands on, and a slider landed on that way opened for typing (B then only left the typing) */
+inline void focus_next_item(void) {
+	ImGuiContext &g = *GImGui;
+	ImGui::SetNavWindow(g.CurrentWindow);
+	ImGui::NavMoveRequestSubmit(ImGuiDir_None, ImGuiDir_Down, ImGuiNavMoveFlags_IsTabbing | ImGuiNavMoveFlags_FocusApi, ImGuiScrollFlags_KeepVisibleEdgeX | ImGuiScrollFlags_KeepVisibleEdgeY);
+	g.NavTabbingDir = 1; g.NavTabbingCounter = 1;
+}
+/* (UI-03) down from the tabs enters the rows at their first control, whatever is in view (at the top of a list, before its
+ * first item): ImGui's nearest-below rule took a page whose first control was out of view straight to the foot */
+inline void tabs_down_enters(bool tab_had_focus) {
+	if (tab_had_focus && (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadDown, false) || ImGui::IsKeyPressed(ImGuiKey_DownArrow, false))) focus_next_item();
+}
+/* (UI-04) a slider: one stop for the pad, Cross opens it for editing -- left / right (the arrow keys) step it by a twentieth of
+ * its range (a logarithmic one by 10 %), the game sees each step; Cross keeps the value, Circle (Esc) puts the old one
+ * back. A mouse or a finger drags it as before. edit_done(): the frame an edit by the pad ended (kept or put back) -- the
+ * launcher writes its file then, as at the end of a drag. */
+inline bool g_edit_done = false;
+inline bool edit_done(void) { return g_edit_done; }
+inline bool slider_float(const char *label, float *v, float lo, float hi, const char *fmt = "%.3f", ImGuiSliderFlags fl = 0) {
+	ImGuiContext &g = *GImGui;
+	bool ch = false;
+	const ImGuiID sid = ImGui::GetID(label), eid = sid ^ 0x5e6d0005u;
+	bool ed = g_edit.id == eid;
+	g_edit_done = false;
+	if (ed && g.ActiveId != eid) {   /* Circle / Esc (or a click elsewhere): the old value back -- not when the mouse took the slider itself */
+		if (g.ActiveId != sid && *v != g_edit.orig) { *v = g_edit.orig; ch = true; }
+		g_edit.id = 0; ed = false; g_edit_done = true;
+	}
+	if (ed) {
+		edit_keep();
+		if (const int d = edit_step_pressed(false)) {
+			float nv = (fl & ImGuiSliderFlags_Logarithmic) && *v > 0 ? *v * (d > 0 ? 1.1f : 1.0f / 1.1f) : *v + d * (hi - lo) / 20.0f;
+			nv = nv < lo ? lo : nv > hi ? hi : nv;
+			if (nv != *v) { *v = nv; ch = true; }
+		}
+		if (edit_ok_pressed()) { edit_end(); ed = false; g_edit_done = true; }
+	}
+	const float before = *v;
+	const bool pad = nav_by_pad() || ed;
+	ch |= ImGui::SliderFloat(label, v, lo, hi, fmt, fl);
+	if (!ed && pad && g.ActiveId == sid && g.ActiveIdSource != ImGuiInputSource_Mouse) {   /* Cross (Enter) took it: an edit instead of ImGui's own */
+		if (*v != before) { *v = before; ch = false; }
+		g_edit.orig = before; edit_begin(eid); ed = true;
+	}
+	if (ed) edit_frame(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+	if (ImGui::IsItemFocused() || ed) {
+		g_value_focus_frame = ImGui::GetFrameCount();
+		if (!ed && pad) sideways_stays();
+	}
+	return ch;
+}
+inline bool toggle(const char *id, bool *on) {   /* Off / On as a segmented pair (U12b: the catalog's words) */
+	char a[64], b[64]; snprintf(a, sizeof a, "%s##%s", ui_tr("common.off"), id); snprintf(b, sizeof b, "%s##%s", ui_tr("common.on"), id);
 	const char *const ls[2] = {a, b};
 	int v = *on ? 1 : 0;
-	if (!segmented(ls, 2, &v)) return false;
+	if (!segmented(ls, 2, &v, true)) return false;
 	*on = v != 0;
 	return true;
 }
@@ -109,21 +392,56 @@ inline void chip(const char *s, const ImVec4 &c) {   /* a small rounded label, t
 	ImGui::Dummy(ImVec2(ts.x + px * 2, ts.y + py * 2));
 }
 
-/* settings rows: rows_begin, then per setting row(label, explanation) and its control(s), then rows_end */
+/* settings rows: rows_begin, then per setting row(label, explanation) and its control(s), then rows_end.
+ * (U10) two_pane: a wide window shows the rows left and the hovered row's help right (build_ui decides; the rows
+ * then carry no inline explanation). help_label/help_text are what the right pane shows -- the page's first row's
+ * help until a row is hovered or its control focused, then sticky. */
+inline bool two_pane = false;
+inline const char *help_label = nullptr, *help_text = nullptr;
+inline const char *r_prev_label = nullptr, *r_prev_help = nullptr;
+inline float r_y0 = 0, r_x0 = 0, r_x1 = 0;
+inline void row_finish(void) {   /* the row above is complete: does it want the right pane? */
+	if (!two_pane || !r_prev_label) return;
+	if (ImGui::IsMouseHoveringRect(ImVec2(r_x0, r_y0), ImVec2(r_x1, ImGui::GetCursorScreenPos().y - ImGui::GetStyle().CellPadding.y))
+	    || ImGui::IsItemFocused()) {   /* (the last item is that row's control) */
+		help_label = r_prev_label; help_text = r_prev_help;
+	}
+	r_prev_label = nullptr;
+}
 inline bool rows_begin(const char *id) {
+	r_x0 = ImGui::GetCursorScreenPos().x; r_x1 = r_x0 + ImGui::GetContentRegionAvail().x;
 	if (!ImGui::BeginTable(id, 2, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX)) return false;
 	ImGui::TableSetupColumn("setting", ImGuiTableColumnFlags_WidthStretch, 1.0f);
 	ImGui::TableSetupColumn("control", ImGuiTableColumnFlags_WidthStretch, 1.15f);
 	return true;
 }
-inline void row(const char *label, const char *explanation = nullptr) {
+inline void row(const char *label, const char *explanation = nullptr, const char *note = nullptr) {
+	row_finish();   /* (U10) */
 	ImGui::TableNextRow(0, ImGui::GetFrameHeight() + ImGui::GetStyle().CellPadding.y * 2);
+	r_y0 = ImGui::GetCursorScreenPos().y;
 	ImGui::TableNextColumn();
 	ImGui::TextUnformatted(label);
-	if (explanation && *explanation) { ImGui::PushFont(nullptr, ImGui::GetFontSize() * 0.88f); muted_wrapped(explanation); ImGui::PopFont(); }
+	if (note && *note) {   /* (U7: a small muted mark -- "default", "next scene", "after restart") */
+		ImGui::SameLine(0, ImGui::GetFontSize() * 0.35f);
+		ImGui::PushFont(nullptr, ImGui::GetFontSize() * 0.82f);
+		ImGui::PushStyleColor(ImGuiCol_Text, muted);
+		ImGui::TextUnformatted(note);
+		ImGui::PopStyleColor();
+		ImGui::PopFont();
+	}
+	if (explanation && *explanation) {
+		if (two_pane) { if (!help_label) { help_label = label; help_text = explanation; } }
+		else { ImGui::PushFont(nullptr, ImGui::GetFontSize() * 0.88f); muted_wrapped(explanation); ImGui::PopFont(); }
+	}
 	ImGui::TableNextColumn();
+	r_prev_label = label; r_prev_help = explanation;
 }
-inline void rows_end(void) { ImGui::EndTable(); }
+inline void rows_end(void) { row_finish(); ImGui::EndTable(); }
+/* (U10) the right pane's content: the hovered row's label and its help */
+inline void help_pane(void) {
+	if (help_label) { ImGui::PushFont(nullptr, ImGui::GetFontSize() * 1.1f); ImGui::TextWrapped("%s", help_label); ImGui::PopFont(); ImGui::Dummy(ImVec2(0, ImGui::GetFontSize() * 0.35f)); }
+	if (help_text) { ImGui::PushStyleColor(ImGuiCol_Text, muted); ImGui::TextWrapped("%s", help_text); ImGui::PopStyleColor(); }
+}
 
 /* the logo, drawn (assets/brand/make.py has the same geometry as SVG). wordmark: "nativ" in lowercase monoline, the n
  * in the text colour and "ativ" (Vita, backwards) in amber, `height` px tall (its units: x -6..282, y 14..110), 3x as

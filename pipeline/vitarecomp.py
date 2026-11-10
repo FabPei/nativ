@@ -12,7 +12,24 @@
                                             licences, kept once (dump/licenses, pipeline/licenses.py): add looks
                                             there by a copy's content id; from files, the Vita itself over
                                             VitaShell's FTP, or a Vita3K install
-  vitarecomp add       <copy> [--license work.bin] [--no-build]   a game or its update (ux0:app/<title>
+  vitarecomp folders   [list | add [--vita3k] <folder> | remove <folder> | scan [--out <file>]]   the player's
+                                            library folders, kept (pipeline/folders.py): a copied ux0:, a dump folder,
+                                            a Vita3K install (its ux0 found, config.yml's pref-path followed), each
+                                            searched again by scan -- scan's rows plus the folder each was found in
+  vitarecomp steam     [list | add <title> --exe <launcher> --name <name> [--icon <png>] [--cover <png>] | remove <title>]
+                                            a game as a Steam shortcut (pipeline/steam.py): <launcher> --play <title>,
+                                            written into every Steam user's shortcuts.vdf (a copy kept first; refused
+                                            while Steam runs); remove takes out only ours
+  vitarecomp export-appimage <title> <out.AppImage>   a built game as one AppImage for the player's OWN Linux
+                                            handheld (a Steam Deck; pipeline/appimage.py): compiled once more for its
+                                            processor (EXPORT_CPU, default znver2) as <base>_deck, packed with the
+                                            game's images and app0 -- private: it holds the game. On Windows: in WSL
+  vitarecomp export-win <title> <out-folder> [--cpu LEVEL] [--zip] [--camera light|webcam|dark]   a built game as a folder for the
+                                            player's OWN other Windows PCs (pipeline/portable.py): compiled once
+                                            more for a CPU level other PCs have (default x86-64-v3; native and
+                                            named cores refused) as <base>_<level>, copied with its DLLs, images and
+                                            app0, started by start.cmd; --zip: also <out-folder>.zip -- private
+  vitarecomp add       <copy> [--license work.bin] [--no-build] [--in-place]   a game or its update (ux0:app/<title>
                                             or ux0:patch/<title> copied off the Vita, or a PKG with its licence file
                                             (.rif or work.bin); an already-decrypted folder works too), decrypted here
                                             (decrypt/vitadecrypt) and kept by kind -- dump/decrypted/<title>/app0 (the
@@ -20,12 +37,27 @@
                                             patch0 (the update) -- then import, analyze, recompile and build when a
                                             packs/<title>/pack.toml exists (--no-build: decrypt and keep only, more is
                                             coming -- the game's update: the last add imports and builds them together)
+                                            (an already-decrypted copy -- Vita3K's -- on this drive: hard links, no
+                                            second copy; on another drive a copy, or with --in-place its folders without
+                                            programs read where they are -- that drive then has to stay connected;
+                                            dump/decrypted/<title>/app0.links names them. Nothing is written into the copy)
   vitarecomp import    <title> [<dump dir>] executables (eboot.bin, sce_module/*.suprx; FAGDec
                                             output, or add's decrypted tree) -> verified ELFs; game
                                             data -> fs/app0. No dump dir: the title's own copy, its
                                             update layered over it (app0_patched, hard links) when
                                             the pack plays that version; records which version it is
   vitarecomp versions  <title>              the versions the game's pack plays, and which this copy is
+  vitarecomp pack-init <title> [--force]    a game with no pack yet: a minimal packs/<title>/pack.toml from the copy
+                                            (name, version, its main program's SHA-256, ELF, MODULES; no hooks), marked
+                                            AUTO-GENERATED / UNVERIFIED (pipeline/bootstrap.py)
+  vitarecomp bootstrap <title> [--frames N] [--max N]   as far as the game goes without pack work: pack-init when it
+                                            has no pack, import, then build -> headless run (N frames, default the pack's
+                                            TEST_FRAMES) -> the functions the run found the analysis missed -> analyze,
+                                            recompile, build again, until nothing new; says where it stopped (frame
+                                            reached, missed function, unimplemented instruction, crash, no frame) and
+                                            writes it, with the seeds and stub imports, to analysis/bootstrap.json
+  vitarecomp hooks-scan <title>            hook candidates in the game's analysis (constants the generic IHOOKS
+                                           frame_dt / aspect replace) -> analysis/hook_candidates.json; proposals only
   vitarecomp analyze   <title>              functions, code ranges and the memory image of the main
                                             module (analyze.py, seconds; ANALYZER=ghidra: the old
                                             Ghidra export, minutes to hours)
@@ -89,7 +121,12 @@ import zlib
 
 R = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.dirname(R)   # (pipeline/: this; the repository above it)
 RECOMPILER, RUNTIME, PACKS, DECRYPT, DEV = (os.path.join(ROOT, d) for d in ("recompiler", "runtime", "packs", "decrypt", "dev"))
+PACKS = os.environ.get("ATIV_PACKS") or PACKS   # (ATIV_PACKS=<dir>: the packs read from there -- a game run as if it had none, bootstrap's test)
 sys.path.insert(0, R)
+import appimage  # noqa: E402
+import portable  # noqa: E402
+import bootstrap  # noqa: E402
+import hookscan  # noqa: E402
 import packconf  # noqa: E402
 from datadir import library_dir  # noqa: E402
 from winfs import remove_file, remove_tree  # noqa: E402
@@ -248,7 +285,7 @@ def cmd_scan(T, rest):
 
 
 def cmd_add(T, rest):
-    nobuild = "--no-build" in rest; args = [a for a in rest if a != "--no-build"]
+    nobuild = "--no-build" in rest; in_place = "--in-place" in rest; args = [a for a in rest if a not in ("--no-build", "--in-place")]
     # what the copy is, from its plain param.sfo or PKG header (packs.py info: kind title version content-id)
     r = subprocess.run([PY, os.path.join(R, "packs.py"), "info", os.path.realpath(T)], env=env_with(TOOLS_ENV), capture_output=True, text=True)
     ident = r.stdout.split() if r.returncode == 0 and len(r.stdout.split()) >= 4 else ["game", "-", "-", "-"]
@@ -268,7 +305,7 @@ def cmd_add(T, rest):
         else: say(f"{tid}: no licence kept for it ({cid}): a copy that needs one stops below -- give its licence file (.rif or work.bin, --license), or keep yours first (vitarecomp licenses)")
     tmp = os.path.join(DUMP, "decrypted", f".add.{os.getpid()}"); rif = tmp + ".rif"
     rmtree(tmp); rmtree(rif); os.makedirs(os.path.join(DUMP, "decrypted"), exist_ok=True)
-    if run([PY, "-m", "vitadecrypt.game", os.path.realpath(T), tmp] + args + ["--license-out", rif], env=env_with(TOOLS_ENV), check=False).returncode:
+    if run([PY, "-m", "vitadecrypt.game", os.path.realpath(T), tmp] + args + ["--license-out", rif] + (["--link-dirs"] if in_place else []), env=env_with(TOOLS_ENV), check=False).returncode:
         rmtree(tmp); rmtree(rif); die()
     if tid == "-":
         try: tid = json.load(open(os.path.join(tmp, "game.json")))["title_id"]
@@ -278,6 +315,11 @@ def cmd_add(T, rest):
         rmtree(tmp); rmtree(rif); die(f"{T}: no title id or no decryptable eboot.bin (see above)")
     os.makedirs(W, exist_ok=True)
     if os.path.isfile(rif): _last_line([PY, os.path.join(R, "licenses.py"), "import", rif], env_with({"ATIV_DUMP": DUMP}))   # (the licence that decrypted it, kept)
+    links = sorted(os.path.realpath(os.path.join(tmp, n)) for n in os.listdir(tmp) if os.path.islink(os.path.join(tmp, n)) or _is_junction(os.path.join(tmp, n)))
+    links_file = os.path.join(W, ("app0" if kind == "game" else "patch0") + ".links")   # (the launcher: a card whose drive is gone says so)
+    if links:
+        with open(links_file, "w", encoding="utf-8", newline="\n") as f: f.write("".join(l + "\n" for l in links))
+    elif os.path.exists(links_file): os.remove(links_file)
     if kind == "game":
         rmtree(os.path.join(W, "app0")); os.rename(tmp, os.path.join(W, "app0")); say(f"{tid}: the game decrypted -> {os.path.join(W, 'app0')}")
         if os.path.isfile(rif): os.replace(rif, os.path.join(W, "license.rif"))
@@ -288,7 +330,7 @@ def cmd_add(T, rest):
     # (--no-build: kept, not imported -- the game alone may be a version the pack refuses that its update makes one it plays)
     if nobuild: die(f"{tid}: kept; the next add (its update) or vitarecomp import {tid} imports it", 0)
     run(SELF + ["import", tid])
-    if not os.path.isfile(os.path.join(PACKS, tid, "pack.toml")): die(f"{tid}: imported; there's no game pack for it yet (packs/{tid}/pack.toml)", 0)
+    if not packconf.pack_for(PACKS, tid): die(f"{tid}: imported; there's no game pack for it yet (packs/{tid}/pack.toml) -- `vitarecomp bootstrap {tid}` writes a first one and builds and runs it as far as it goes", 0)
     for c in ("analyze", "recompile", "build"): run(SELF + [c, tid])
 
 
@@ -304,7 +346,12 @@ class Game:
     def __init__(self, T, cmd):
         self.T = T
         self.W = os.path.join(DUMP, "decrypted", T)
-        self.PACK = T.split("_")[0] if re.match(r"[A-Z]{4}[0-9]{5}_", T) else T
+        own = T.split("_")[0] if re.match(r"[A-Z]{4}[0-9]{5}_", T) else T
+        # PACK: its own, else the pack of another release of the game that lists this title id among its OTHER_TITLES
+        # (an EU copy of a game with a US pack: played with it when its main program is one of the pack's versions --
+        # import refuses it otherwise, by hash); OTHER: such a copy, which still runs as its own title id
+        self.PACK = packconf.pack_for(PACKS, own) or own
+        self.OTHER = self.PACK != own
         self.CONF = os.path.join(PACKS, self.PACK, "pack.toml")
         # VERSION: which of the pack's builds this copy is (import records it from the main program's hash): the pack's
         # per-version settings (HOOKS, GAME_ADDRS, FUNCTION_SEEDS...) branch on it
@@ -327,7 +374,7 @@ class Game:
         if ov and version not in ov: c["RUN_ENV"] = ((c.get("RUN_ENV") or "") + " RECOMP_ONLINE_NEEDS=" + ",".join(ov)).strip()
         self.c = c; self.VERSION = version
         # TITLE_ID: the title id the game is told it runs as (sceAppMgr's, RECOMP_TITLE) -- the pack's unless the pack says otherwise
-        self.TITLE_ID = c.get("TITLE_ID") or self.PACK
+        self.TITLE_ID = own if self.OTHER else (c.get("TITLE_ID") or self.PACK)
         self.OUT = os.path.join(self.W, "recomp")
         self.SEEDS = os.path.join(DUMP, "decrypted", "seeds")   # firmware modules' missed functions (offsets), shared by every game
         # RECOMP_BIN=<name>: build/test a second host binary (<base>_<name>, test_<name>/) alongside the
@@ -349,11 +396,26 @@ class Game:
         # 0x88000000; imports resolve to their exports. A name is the game's own sce_module/<name>.suprx
         # when it ships one, else the firmware's (dump/decrypted/us or sys/external: libgxm_es4, ...)
         self.MODS = (c.get("MODULES") or "").split()
+        # LOAD_MODULES="bin/*.self ...": app0 modules the game loads on demand (sceKernelLoadStartModule of
+        # "app0:bin/<name>.self"; MODLOAD-01). Each is recompiled at a base of its own after MODULES' and linked into
+        # the binary, but loaded and started only when the game asks (runtime/core/modload.c, RECOMP_LOAD_MODULES).
+        # Their names here: "lm_" + the app0-relative path's letters and digits (a C identifier)
+        self.LPATH = {}
+        for pat in (c.get("LOAD_MODULES") or "").split():
+            for f in sorted(glob.glob(os.path.join(glob.escape(os.path.join(self.W, "app0")), pat))):
+                rel = os.path.relpath(f, os.path.join(self.W, "app0")).replace(os.sep, "/")
+                self.LPATH["lm_" + re.sub(r"[^0-9A-Za-z]", "_", rel)] = rel
+        self.LMODS = list(self.LPATH)
+        self.ALL = self.MODS + self.LMODS
         if self.MODS:
-            ENV["RECOMP_MODULE_BASES"] = " ".join(os.path.join(self.OUT, "mod_" + m) for m in self.MODS)
+            ENV["RECOMP_MODULE_BASES"] = " ".join(os.path.join(self.OUT, "mod_" + m) for m in self.ALL)
             ENV["RECOMP_MODULES"] = ",".join(os.path.join(self.OUT, m + ".img") for m in self.MODS)
         else:
             ENV.pop("RECOMP_MODULE_BASES", None); ENV.pop("RECOMP_MODULES", None)
+        if self.LMODS:
+            ENV["RECOMP_LOAD_MODULES"] = ";".join(f"{self.LPATH[m]}={os.path.join(self.OUT, m + '.img')}" for m in self.LMODS)
+        else:
+            ENV.pop("RECOMP_LOAD_MODULES", None)
         # the analysis recompile reads: analyze.py's, else an earlier Ghidra export
         self.DATA = os.path.join(self.W, "analysis", "eboot.data.json")
         if not os.path.isfile(self.DATA): self.DATA = os.path.join(self.W, "ghidra", "eboot.data.json")
@@ -367,7 +429,11 @@ class Game:
     def mod_base(i):
         return 0x88000000 + 0x1000000 * i
 
+    def var_base(self, i):   # a module's imported-variable slots: MODULES' 32 KB each from 0xfff80000, LOAD_MODULES' 2 KB each from 0xffe00000
+        return 0xfff80000 + 0x8000 * i if i < len(self.MODS) else 0xffe00000 + 0x800 * (i - len(self.MODS))
+
     def modelf(self, m):
+        if m in self.__dict__.get("LPATH", {}): return os.path.join(self.W, "app0", self.LPATH[m] + ".elf")   # (add's tree: each ELF beside its SELF)
         # (a console dump's first, then a firmware update file's from vitarecomp firmware, the newest version
         # first: libgxm_es4/libgpu_es4 3.65 -> 3.74 differ only in a version constant and the module fingerprint)
         own = os.path.join(self.W, "elf", m + ".suprx.elf")
@@ -381,7 +447,7 @@ class Game:
     def links(self, skip):   # --link for every module but the one named (main: "")
         l = []
         if skip: l += ["--link", f"{os.path.join(self.W, 'elf', self.ELF)}@0x81000000"]
-        for i, m in enumerate(self.MODS):
+        for i, m in enumerate(self.ALL):
             if m != skip: l += ["--link", f"{self.modelf(m)}@{self.mod_base(i):#x}"]
         return l
 
@@ -453,21 +519,21 @@ def cmd_analyze(g):
         with open(os.path.join(A, "pack_seeds.txt"), "w") as f:
             for s in g.FUNCTION_SEEDS.split(): f.write(f"{s.split(':')[0]} {s.partition(':')[2]}\n")
         seeds += ["--seeds", os.path.join(A, "pack_seeds.txt")]
-    for i, m in enumerate(g.MODS):
+    for i, m in enumerate(g.ALL):
         # (recompiler/seeds/<module>.txt: the ones that ship -- a new install's firmware modules need them from the first build;
         # $SEEDS: what this machine's runs found since, merged into the shipped set by hand)
         fw = []
         for f in (os.path.join(RECOMPILER, "seeds", m + ".txt"), os.path.join(g.SEEDS, m + ".txt")):
             if os.path.isfile(f): fw += ["--seeds", f"{f}@{g.mod_base(i):#x}"]
         run([PY, os.path.join(RECOMPILER, "analyze.py"), g.modelf(m), os.path.join(A, m + ".data.json"), "--base", f"{g.mod_base(i):#x}"] + g.links(m) +
-            ["--var-base", f"{0xfff80000 + 0x8000 * i:#x}"] + seeds + fw)
+            ["--var-base", f"{g.var_base(i):#x}"] + seeds + fw)
     run([PY, os.path.join(RECOMPILER, "analyze.py"), os.path.join(W, "elf", g.ELF), os.path.join(A, "eboot.data.json")] + g.links("") + seeds)
 
 
 def cmd_recompile(g):
     W, OUT = g.W, g.OUT
     os.makedirs(OUT, exist_ok=True)
-    for i, m in enumerate(g.MODS):
+    for i, m in enumerate(g.ALL):
         # MOD_HOOKS / MOD_IHOOKS="addr:name ...": HOOKS / IHOOKS for the loaded modules' code (Sony's libraries), each going to
         # the module whose 16 MB slot holds its address (e.g. libgxm's shader patcher: the shader prebuild)
         lo = g.mod_base(i)
@@ -476,6 +542,9 @@ def cmd_recompile(g):
         # every game's: libgxm's sceGxmShaderPatcherRegisterProgram (firmware 3.65/3.74 libgxm_es4, +0x15c38) -> runtime/core/hooks.c
         # gxm_register: each program the game registers, for the shader recipes (gfx_gpu.c)
         if m == "libgxm_es4" and ":gxm_register" not in f" {g.MOD_HOOKS} ": mh.append(f"{lo + 0x15c38:#x}:gxm_register")
+        # ... and its sceGxmShaderPatcherCreateFragmentProgram (+0x16ce0) -> gxm_fp_create: each variant's output register
+        # format, which a NATIVECOLOR program's colour is in (gfx/usse.h usse_set_fp_output_format)
+        if m == "libgxm_es4" and ":gxm_fp_create" not in f" {g.MOD_HOOKS} ": mh.append(f"{lo + 0x16ce0:#x}:gxm_fp_create")
         mih = [h for h in g.MOD_IHOOKS.split() if inside(h)]
         mhk = (["--hooks", " ".join(mh)] if mh else []) + (["--insn-hooks", " ".join(mih)] if mih else [])
         run_filtered([PY, os.path.join(RECOMPILER, "recomp.py"), os.path.join(W, "analysis", m + ".data.json"), os.path.join(OUT, f"mod_{m}.c"), "--split", "2", "--module", m] + mhk, "functions,")
@@ -495,7 +564,8 @@ def recompile_inputs(g):
         sub[:] = [x for x in sub if x != "__pycache__" and not x.startswith(".")]
         # (hidden files aren't the recompiler's: a tar from a Mac leaves ._ metadata beside each file, 2026-10-26)
         files += [os.path.relpath(os.path.join(d, n), ROOT).replace(os.sep, "/") for n in names if not n.endswith(".pyc") and not n.startswith(".")]
-    data = b"".join(open(os.path.join(ROOT, f), "rb").read() for f in sorted(files, key=lambda f: f.encode()))
+    src = lambda f: g.CONF if f == f"packs/{g.PACK}/pack.toml" else os.path.join(ROOT, f)   # (the pack read where it is: ATIV_PACKS)
+    data = b"".join(open(src(f), "rb").read() for f in sorted(files, key=lambda f: f.encode()))
     return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
 
 
@@ -543,7 +613,7 @@ def cmd_build(g, mode):
     base = os.path.join(g.OUT, g.BASE)
     out, extra = {"verify": (base + "_verify", {"VERIFY": "1"}), "profile": (base + "_prof", {"PROFILE": "1"})}.get(mode, (os.path.join(g.OUT, g.EXE.removesuffix(".exe")), {}))
     if g.windows: extra["TARGET"] = "windows"
-    mods = [os.path.join(g.OUT, "mod_" + m) for m in g.MODS]
+    mods = [os.path.join(g.OUT, "mod_" + m) for m in g.ALL]
     run([PY, os.path.join(RUNTIME, "build.py"), base, out] + mods, env=env_with(e, extra))
     if mode not in ("verify", "profile") and not ENV.get("RECOMP_BIN"):   # (ready's: which tools built the play program)
         with open(os.path.join(g.OUT, ".built_version"), "w", newline="\n") as f: f.write(tools_version() + "\n")
@@ -590,6 +660,19 @@ def tee_run(argv, env, cwd, log_path):
     return rc
 
 
+def play_fixed_env(g, shipped=None, icon=None):
+    """the settings `vitarecomp run` gives the game after its RUN_ENV (export-appimage's AppRun too: shipped/icon then the
+    image's paths)"""
+    have_shipped = os.path.isfile(os.path.join(PACKS, g.PACK, "shaders.txt"))
+    shipped = shipped or os.path.join(PACKS, g.PACK, "shaders.txt")
+    own_icon = os.path.join(ROOT, "assets", "brand", "png", "icon-" + ("macos-512" if sys.platform == "darwin" else "256") + ".png")   # (the window's: window.c)
+    icon = icon or own_icon
+    return ([("RECOMP_SHADER_RECIPES_SHIPPED", shipped)] if have_shipped else []) + ([("RECOMP_ICON", icon)] if os.path.isfile(own_icon) and sys.platform != "win32" else []) + [
+        ("RECOMP_TITLE", g.TITLE_ID), ("RECOMP_GAME_NAME", g.NAME), ("RECOMP_TOOLS_VERSION", tools_version()), ("RECOMP_GAME_VERSION", g.VERSION or ""),
+        ("RECOMP_LOG", ENV.get("RECOMP_LOG") or "0"),
+        ("RECOMP_HITCH_LOG", ENV.get("RECOMP_HITCH_LOG") or "50"), ("RECOMP_STALL_PROF", ENV.get("RECOMP_STALL_PROF") or "150")]
+
+
 def cmd_run(g, frames):
     OUT = g.OUT
     os.makedirs(os.path.join(OUT, "captures"), exist_ok=True)   # F12 in the window saves captures here
@@ -597,11 +680,7 @@ def cmd_run(g, frames):
     # session.log: this session's stderr (the terminal still shows it; the one before is session.prev.log), with the hitch
     # log on for frames over 50 ms -- what a first-use stutter did, from the player's own session (RECOMP_HITCH_LOG=0: off)
     # RECOMP_SHADER_RECIPES_SHIPPED: packs/<title>/shaders.txt, the shader recipes that ship (gfx_gpu.c: built as the game registers each program)
-    shipped = os.path.join(PACKS, g.PACK, "shaders.txt")
-    icon = os.path.join(ROOT, "assets", "brand", "png", "icon-" + ("macos-512" if sys.platform == "darwin" else "256") + ".png")   # (the window's: window.c)
-    fixed = ([("RECOMP_SHADER_RECIPES_SHIPPED", shipped)] if os.path.isfile(shipped) else []) + ([("RECOMP_ICON", icon)] if os.path.isfile(icon) and sys.platform != "win32" else []) + [
-        ("RECOMP_TITLE", g.TITLE_ID), ("RECOMP_GAME_NAME", g.NAME), ("RECOMP_LOG", ENV.get("RECOMP_LOG") or "0"),
-        ("RECOMP_HITCH_LOG", ENV.get("RECOMP_HITCH_LOG") or "50"), ("RECOMP_STALL_PROF", ENV.get("RECOMP_STALL_PROF") or "150")]
+    fixed = play_fixed_env(g)
     # ATIV_PRE_LAUNCH / ATIV_POST_EXIT (the environment): commands run before the game starts and after it exits. On a machine
     # whose GPU is shared (a local AI model kept in VRAM, say) the GPU must be free BEFORE the game starts: a game that starts
     # into full VRAM keeps its allocations in system memory for the whole session, even once the model is gone (an Uncharted
@@ -623,7 +702,7 @@ def fresh_fs(g, td):
     not on what a menu or F2 saved last time)"""
     os.makedirs(td, exist_ok=True)
     for f in glob.glob(os.path.join(glob.escape(td), "shot_*.ppm")): os.remove(f)
-    rmtree(os.path.join(td, "fs")); rmtree(os.path.join(td, "settings.ini"))
+    rmtree(os.path.join(td, "fs")); rmtree(os.path.join(td, "settings.ini")); rmtree(os.path.join(td, "gaps.json"))   # (GAPS-01: this run's only)
     os.makedirs(os.path.join(td, "fs"))
     link_dir(os.path.join(g.OUT, "fs", "app0"), os.path.join(td, "fs", "app0"), relative=os.path.join("..", "..", "fs", "app0"))
 
@@ -651,12 +730,17 @@ def cmd_test(g):
     # Uncharted's main thread, string compares under a lock, which no play run pays)
     frames = g.TEST_FRAMES; every = ENV.get("SHOT_EVERY") or ""
     e = game_env(g, g.TEST_ENV.split() + (ENV.get("EXTRA_ENV") or "").split(), [
-        ("RECOMP_GFX_COVERAGE", "" if ENV.get("TEST_COVERAGE") == "0" else "gfxcov.json"), ("RECOMP_TITLE", g.TITLE_ID), ("RECOMP_GAME_NAME", g.NAME), ("RECOMP_INPUT", g.TEST_INPUT),
+        ("RECOMP_GFX_COVERAGE", "" if ENV.get("TEST_COVERAGE") == "0" else "gfxcov.json"), ("RECOMP_TITLE", g.TITLE_ID), ("RECOMP_GAME_NAME", g.NAME), ("RECOMP_TOOLS_VERSION", tools_version()), ("RECOMP_GAME_VERSION", g.VERSION or ""), ("RECOMP_INPUT", g.TEST_INPUT),
         ("RECOMP_TOUCH", g.TEST_TOUCH), ("RECOMP_HEADLESS", "1"), ("RECOMP_FS", "fs"), ("RECOMP_LOG", "0"), ("RECOMP_SHOT", every or frames),
-        ("RECOMP_SHOT_LAST", frames)])   # (a series too ends at the test frame: it ran on to the timeout, 15 minutes for shots it had long since taken)
+        ("RECOMP_SHOT_LAST", frames), ("RECOMP_GAPS_JSON", "gaps.json")])   # (GAPS-01: the gap counter next to test.png) (a series too ends at the test frame: it ran on to the timeout, 15 minutes for shots it had long since taken)
     with open(os.path.join(td, "test.log"), "wb") as log:
-        timed(g.exe_argv(os.path.join(OUT, g.EXE)) + [os.path.join("..", g.BASE + ".img"), g.entry(), "100000000000"], e, td, subprocess.DEVNULL, log,
-              test_timeout(g))
+        t0 = time.time()
+        rc = timed(g.exe_argv(os.path.join(OUT, g.EXE)) + [os.path.join("..", g.BASE + ".img"), g.entry(), "100000000000"], e, td, subprocess.DEVNULL, log,
+                   test_timeout(g))
+        # how the host ended, for whoever reads the log (bootstrap's classify): a run that stops without a word of its own
+        # was a game- or runtime-requested exit (0), a host fault (an NTSTATUS such as 0xc0000094) or the time limit
+        late = " at the time limit" if time.time() - t0 >= test_timeout(g) - 1 else ""
+        log.write(f"\n== host exit code {rc} ({(rc or 0) & 0xffffffff:#x}){late}\n".encode())
     missed = os.path.join(td, "missed_functions.txt")
     if os.path.isfile(missed) and os.path.getsize(missed):
         # each address to its module: a firmware module's as an offset into $SEEDS/<module>.txt, the rest the game's
@@ -664,9 +748,9 @@ def cmd_test(g):
             if not ln.split(): continue
             a, kind = ln.split()[0], " ".join(ln.split()[1:])
             f, line = os.path.join(W, "analysis", "seeds.txt"), f"{a} {kind}"
-            for i, m in enumerate(g.MODS):
+            for i, m in enumerate(g.ALL):
                 b = g.mod_base(i)
-                if b <= int(a, 0) < b + 0x1000000 and not g.modelf(m).startswith(os.path.join(W, "elf") + os.sep):
+                if b <= int(a, 0) < b + 0x1000000 and not g.modelf(m).startswith(W + os.sep):   # (the game's own modules: elf/ and app0/)
                     os.makedirs(g.SEEDS, exist_ok=True); f = os.path.join(g.SEEDS, m + ".txt"); line = f"{int(a, 0) - b:#x} {kind}"
             have = open(f).read().splitlines() if os.path.isfile(f) else []
             with open(f, "w") as o: o.write("".join(x + "\n" for x in sorted(set(have + [line]))))
@@ -674,11 +758,23 @@ def cmd_test(g):
     rmtree(missed)
     shot = os.path.join(td, "shot_%05d.ppm" % int(frames))
     if not os.path.isfile(shot):
-        say(f"no frame {frames} (see {os.path.join(td, 'test.log')})")
+        say(f"no frame {frames} (see {os.path.join(td, 'test.log')})"); say(gaps_summary(td))
         sys.stdout.write("".join(open(os.path.join(td, "test.log"), errors="replace").readlines()[-5:])); die()
     try: ppm_to_png(shot, os.path.join(td, "test.png"))
     except (OSError, ValueError): pass
     say(f"frame {frames}: {os.path.join(td, 'test.png')}")
+    say(gaps_summary(td))
+
+
+def gaps_summary(td):
+    """GAPS-01: the run's gap counter line (runtime/core/gaps.c) -- from test.log, else gaps.json (a run stopped at its
+    time limit never prints the line but keeps the file)"""
+    lines = [ln.strip() for ln in open(os.path.join(td, "test.log"), errors="replace") if ln.startswith("GAPS:")] if os.path.isfile(os.path.join(td, "test.log")) else []
+    if lines: return lines[-1]
+    try:
+        cats = json.load(open(os.path.join(td, "gaps.json")))["categories"]
+        return "GAPS: " + ", ".join(f"{k} {v['distinct']}" + (f" ({','.join(x['key'] for x in v['keys'][:4])}{',...' if len(v['keys']) > 4 else ''})" if v["keys"] else "") for k, v in cats.items()) + " (from gaps.json)"
+    except (OSError, ValueError, KeyError): return "GAPS: none recorded (a host without the gap counter)"
 
 
 def cmd_capture(g, n):
@@ -810,9 +906,8 @@ def cmd_dist(out):
 
 UPDATES = "updates.txt"   # (an install's release channel, "github <owner>/<repo>": cmd_dist writes it, cmd_update_check reads it)
 def release_newer(tag, mine):
-    """a release tag newer than this install's version, both vX.Y.Z or a fork's vX.Y.Z-fpN (a build that isn't a release
-    is never told); vX.Y.Z-fpN sorts after vX.Y.Z and before the next upstream version"""
-    def parts(v): m = re.fullmatch(r"v?(\d+)\.(\d+)(?:\.(\d+))?(?:-fp(\d+))?", v.strip()); return tuple(int(x or 0) for x in m.groups()) if m else None
+    """a release tag newer than this install's version, both vX.Y.Z (a build that isn't a release is never told)"""
+    def parts(v): m = re.fullmatch(r"v?(\d+)\.(\d+)(?:\.(\d+))?", v.strip()); return tuple(int(x or 0) for x in m.groups()) if m else None
     a, b = parts(tag), parts(mine)
     return bool(a and b and a > b)
 def cmd_update_check():
@@ -909,6 +1004,255 @@ def cmd_report(T):
     say(f"report: {out} ({os.path.getsize(out) / 2**20:.1f} MB)")
 
 
+# ---- a game with no pack: pack-init and bootstrap (pipeline/bootstrap.py)
+
+def cmd_pack_init(T, force):
+    W = os.path.join(DUMP, "decrypted", T); app0 = os.path.join(W, "app0"); own = T.split("_")[0]
+    if not TITLE_RE.match(own): die(f"vitarecomp pack-init: a title id, such as PCSB00672 (not {T})")
+    have = packconf.pack_for(PACKS, own)
+    if have and not force: die(f"{T}: plays with packs/{have}/pack.toml already (--force writes a new packs/{own}/pack.toml anyway)")
+    edir = app0 if os.path.isfile(os.path.join(app0, "eboot.bin.elf")) else os.path.join(W, "elf")   # (add's tree, else import's ELFs)
+    if not os.path.isfile(os.path.join(edir, "eboot.bin.elf")): die(f"{T}: no decrypted eboot.bin in {W} (vitarecomp add it first)")
+    sys.path.insert(0, RECOMPILER); sys.path.insert(0, DECRYPT)
+    import imports as imp
+    from vitadecrypt import sfo
+    names = imp.known_names(); fns, libs = set(), set()
+    for lib, _, fn, _ in imp.imports(os.path.join(edir, "eboot.bin.elf"))[1]:
+        libs.add(lib); fns |= {names.get((lib, n), "") for n in fn}
+    elf, note = bootstrap.main_elf(edir, fns)
+    if elf != "eboot.bin.elf":   # (the program it launches: its imports decide the modules)
+        libs = {lib for lib, *_ in imp.imports(os.path.join(edir, elf))[1]}
+    lmods = bootstrap.load_modules(app0)   # (modules the game loads on demand: their imports choose MODULES too)
+    for f in bootstrap.load_module_files(app0, lmods):
+        try: libs |= {lib for lib, *_ in imp.imports(f + ".elf" if os.path.isfile(f + ".elf") else f)[1]}
+        except Exception: pass
+    g = Game(T, "import")
+    def mod_libs(m):   # (the libraries a chosen firmware module imports; one that isn't a readable ELF adds none)
+        try: return {lib for lib, *_ in imp.imports(g.modelf(m))[1]}
+        except Exception: return set()
+    mods, left = bootstrap.modules(app0, libs, lambda m: os.path.isfile(g.modelf(m)), mod_libs)
+    name, version = bootstrap.identity(app0, sfo.read_sfo_file)
+    notes = ([note] if note else []) + ([f"shipped in sce_module/ but not loaded: {' '.join(left)} (add to MODULES if the run stubs their imports)"] if left else [])
+    notes += [f"imports {lib}: {m} is not on this machine (vitarecomp firmware)" for lib, m in bootstrap.IMPORT_MODULES.items() if lib in libs and m not in mods]
+    text = bootstrap.pack_text(own, name, version, sha256(os.path.join(edir, elf)), elf, mods, notes, lmods)
+    d = os.path.join(PACKS, own); os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "pack.toml"), "w", encoding="utf-8", newline="\n") as f: f.write(text)
+    packconf.read(os.path.join(d, "pack.toml"))   # (its shape checked as every pack's)
+    say(f"{T}: wrote {os.path.join(d, 'pack.toml')} (auto-generated, unverified): {name or own} {version}, {elf}, MODULES {' '.join(mods)}")
+    for n in notes: say(f"  note: {n}")
+
+
+class GameSteps(bootstrap.Steps):
+    """the loop's steps on a real game: vitarecomp's own stages, each a process of its own"""
+    def __init__(self, g, frames):
+        self.g, self.frames, self.n = g, frames, 0
+        self.td = os.path.join(g.OUT, g.TD)
+
+    def prepare(self):
+        self.n += 1; self.secs = {}
+        st = ["analyze", "recompile", "build"]
+        if self.n == 1 and not os.path.isfile(os.path.join(self.g.W, "elf", self.g.ELF)): st = ["import"] + st
+        for c in st:
+            say(f"bootstrap: {c} {self.g.T}")
+            t0 = time.time(); rc = run(SELF + [c, self.g.T], check=False).returncode
+            self.secs[c] = round(time.time() - t0, 1)
+            say(f"bootstrap: {c} took {self.secs[c]:.0f} s")
+            if rc: return False
+        return True
+
+    def run(self):
+        say(f"bootstrap: headless run, {self.frames} frames")
+        t0 = time.time()
+        run(SELF + ["test", self.g.T], env=env_with({"TEST_FRAMES": str(self.frames)}), check=False)
+        self.secs["test"] = round(time.time() - t0, 1)
+        log = os.path.join(self.td, "test.log")
+        text = open(log, encoding="utf-8", errors="replace").read() if os.path.isfile(log) else ""
+        return text, os.path.isfile(os.path.join(self.td, "shot_%05d.ppm" % int(self.frames)))
+
+    def seeds(self):
+        out = []
+        f = os.path.join(self.g.W, "analysis", "seeds.txt")
+        if os.path.isfile(f): out += [l.strip() for l in open(f) if l.strip()]
+        for f in sorted(glob.glob(os.path.join(glob.escape(self.g.SEEDS), "*.txt"))):
+            out += [os.path.basename(f)[:-4] + "+" + l.strip() for l in open(f) if l.strip()]
+        return out
+
+
+def scan_data(g):
+    """the main program's analysis now (Game fixes g.DATA when it is made: before bootstrap's first analyze it names the
+    old Ghidra export, the file analyze then writes is the analysis one)"""
+    return next((p for p in (os.path.join(g.W, "analysis", "eboot.data.json"), g.DATA) if os.path.isfile(p)), "")
+
+
+def cmd_hooks_scan(g, quiet=False):
+    """finder A1 (pipeline/hookscan.py) over the main program's analysis: analysis/hook_candidates.json; the result"""
+    data = scan_data(g)
+    if not data: die(f"{g.T}: no analysis yet (vitarecomp analyze {g.T})")
+    res = hookscan.scan(json.load(open(data, encoding="utf-8")))
+    with open(os.path.join(g.W, "analysis", "hook_candidates.json"), "w", encoding="utf-8", newline="\n") as f: json.dump(res, f, indent=1)
+    if not quiet:
+        say(f"{g.T}: {len(res['candidates'])} hook candidate(s) in {res['functions']} functions: " +
+            (", ".join(f"{k} {n}" for k, n in sorted(res["counts"].items())) or "none"))
+        for l in hookscan.ihooks_lines(res)[1:]: say(l)
+    return res
+
+
+def cmd_bootstrap(g, rest):
+    def opt(k, d):
+        return rest[rest.index(k) + 1] if k in rest and rest.index(k) + 1 < len(rest) else d
+    frames = int(opt("--frames", g.TEST_FRAMES or "600")); mx = int(opt("--max", "8"))
+    s = bootstrap.loop(GameSteps(g, frames), mx, say)
+    s.update(title=g.T, pack=g.PACK, auto_pack="AUTO_GENERATED" in g.c, frames=frames)
+    if s["stop"] == "unimplemented_instruction" and s["addr"]:   # (which instruction: the generated code's label line says)
+        lab = "L_%x: /* " % int(s["addr"], 16)
+        for f in sorted(glob.glob(os.path.join(glob.escape(g.OUT), "*.c"))):
+            with open(f, encoding="utf-8", errors="replace") as fh:
+                hit = next((l for l in fh if l.startswith(lab)), None)
+            if hit: s["detail"] = hit[len(lab):].split("*/")[0].strip(); break
+    os.makedirs(os.path.join(g.W, "analysis"), exist_ok=True)
+    if scan_data(g):   # (finder A1: the auto pack gets the hook candidates as commented lines, once)
+        res = cmd_hooks_scan(g, quiet=True); s["hook_candidates"] = res["counts"]
+        if "AUTO_GENERATED" in g.c and os.path.isfile(g.CONF) and "# hook candidates (vitarecomp hooks-scan" not in open(g.CONF, encoding="utf-8").read():
+            with open(g.CONF, "a", encoding="utf-8", newline="\n") as f: f.write("\n".join(hookscan.ihooks_lines(res)) + "\n")
+    with open(os.path.join(g.W, "analysis", "bootstrap.json"), "w", encoding="utf-8", newline="\n") as f: json.dump(s, f, indent=1)
+    say(f"bootstrap: stopped: {s['stop']}" + (f" at {s['addr']}" if s["addr"] else "") + (f" ({s['detail']})" if s["detail"] else "") +
+        f" after {s['iterations']} run(s); {len(s['seeds_found'])} seed(s) found, {len(s['stub_imports'])} import(s) ran as stubs")
+    say("BOOTSTRAP " + json.dumps({k: s[k] for k in ("title", "stop", "addr", "detail", "iterations", "seeds_found", "frames")}))
+    return 0 if s["stop"] == "frame_reached" else 3
+
+
+EXPORT_BIN = "deck"   # export-appimage's binary: <base>_deck beside the play one (the play binary and .built_version untouched)
+
+
+def wsl_path(p):   # a Windows path as WSL sees it (/mnt/c/...)
+    return subprocess.run(["wsl.exe", "-e", "wslpath", "-a", p], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def cmd_export_appimage(T, out, rest):
+    """the game as one AppImage for the player's own Linux handheld (pipeline/appimage.py): its code as it is (made by
+    the launcher's Build: nothing is recompiled) compiled once more for the handheld's processor -- EXPORT_CPU, default
+    znver2, a Steam Deck's (a native build runs instructions the Deck has none of: GFNI, a SIGILL at start) -- into
+    <base>_deck, then packed with the game's images and app0. On Windows it all runs in WSL (its Linux toolchain:
+    ATIV_LINUX_TOOLCHAIN, else ~/toolchains/ativ-linux, made by runtime/platform/linux/setup-toolchain.sh)"""
+    if not out.endswith(".AppImage"): die("export-appimage: the output is a file named <something>.AppImage")
+    say("export: " + appimage.NOTICE)
+    if WINDOWS:
+        say("export: running in WSL (the Linux build and the packing)")
+        try: wroot, wdump, wout = wsl_path(ROOT), wsl_path(DUMP), wsl_path(os.path.abspath(out))
+        except (OSError, subprocess.CalledProcessError): die("export-appimage: needs WSL (wsl.exe) on Windows")
+        os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+        keep = [f"{k}={ENV[k]}" for k in ("EXPORT_CPU", "JOBS", "RUNTIME_FROM", "ATIV_LINUX_TOOLCHAIN", "ATIV_PACKS") if ENV.get(k)]
+        for i, kv in enumerate(keep):   # (paths as WSL sees them)
+            k, _, v = kv.partition("=")
+            if k in ("RUNTIME_FROM", "ATIV_PACKS") and re.match(r"[A-Za-z]:[\\/]", v): keep[i] = f"{k}={wsl_path(v)}"
+        return run(["wsl.exe", "-e", "env", f"ATIV_DUMP={wdump}", "PYTHONUTF8=1"] + keep +
+                   ["python3", wroot + "/pipeline/vitarecomp.py", "export-appimage", T, wout] + rest, check=False).returncode
+    g = Game(T, "export-appimage")
+    if not os.path.isfile(os.path.join(g.W, "elf", g.ELF)): die(f"{T}: not added yet (vitarecomp add, or + Add game in the launcher)")
+    stamp = os.path.join(g.OUT, ".recompile_inputs")
+    if not os.path.isfile(stamp) or open(stamp, encoding="utf-8").read().strip() != recompile_inputs(g):
+        die(f"{T}: its code isn't made for these tools yet: build it (vitarecomp ready {T}, or Build in the launcher), then export")
+    cpu = ENV.get("EXPORT_CPU") or "znver2"
+    lt = ENV.get("ATIV_LINUX_TOOLCHAIN") or os.path.expanduser("~/toolchains/ativ-linux")
+    if not os.path.isfile(os.path.join(lt, "bin", "cc")) and not os.path.isfile(os.path.join(ROOT, "toolchain", "bin", "cc")):
+        die(f"export-appimage: no Linux toolchain at {lt}: bash runtime/platform/linux/setup-toolchain.sh {lt} (or ATIV_LINUX_TOOLCHAIN=<it>)")
+    if not shutil.which("mksquashfs"): die("export-appimage: needs mksquashfs (Debian/Ubuntu: sudo apt install squashfs-tools)")
+    say(f"export 1/3: compiling {g.NAME} for the handheld's processor ({cpu}); the first time takes as long as a build")
+    benv = {"RECOMP_BIN": EXPORT_BIN, "RECOMP_CPU": cpu}
+    if os.path.isfile(os.path.join(lt, "bin", "cc")): benv["ATIV_LINUX_TOOLCHAIN"] = lt
+    run(SELF + ["build", T], env=env_with(benv))
+    exe = f"{g.BASE}_{EXPORT_BIN}"
+    sdl = os.path.join(g.OUT, "libSDL3.so.0")
+    for f in (exe, g.BASE + ".img"):
+        if not os.path.isfile(os.path.join(g.OUT, f)): die(f"export-appimage: {f} wasn't made in {g.OUT}")
+    say("export 2/3: collecting the game's files (app0 is copied whole)")
+    files = [(os.path.join(g.OUT, exe), exe), (os.path.join(g.OUT, g.BASE + ".img"), g.BASE + ".img")]
+    if os.path.isfile(sdl): files.append((sdl, "libSDL3.so.0"))
+    mods = [m + ".img" for m in g.MODS]
+    lmods = [(g.LPATH[m], m + ".img") for m in g.LMODS]
+    files += [(os.path.join(g.OUT, m), m) for m in mods + [n for _p, n in lmods]]
+    shipped = os.path.join(PACKS, g.PACK, "shaders.txt")
+    if os.path.isfile(shipped): files.append((shipped, "shaders.txt"))
+    icon = os.path.join(g.W, "app0", "sce_sys", "icon0.png")
+    if not os.path.isfile(icon): icon = os.path.join(ROOT, "assets", "brand", "png", "icon-256.png")
+    files.append((os.path.join(ROOT, "assets", "brand", "png", "icon-256.png"), "window-icon.png"))
+    env = [tuple(w.partition("=")[::2]) for w in g.RUN_ENV.split() if "=" in w] + play_fixed_env(g, "$APPDIR/game/shaders.txt", "$APPDIR/game/window-icon.png")
+    cache = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "ProjectNativ", "appimage")
+    stage = os.path.join(cache, f"appdir-{T}")
+    appimage.make_appdir(stage, title=T, name=g.NAME, exe=exe, files=files, app0=os.path.realpath(os.path.join(g.W, "app0")),
+                         icon=icon, image=g.BASE + ".img", entry=g.entry(), env=env, modules=mods, load_modules=lmods)
+    say("export 3/3: packing the AppImage")
+    try:
+        rt = appimage.fetch_runtime(cache, ENV.get("RUNTIME_FROM"))
+        os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+        appimage.pack(stage, rt, out)
+    finally: shutil.rmtree(stage, ignore_errors=True)
+    say(f"exported {g.NAME} -> {out} ({os.path.getsize(out) / 1e9:.2f} GB); on the handheld: mark it executable, start it, "
+        f"or add it to Steam as a non-Steam game. Its saves and settings: ~/.local/share/ProjectNativ/Exported/{T}")
+    say("export: " + appimage.NOTICE)
+    return 0
+
+
+def cmd_export_win(T, out, rest):
+    """the game as a folder for the player's own other Windows PCs (pipeline/portable.py): its code as it is (made by the
+    launcher's Build: nothing is recompiled) compiled once more for a CPU level other PCs have -- --cpu, default x86-64-v3
+    (a native build, a play build's default, stops with "illegal instruction" on another processor) -- into
+    <base>_<level>.exe beside the play binary (it and .built_version untouched), then the folder: game (a subfolder) with the binary,
+    its DLLs, the game's images, the pack's shader recipes and app0 (copied whole), start.cmd and a README. --zip: the
+    folder as <out>.zip too. Windows only (the Windows build)."""
+    cpu, want_zip, camera, args = portable.DEFAULT_CPU, False, "", list(rest)
+    while args:
+        a = args.pop(0)
+        if a == "--cpu" and args: cpu = args.pop(0)
+        elif a.startswith("--cpu="): cpu = a[6:]
+        elif a == "--zip": want_zip = True
+        elif a == "--camera" and args: camera = args.pop(0)
+        else: die(f"export-win: unknown option {a} (--cpu LEVEL, --zip, --camera light|webcam|dark)")
+    if camera and camera not in portable.CAMERAS: die(f"export-win: --camera {camera}: one of {', '.join(portable.CAMERAS)}")
+    b = portable.portable_bin(cpu)
+    if not b:
+        die(f"export-win: refused --cpu {cpu}: that is one machine's own instruction set, and the game would stop with "
+            f"\"illegal instruction\" on another PC. Use one of: {', '.join(portable.PORTABLE_CPUS)}")
+    out = os.path.abspath(out)
+    if os.path.exists(out) and (not os.path.isdir(out) or os.listdir(out)): die(f"export-win: {out} isn't an empty folder -- choose a new one")
+    if not WINDOWS: die("export-win: makes a Windows folder -- run it on Windows (on Linux: export-appimage)")
+    say("export: " + portable.NOTICE)
+    g = Game(T, "export-win")
+    if not os.path.isfile(os.path.join(g.W, "elf", g.ELF)): die(f"{T}: not added yet (vitarecomp add, or + Add game in the launcher)")
+    stamp = os.path.join(g.OUT, ".recompile_inputs")
+    if not os.path.isfile(stamp) or open(stamp, encoding="utf-8").read().strip() != recompile_inputs(g):
+        die(f"{T}: its code isn't made for these tools yet: build it (vitarecomp ready {T}, or Build in the launcher), then export")
+    n = 4 if want_zip else 3
+    say(f"export 1/{n}: compiling {g.NAME} for other PCs ({cpu}); the first time takes as long as a build")
+    run(SELF + ["build", T], env=env_with({"RECOMP_BIN": b, "RECOMP_CPU": cpu}))
+    exe = f"{g.BASE}_{b}.exe"
+    for f in (exe, g.BASE + ".img"):
+        if not os.path.isfile(os.path.join(g.OUT, f)): die(f"export-win: {f} wasn't made in {g.OUT}")
+    say(f"export 2/{n}: collecting the game's files (app0 is copied whole)")
+    files = [(os.path.join(g.OUT, exe), exe), (os.path.join(g.OUT, g.BASE + ".img"), g.BASE + ".img")]
+    files += [(os.path.join(g.OUT, f), f) for f in sorted(os.listdir(g.OUT)) if f.lower().endswith(".dll")]
+    mods = [m + ".img" for m in g.MODS]
+    lmods = [(g.LPATH[m], m + ".img") for m in g.LMODS]
+    files += [(os.path.join(g.OUT, m), m) for m in mods + [nm for _p, nm in lmods]]
+    shipped = os.path.join(PACKS, g.PACK, "shaders.txt")
+    if os.path.isfile(shipped): files.append((shipped, "shaders.txt"))
+    env = [tuple(w.partition("=")[::2]) for w in g.RUN_ENV.split() if "=" in w] + play_fixed_env(g, "%G%\\shaders.txt")
+    text = portable.start_cmd_text(title=T, name=g.NAME, cpu=cpu, exe=exe, image=g.BASE + ".img", entry=g.entry(), env=env,
+                                   modules=mods, load_modules=lmods, settings=[("camera", camera)] if camera else [])
+    say(f"export 3/{n}: writing the folder and start.cmd")
+    try: portable.make_folder(out, files=files, app0=os.path.realpath(os.path.join(g.W, "app0")), start_cmd=text, readme=portable.readme_text(g.NAME, cpu))
+    except FileExistsError as e: die(f"export-win: {e}")
+    result = out
+    if want_zip:
+        say(f"export 4/{n}: packing it as one .zip")
+        result = portable.make_zip(out)
+    size = os.path.getsize(result) if os.path.isfile(result) else sum(os.path.getsize(os.path.join(d, f)) for d, _ds, fs in os.walk(out) for f in fs)
+    say(f"exported {g.NAME} -> {result} ({size / 1e9:.2f} GB); on the other PC: copy the folder, start start.cmd. "
+        f"Its saves and settings stay in the data folder next to it")
+    say("export: " + portable.NOTICE)
+    return 0
+
+
 def main(argv):
     try:   # (this program's own output UTF-8 too, and never an error over a character it can't write)
         sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace", line_buffering=True)
@@ -916,13 +1260,26 @@ def main(argv):
     except AttributeError: pass
     cmd = argv[0] if argv else ""; T = argv[1] if len(argv) > 1 else ""
     if cmd == "update-check": cmd_update_check(); return 0
-    if not cmd or (not T and cmd != "licenses"): usage(); return 1
+    if not cmd or (not T and cmd not in ("licenses", "folders", "steam")): usage(); return 1
     if cmd == "firmware": cmd_firmware(T); return 0
     if cmd == "scan": cmd_scan(T, argv[2:]); return 0
+    if cmd == "folders": return run([PY, os.path.join(R, "folders.py")] + argv[1:], env=env_with(TOOLS_ENV, {"ATIV_DUMP": DUMP}), check=False).returncode
+    if cmd == "steam": return run([PY, os.path.join(R, "steam.py")] + argv[1:], check=False).returncode
     if cmd == "licenses": return run([PY, os.path.join(R, "licenses.py")] + argv[1:], env=env_with({"ATIV_DUMP": DUMP}), check=False).returncode
     if cmd == "add": cmd_add(T, argv[2:]); return 0
     if cmd == "dist": cmd_dist(T); return 0
     if cmd == "report": cmd_report(T); return 0
+    if cmd == "pack-init": cmd_pack_init(T, "--force" in argv[2:]); return 0
+    if cmd == "bootstrap":
+        if not packconf.pack_for(PACKS, T.split("_")[0]): cmd_pack_init(T, False)
+        return cmd_bootstrap(Game(T, cmd), argv[2:])
+    if cmd == "hooks-scan": cmd_hooks_scan(Game(T, cmd)); return 0
+    if cmd == "export-appimage":
+        if len(argv) < 3: usage(); return 1
+        return cmd_export_appimage(T, argv[2], argv[3:])
+    if cmd == "export-win":
+        if len(argv) < 3: usage(); return 1
+        return cmd_export_win(T, argv[2], argv[3:])
     if cmd not in ("import", "analyze", "recompile", "build", "ready", "run", "test", "capture", "replay", "accept", "check", "coverage", "verify", "recipes", "versions"):
         usage(); return 1
     g = Game(T, cmd)

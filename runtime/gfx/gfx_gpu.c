@@ -19,6 +19,7 @@
  */
 #include <SDL3/SDL.h>
 #include "gpulock.h"   /* every SDL submit/fence call below is the locked one: Homebrew SDL 3.4.16's Metal fence race, see that header */
+#include "gaps.h"   /* GAPS-01 */
 #include "fsr/fsr.h"
 #include "view_swz.h"
 #include <stdio.h>
@@ -29,6 +30,7 @@
 #include "gfx.h"
 #include "usse.h"
 #include "usse_spirv.h"
+#include "viewport_map.h"
 #include "guestwatch.h"
 #include "metrics.h"
 #include "settings.h"
@@ -1008,7 +1010,14 @@ static void recipe_used_shader(ShaderEntry *x, uint32_t addr, const UsseProgram 
 static ShaderEntry *get_shader(uint32_t addr, const UsseProgram *prog, const UsseProgram *vprog, const UsseVertexLayout *vl, const UsseFragLayout *fl, const uint32_t sa_tex_unit[256], int kind, uint32_t cube_mask, uint32_t snap_mask,
                                const UsseVfLayout *vf, uint32_t layout_hash) {   /* vf/layout_hash: a vertex program's GPU-side fetch plan (vf_plan), null/0 for the CPU packer's records (and fragment programs) */
 	uint32_t hash = usse_program_hash(prog), hash2 = vprog && !canon_vary_on() ? usse_program_hash(vprog) : 0;
+	const int target_kind_of_draw = kind;
 	usse_spirv_key(prog, fl, sa_tex_unit, &kind, &cube_mask, &snap_mask);   /* (only what changes the module: one shader for the variants that don't) */
+	static int native_off = -1; if (native_off < 0) native_off = getenv("RECOMP_NATIVE_OFF") != 0;   /* (diagnostic: the declared type, as before 779edd7) */
+	if (kind >= 0 && fl && fl->native_color && !native_off)   /* NATIVECOLOR: the surface's own bits in and out (usse.h) -- the target's kind and the variant's register format matter */
+	{	kind = USSE_KIND_NATIVE | (usse_native_raw32(prog, addr) ? USSE_KIND_RAW32 : 0) | (target_kind_of_draw & 0xff);
+		static int nl = -1; if (nl < 0) nl = getenv("RECOMP_NATIVE_LOG") != 0;
+		if (nl) { static uint32_t seen[256]; static int ns; int s = 0; for (int i = 0; i < ns; i++) s |= seen[i] == addr; if (!s && ns < 256) { seen[ns++] = addr; fprintf(stderr, "    gpu: NATIVECOLOR fragment %#x kind %#x%s\n", addr, kind, fl->frag_color_used ? " (reads the framebuffer)" : ""); } }
+	}
 	int pcf_unit = kind >= 0 ? shadow_unit(addr, hash) : -1, pcf = pcf_unit >= 0 && shadow_filter_want() ? 16 : 0;   /* (fragment programs: kind is the target's) */
 	ShaderEntry *x = shader_find(hash, hash2, kind, cube_mask, snap_mask, layout_hash, pcf, g_points_draw, g_fzero_draw);
 	if (x) {
@@ -1853,7 +1862,7 @@ static int fetch_blit(void) {
 	if (v < 0) { const char *e = getenv("RECOMP_GPU_FETCH_BLIT"), *dv = gpu() ? SDL_GetGPUDeviceDriver(gpu()) : 0; v = e && *e ? *e != '0' : dv && !strcmp(dv, "vulkan"); }
 	return v;
 }
-static int present_nosync(void) { static int v = -1; if (v < 0) { const char *e = getenv("RECOMP_GPU_PRESENT_NOSYNC"); v = e && *e && *e != '0'; } return v; }
+static int present_nosync(void) { static int v = -1; if (v < 0) { const char *e = getenv("RECOMP_GPU_PRESENT_NOSYNC"); v = !(e && *e && *e == '0'); } return v; }   /* headless present default: lazy (2026-11-07); =0 restores the eager guest-memory present */
 static void render_scale_init(void) {
 	static int done; if (done) return; done = 1;
 	const char *e = getenv("RECOMP_RENDER_SCALE"); int n = e ? atoi(e) : settings_int("render_scale", 1);   /* the environment over the game's settings.ini */
@@ -2721,14 +2730,17 @@ static int same_region_read(const GfxTexture *tex) {
  * keeps the stretch. Off at the native aspect. */
 static volatile uint32_t presented_ring[4], presented_n;
 static int scene_hud;               /* this scene's target has been presented: its 2D draws are the HUD */
-static int hud_mode_cur = 2;        /* 0 stretch, 1 16:9, 2 edges: settings "hud_layout", read at each present */
+static int hud_mode_cur = 2;        /* 0 stretch, 1 16:9, 2 edges, 3 frame (every group about the centre: the whole 2D layer as one native-width frame -- a menu whose labels and text lines are several draws each, P4D): settings "hud_layout", read at each present */
 static uint32_t n_hud_draws; static uint64_t t_hud;
 static void hud_note_present(uint32_t base) {
 	for (int i = 0; i < 4; i++) if (presented_ring[i] == base) goto mode;
 	presented_ring[presented_n++ & 3] = base;
 mode:;
-	char b[16]; settings_str("hud_layout", "edges", b, sizeof b);
-	hud_mode_cur = !strcmp(b, "stretch") ? 0 : !strcmp(b, "16:9") ? 1 : 2;
+	/* RECOMP_HUD_LAYOUT (a game's RUN_ENV): its default when the player hasn't chosen one -- "16:9" for a game whose 2D
+	 * menus draw one label or text line in several draws, which "edges" would pull apart by thirds (P4D, 2026-11-08) */
+	static const char *pack_def = (const char *)-1; if (pack_def == (const char *)-1) { pack_def = getenv("RECOMP_HUD_LAYOUT"); if (pack_def && !*pack_def) pack_def = 0; }
+	char b[16]; settings_str("hud_layout", pack_def ? pack_def : "edges", b, sizeof b);
+	hud_mode_cur = !strcmp(b, "stretch") ? 0 : !strcmp(b, "16:9") ? 1 : !strcmp(b, "frame") ? 3 : 2;   /* "frame": a pack default only (RECOMP_HUD_LAYOUT) */
 }
 void gfx_gpu_hud_note_present(uint32_t base) { hud_note_present(base); }   /* gfxreplay: a one-frame capture presents after its scenes, so they are noted up front */
 static int hud_scene(uint32_t addr) { for (int i = 0; i < 4; i++) if (addr && presented_ring[i] == addr) return 1; return 0; }
@@ -3857,7 +3869,7 @@ static int view_mode(uint32_t tgt_fmt, const GfxTexture *tex, uint32_t *tex_bpp,
 	 * formats (U8) place the one value; the HDR packed formats take none */
 	static const uint8_t sw4[8][4] = { {0,1,2,3}, {2,1,0,3}, {3,2,1,0}, {1,2,3,0}, {0,1,2,5}, {2,1,0,5}, {3,2,1,5}, {1,2,3,5} };
 	static const uint8_t sw1[8][4] = { {0,4,4,5}, {0,4,4,4}, {0,5,5,5}, {0,0,0,0}, {0,0,0,4}, {0,0,0,5}, {4,4,4,0}, {5,5,5,0} };
-	int ncomp = xb == 0x0c000000u || xb == 0x0d000000u || xb == 0x1b000000u ? 4 : xb == 0x00000000u || xb == 0x12000000u ? 1 : 0;
+	int ncomp = xb == 0x0c000000u || xb == 0x0d000000u || xb == 0x1b000000u || xb == 0x0e000000u ? 4 : xb == 0x00000000u || xb == 0x12000000u || xb == 0x13000000u ? 1 : 0;
 	for (int k = 0; k < 4; k++) swz[k] = ncomp == 4 ? sw4[sw][k] : ncomp == 1 ? sw1[sw][k] : (uint32_t)k;
 	switch (tb) {
 	case 0x80800000u: *tex_bpp = 1; return xb == 0x00000000u ? 5 : -1;                          /* U8 as U8 */
@@ -3865,7 +3877,9 @@ static int view_mode(uint32_t tgt_fmt, const GfxTexture *tex, uint32_t *tex_bpp,
 	                                                                                               * low byte and decodes it from there); Killzone's 384x384 depth-pair
 	                                                                                               * target, sampled by ~40 draws a frame, came down every frame */
 		swz[0] = 0; swz[1] = 1; swz[2] = 4; swz[3] = 5; return 0;
-	case 0x10800000u: return xb == 0x12000000u ? 6 : -1;                                        /* F32 as F32 (mode 5's decode at full precision: Uncharted's
+	case 0x60800000u: return xb == 0x0e000000u && !((tgt_fmt >> 20) & 3) ? 0 : -1;             /* U2U10U10U10 as U2U10U10U10, ABGR (kept as RGBA8 here:
+	                                                                                               * Gravity Rush's scene target, composited every frame) */
+	case 0x10800000u: return xb == 0x12000000u || xb == 0x13000000u ? 6 : -1;                                        /* F32 as F32 (mode 5's decode at full precision: Uncharted's
 	                                                                                               * shadow mask went through guest memory, its lighting read
 	                                                                                               * it at 1x and every lit silhouette got a 1x-pixel halo) */
 	case 0x01000000u: *tex_bpp = 8; return xb == 0x1b000000u ? 0 : -1;                          /* F16F16F16F16 as F16F16F16F16 */
@@ -4483,7 +4497,7 @@ static void hud_layout(void) {
 	}
 	for (int a = 0; a < n; a++) if (par[a] == a) {
 		const float cx = 0.5f * (g[a][0] + g[a][1]), w = g[a][1] - g[a][0];
-		anc[a] = edge[a] ? (hud_mode_cur == 1 ? 0.0f : (float)edge[a]) : (fabsf(cx) < 0.15f && w < 0.5f) ? 0.0f : cx;
+		anc[a] = hud_mode_cur == 3 ? 0.0f : edge[a] ? (hud_mode_cur == 1 ? 0.0f : (float)edge[a]) : (fabsf(cx) < 0.15f && w < 0.5f) ? 0.0f : cx;
 	}
 	{	static int log = -1; if (log < 0) { const char *e = getenv("RECOMP_HUD_LOG"); log = e ? atoi(e) : 0; }
 		if (log >= 2) for (int a = 0; a < n; a++) if (par[a] == a) {   /* RECOMP_HUD_LOG=2: the groups */
@@ -4795,6 +4809,7 @@ static void soft_fallback(const GfxDraw *d, const char *why) {
 	    && !(scene_target.ds_data && (scene_target.ds_force_load || scene_target.ds_force_store))
 	    && !stencil_passes(d->stencil_func, d->stencil_ref & d->stencil_cmask, (scene_target.ds_data ? scene_target.ds_background_stencil : 0) & d->stencil_cmask))
 		why = "stencil test can't pass on the software path: draw skipped", skip = 1;
+	gap_str(GAP_GPU_SOFT, why);   /* GAPS-01 (each draw, by reason) */
 	__atomic_add_fetch(&n_fallback, 1, __ATOMIC_RELAXED); disp_note(DISP_SOFT);
 	if (trace_sync()) fprintf(stderr, "gpu trace: software fallback (%s) after %u gpu draws, fprog %#x\n", why, n_gpu_draws, d->fprog);
 	{ int i; for (i = 0; i < n_fallback_why; i++) if (fallback_why[i].why == why) break;
@@ -6046,7 +6061,11 @@ void gfx_gpu_draw(const GfxDraw *d) {
 		vp2.w = 2.0f * d->vp_xscale; vp2.x = d->vp_xoff - d->vp_xscale;
 		vp2.h = -2.0f * d->vp_yscale; vp2.y = d->vp_yoff + d->vp_yscale;
 		vp2.min_depth = 0.0f; vp2.max_depth = 1.0f;   /* z is mapped in the vertex shader (zOffset + zScale * z/w): the depth range stays the full [0,1] */
-	} else if (d->viewport_set) {   /* SCE_GXM_VIEWPORT_DISABLED: clip position IS the device position, 1:1 */
+	} else if (d->viewport_set && !g_points_draw) {   /* SCE_GXM_VIEWPORT_DISABLED: the position is the device position. The host
+		 * clips to |x|,|y| <= w before its viewport, so the draw gets the whole target and the vertex epilogue maps pixels to NDC
+		 * (viewport_z[2..3], gfx/viewport_map.h -- VPDIS-01: Toukiden's KTGL sprites, every one black in a 2x2 viewport before) */
+		vp2 = (SDL_GPUViewport){ 0, 0, (float)vw, (float)scene_entry->height, 0.0f, 1.0f };
+	} else if (d->viewport_set) {   /* DISABLED point sprites: clip position 1:1 as before (their corner offsets are in pixels) */
 		vp2 = (SDL_GPUViewport){ -1.0f, -1.0f, 2.0f, 2.0f, 0.0f, 1.0f };
 	} else vp2 = (SDL_GPUViewport){ 0, 0, (float)vw, (float)scene_entry->height, 0.0f, 1.0f };   /* never set: the old implicit full-target mapping */
 	{ float kx = (float)scene_sx, ky = (float)scene_sy; vp2.x *= kx; vp2.y *= ky; vp2.w *= kx; vp2.h *= ky; }   /* render scale: the target's pixels are n x n (DISABLED's 1:1 device mapping too: (-n,-n,2n,2n) puts clip x at n*x) */
@@ -6156,6 +6175,7 @@ void gfx_gpu_draw(const GfxDraw *d) {
 		int vz_on = d->viewport_set && !d->viewport_disabled;
 		b->vu.viewport_z[0] = b->fu.viewport_z[0] = vz_on ? d->vp_zoff : 0.0f; b->vu.viewport_z[1] = b->fu.viewport_z[1] = vz_on ? d->vp_zscale : 1.0f;
 		b->vu.viewport_z[2] = b->vu.viewport_z[3] = b->fu.viewport_z[2] = b->fu.viewport_z[3] = 0;
+		if (d->viewport_set && d->viewport_disabled && !g_points_draw) vp_disabled_factors((float)vw, (float)scene_entry->height, &b->vu.viewport_z[2], &b->vu.viewport_z[3]);   /* (VPDIS-01: pixels -> NDC in the vertex epilogue; 0 for every other draw) */
 		if (g_points_draw) {   /* point sprites: half a target pixel in NDC per axis, signed for the screen's directions (gfx_soft.c's render_points_interp) */
 			float kx, ky; int ydown, xleft = 0;
 			if (d->viewport_set && d->viewport_disabled) { kx = ky = 1; ydown = 1; }
@@ -6522,7 +6542,7 @@ void gfx_gpu_present(uint32_t base, uint32_t width, uint32_t height, uint32_t pi
 			 * per frame. Guest memory keeps the frame before this one until something reads it (a
 			 * shot, a texture over it, a CPU write: each syncs first) */
 			window_present_gpu(e->color, TSX(e, width), TSY(e, height), e->kind == TK_U8S); gfx_soft_skip_window = 1;
-		} else if (!window_active() && !gfx_soft_shot_due() && format == 0 && present_nosync()) { /* RECOMP_GPU_PRESENT_NOSYNC=1, headless: the frame stays on the GPU, as it does with a window (see present_nosync); window_present below is a no-op without a window */ }
+		} else if (!window_active() && !gfx_soft_shot_due() && format == 0 && present_nosync()) { /* headless default (2026-11-07): the frame stays on the GPU, as it does with a window; RECOMP_GPU_PRESENT_NOSYNC=0 presents through guest memory (a download and a wait per frame) */ }
 		else { sync_why = "(present)"; target_sync_for_cpu(e); }   /* guest memory must hold what the GPU rendered before anything reads it below */
 	}
 	if (hitch_log() || metrics_osd_level() == 2) {   /* this frame's first-use work and waits, for display.c's hitch line and the full overlay; then the counters start the next frame (RECOMP_GPU_STATS, if also on, zeroed them above already: run one or the other) */

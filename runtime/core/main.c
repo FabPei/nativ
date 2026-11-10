@@ -13,6 +13,8 @@
 #include <sys/prctl.h>
 #endif
 #include "stubret.h"
+#include "gaps.h"   /* GAPS-01 */
+#include "seedaddr.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,11 +35,11 @@ uint32_t tls_template[3];   /* the module's TLS: template address, template size
 __thread uint32_t recomp_excl_addr, recomp_excl_val;   /* rt.h's exclusive monitor */
 __thread int recomp_excl_valid;
 __thread uint64_t recomp_excl_val64;   /* ldrexd/strexd */
-__thread uint32_t recomp_switch_seq, recomp_excl_seq;   /* context switches since thread start / at the ldrex */
-__thread int recomp_excl_drop_reason;                   /* the last monitor drop site's tag (rt.h) */
+__thread uint32_t recomp_switch_seq, recomp_excl_seq;   /* P0b diag: context switches since thread start / at the ldrex */
+__thread int recomp_excl_drop_reason;                   /* P0b diag: the last monitor drop site's tag (rt.h) */
 __thread uint32_t recomp_tpidruro;      /* the guest thread's TLS pointer */
 static pthread_mutex_t host_lock = PTHREAD_MUTEX_INITIALIZER;   /* the allocator and the call log */
-static void prof_report(void);   /* defined with the profiler (or empty) below */
+static void prof_report(void);   /* N01b-11 diagnostic: defined with the profiler (or empty) below */
 static uint64_t ncalls, budget = 200000, nlog = 400, log_from;
 
 /* the Vita runs user code in RunFast mode (flush-to-zero, default NaN): the same on each host
@@ -57,7 +59,9 @@ void recomp_runfast(void) {
 #define GUEST_HEAP_END 0x80000000u
 static uint32_t heap_top = GUEST_HEAP;
 /* the guest memory in use: the loaded images' segments and the heap so far (gfx_capture.c snapshots these) */
-static uint32_t seg_lo[64], seg_hi[64]; static int nseg;
+#define MAX_SEGS 512   /* (64 before: a game with dozens of on-demand modules, 2-3 segments each, filled it) */
+static uint32_t seg_lo[MAX_SEGS], seg_hi[MAX_SEGS]; static int nseg;
+static const char *seg_img[MAX_SEGS];   /* each segment's image file name (GAPS: which image a missed function is in) */
 int guest_mem_ranges(uint32_t lo[], uint32_t hi[], int max) {
 	int n = 0;
 	for (int i = 0; i < nseg && n < max - 1; i++) { lo[n] = seg_lo[i]; hi[n] = seg_hi[i]; n++; }
@@ -99,7 +103,7 @@ static void summary_threads(void) {
 void host_summary(const char *why);   /* window.c: the import-call histogram when the window is closed */
 static void summary(const char *why) {
 	ev_log("stop", "%s", why);
-	ev_dump(why);   /* the bounded event tail, correlated with the input timeline */
+	ev_dump(why);   /* the bounded event tail, correlated with the input timeline (N02g-3) */
 	qsort(counts, ncounts, sizeof *counts, by_n);
 	fprintf(stderr, "\n== %s after %llu import calls; %d distinct:\n", why, (unsigned long long)ncalls, ncounts);
 	for (int i = 0; i < ncounts; i++)
@@ -123,10 +127,12 @@ void host_summary(const char *why) { summary(why); }
  * main runs; their images are RECOMP_MODULES). An import goes to the module exporting it (as on
  * the console), except the plain memory/string functions the host does faster with the same result */
 typedef struct { const char *name; GuestFn (*lookup)(uint32_t); const char *(*import_name)(uint32_t); int (*is_arm)(uint32_t); } Module;
-static Module modules[16];
+#define MAX_MODULES 128   /* start-up MODULES + the ones a game loads on demand (LOAD_MODULES, modload.c) */
+static Module modules[MAX_MODULES];
 static int nmodules;
 void recomp_register_module(const char *name, GuestFn (*lookup)(uint32_t), const char *(*import_name)(uint32_t), int (*is_arm)(uint32_t)) {
-	if (nmodules < 16) modules[nmodules++] = (Module){name, lookup, import_name, is_arm};
+	if (nmodules < MAX_MODULES) modules[nmodules++] = (Module){name, lookup, import_name, is_arm};
+	else fprintf(stderr, "module %s: more than %d modules, not registered\n", name, MAX_MODULES);
 }
 GuestFn guest_lookup(uint32_t a) {
 	GuestFn f = recomp_lookup(a);
@@ -138,11 +144,18 @@ static const char *import_name_any(uint32_t a) {
 	for (int i = 0; !n && i < nmodules; i++) n = modules[i].import_name(a);
 	return n;
 }
-static struct { uint32_t addr; char name[60]; } *exports;   /* every loaded module's (images' EXPT records) */
+#define EXPORT_NAME 160   /* (the longest known export name is 96 characters) */
+static struct { uint32_t addr; char name[EXPORT_NAME]; } *exports;   /* every loaded module's (images' EXPT / EXPL records) */
 static uint32_t nexports;
+/* (a module loaded on demand adds or drops exports while game threads resolve imports: the list is read and changed
+ * under this lock; resolution is cached, so it is taken once per import, not per call) */
+static pthread_mutex_t exports_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint32_t export_addr(const char *name) {
-	for (uint32_t i = 0; i < nexports; i++) if (!strcmp(exports[i].name, name)) return exports[i].addr;
-	return 0;
+	uint32_t a = 0;
+	pthread_mutex_lock(&exports_lock);
+	for (uint32_t i = 0; i < nexports; i++) if (exports[i].addr && !strcmp(exports[i].name, name)) { a = exports[i].addr; break; }
+	pthread_mutex_unlock(&exports_lock);
+	return a;
 }
 uint32_t module_export_addr(const char *name) { return export_addr(name); }   /* a loaded module's export by name (0: none) */
 /* GXM is Sony's own code (MODULES="... libgxm_es4 libgpu_es4"): every GXM call of the game goes to
@@ -168,7 +181,8 @@ static int gxm_boundary(const char *n) {
 		"sceGxmBeginSceneEx", "sceGxmEndScene", "sceGxmMidSceneFlush", "sceGxmDisplayQueueAddEntry", "sceGxmDisplayQueueFinish",
 		"sceGxmFinish", "sceGxmNotificationWait", "sceGxmWaitEvent", "sceGxmTransferCopy", "sceGxmTransferDownscale",
 		"sceGxmTransferFill", "sceGxmTransferFinish", "sceGxmSetRegionClip", "sceGxmSetVisibilityBuffer", "sceGxmSetFrontVisibilityTestEnable",
-		"sceGxmSetFrontVisibilityTestIndex", "sceGxmSetFrontVisibilityTestOp", "sceGxmSetFrontDepthBias", 0};
+		"sceGxmSetFrontVisibilityTestIndex", "sceGxmSetFrontVisibilityTestOp", "sceGxmSetFrontDepthBias",
+		"sceGxmBeginCommandList", "sceGxmEndCommandList", "sceGxmExecuteCommandList", 0};
 	for (int i = 0; b[i]; i++) if (!strcmp(b[i], n)) return 1;
 	return 0;
 }
@@ -348,7 +362,13 @@ void recomp_call_external(Cpu *c, uint32_t addr) {
 		 * Thumb code called or branched to (a branch target carries no Thumb bit; np_matching2's 0x8cee was
 		 * recorded as ARM); ARM: the rest */
 		const char *sp = getenv("RECOMP_SEEDS");
-		FILE *sf = addr >= 0x81000000u && addr < 0xa0000000u ? fopen(sp ? sp : "missed_functions.txt", "a") : 0;   /* (a call through a null or poisoned pointer is not a missed function) */
+		{	/* GAPS-02: counted with its image (a run stops here, so the count says where; the next bootstrap run seeds it) */
+			const int si = seed_image(addr, seg_lo, seg_hi, nseg); char w[112];
+			if (seed_addr(addr, seg_lo, seg_hi, nseg)) snprintf(w, sizeof w, "missed function in %s (lr %#x)", si >= 0 && seg_img[si] ? seg_img[si] : "the main program range", c->r[14]);
+			else snprintf(w, sizeof w, "call outside every loaded image (null or poisoned pointer, lr %#x)", c->r[14]);
+			gap(GAP_MISSED_FN, addr & ~1u, w);
+		}
+		FILE *sf = seed_addr(addr, seg_lo, seg_hi, nseg) ? fopen(sp ? sp : "missed_functions.txt", "a") : 0;   /* (seedaddr.h: in a loaded image; a call through a null or poisoned pointer is not a missed function) */
 		if (sf) { fprintf(sf, "%#x %s\n", addr & ~1u, (addr & 3) || (c->r[14] & 1) ? "thumb" : "arm"); fclose(sf); }
 		summary("stopped"); exit(2);
 	}
@@ -378,13 +398,22 @@ void recomp_call_external(Cpu *c, uint32_t addr) {
 			}
 			f(c);
 			if ((fl & RF_GXM) && log_gxm())
-				fprintf(stderr, "gxm %-44s %08x %08x %08x %08x -> %08x (Sony)\n", name, a0, a1, a2, a3, c->r[0]);
+				{ extern uint32_t kernel_current_tid(void);
+				  fprintf(stderr, "gxm %-44s %08x %08x %08x %08x -> %08x (Sony) t%#x lr %#x\n", name, a0, a1, a2, a3, c->r[0], kernel_current_tid(), c->r[14]); }
 			{   /* RECOMP_TRACE_MODULE=<prefix>[,...]: calls to a loaded module's exports by those names, with the first
 			     * four arguments and the result (RECOMP_LOG_IMPORTS sees only the host's) */
 				static const char *tr; static int tr_init; if (!tr_init) { tr = getenv("RECOMP_TRACE_MODULE"); tr_init = 1; }
 				if (tr) for (const char *p = tr; *p; ) {
 					const size_t l = strcspn(p, ",");
-					if (l && !strncmp(name, p, l)) { fprintf(stderr, "    module %s(%#x, %#x, %#x, %#x) -> %#x\n", name, a0, a1, a2, a3, c->r[0]); break; }
+					if (l && !strncmp(name, p, l)) {
+						fprintf(stderr, "    module %s(%#x, %#x, %#x, %#x) -> %#x\n", name, a0, a1, a2, a3, c->r[0]);
+						/* RECOMP_TRACE_MODULE_DUMP=<arg 0-3>:<words>: what that pointer argument holds after the call (an
+						 * out-structure: the values a library handed back, which the four registers can't show) */
+						static int dk = -2, dn; if (dk == -2) { const char *d = getenv("RECOMP_TRACE_MODULE_DUMP"); dk = -1;
+							if (d && d[0] >= '0' && d[0] <= '3' && d[1] == ':') { dk = d[0] - '0'; dn = atoi(d + 2); if (dn > 32) dn = 32; } }
+						const uint32_t pa = dk == 0 ? a0 : dk == 1 ? a1 : dk == 2 ? a2 : a3;
+						if (dk >= 0 && pa >= 0x10000) { fprintf(stderr, "      [%#x]:", pa); for (int w = 0; w < dn; w++) fprintf(stderr, " %08x", RD32(pa + 4u * w)); fprintf(stderr, "\n"); }
+						break; }
 					p += l; if (*p) p++;
 				}
 			}
@@ -401,7 +430,7 @@ void recomp_call_external(Cpu *c, uint32_t addr) {
 	if ((k <= nlog || (log_from && k >= log_from)) && log_frame_ok())
 		fprintf(stderr, "%6llu t%d %-40s %08x %08x %08x %08x lr %08x%s\n", (unsigned long long)k, my_last ? (int)(my_last - lasts) : -1,
 		        name, c->r[0], c->r[1], c->r[2], c->r[3], c->r[14], fn ? "" : "  (stub)");
-	if (k >= budget) { summary("budget reached"); prof_report(); exit(0); }   /* report the profile on the budget exit too */
+	if (k >= budget) { summary("budget reached"); prof_report(); exit(0); }   /* N01b-11 diagnostic: report the profile on the budget exit too */
 	pthread_mutex_unlock(&host_lock);
 	uint32_t a0 = c->r[0], a1 = c->r[1], a2 = c->r[2], a3 = c->r[3];
 	/* no implementation and no module export: 0, or the family's "not initialised" error (stubret.h) */
@@ -409,6 +438,7 @@ void recomp_call_external(Cpu *c, uint32_t addr) {
 	if (!fn) {
 		static int zero = -1; if (zero < 0) zero = getenv("RECOMP_STUB_ZERO") != 0;
 		stub_ret = stub_family_result(name, zero);
+		gap_str(gap_unnamed_nid(name) ? GAP_NID_UNKNOWN : GAP_HLE_STUB, name);   /* GAPS-01 (each call) */
 		/* said once per import, because a game feature that quietly does nothing (a ragdoll that freezes, a door that never opens, a silent gun) is usually one of these */
 		static const char *said[512]; static int nsaid; int seen = 0;
 		pthread_mutex_lock(&host_lock);
@@ -441,13 +471,19 @@ void recomp_call_external(Cpu *c, uint32_t addr) {
 		}
 	}
 	uint32_t wv[4]; watch_snap(wv);
+	uint64_t imp_t0 = 0, imp_t1 = 0;   /* FEAT-ALL-01 diag: RECOMP_LOG_IMPORTS lines carry the host time (us) and how long the call took */
 	if (fn) {
 		extern void kernel_hle_in(const char *);
 		recomp_excl_valid = 0;   /* the import is an exception: on its return the firmware's exclusive monitor is cleared -- a strex across a call must fail and retry with fresh data */
-		recomp_excl_drop_reason = 1;   /* this drop site's tag for rt.h's spurious-failure log */
-		kernel_hle_in(name); fn(c); kernel_hle_in(0);
+		recomp_excl_drop_reason = 1;   /* P0b diag: this drop site's tag for rt.h's spurious-failure log */
+		imp_t0 = plat_now_us(); kernel_hle_in(name); fn(c); kernel_hle_in(0); imp_t1 = plat_now_us();
 	}
-	else c->r[0] = stub_ret;
+	else {
+		static int zero_w = -1; if (zero_w < 0) zero_w = getenv("RECOMP_STUB_ZERO") != 0;
+		const uint32_t wait = stub_wait_us(name, a3, zero_w);   /* stubret.h: a wait call waits out its timeout */
+		if (wait) { int b = sched_block_begin(); usleep((useconds_t)wait); if (b) sched_block_end(); }
+		c->r[0] = stub_ret;
+	}
 	watch_check(wv, name, c);
 	{	/* RECOMP_LOG_IMPORTS=name[,name...]: those imports (any whose name contains one of them) logged as they return -- the
 		 * thread, the arguments, the result, the caller and the frame -- without the millions of the rest (RECOMP_LOG) */
@@ -457,8 +493,8 @@ void recomp_call_external(Cpu *c, uint32_t addr) {
 			int hit = 0; const char *p = list;
 			while (!hit && (p = strchr(p, ',')) && p[1]) { const char *q = strchr(p + 1, ','); char item[96]; size_t n = q ? (size_t)(q - p - 1) : 0;
 				if (n && n < sizeof item) { memcpy(item, p + 1, n); item[n] = 0; hit = strstr(name, item) != 0; } p = q; }
-			if (hit) { char tn[32] = ""; plat_thread_name(tn, sizeof tn); extern uint64_t display_frames(void);
-				fprintf(stderr, "    imp f%llu [%s] %s(%#x, %#x, %#x, %#x) -> %#x lr %#x\n", (unsigned long long)display_frames(), tn, name, a0, a1, a2, a3, c->r[0], c->r[14]); }
+			if (hit) { char tn[32] = ""; plat_thread_name(tn, sizeof tn); extern uint64_t display_frames(void); extern uint32_t kernel_current_tid(void);
+				fprintf(stderr, "    imp f%llu [%s %#x] %s(%#x, %#x, %#x, %#x) -> %#x lr %#x t%llu d%llu\n", (unsigned long long)display_frames(), tn, kernel_current_tid(), name, a0, a1, a2, a3, c->r[0], c->r[14], (unsigned long long)imp_t0, (unsigned long long)(imp_t1 - imp_t0)); }
 		}
 	}
 	if (recomp_sched_on) sched_yield_if_preempted();
@@ -470,6 +506,7 @@ uint32_t recomp_unimpl_at;
 void recomp_unimplemented(Cpu *c, uint32_t addr) {
 	pthread_mutex_lock(&host_lock);
 	fprintf(stderr, "unimplemented instruction at %#x (lr %#x)\n", addr, c->r[14]);
+	gap(GAP_INSN, addr, "unimplemented instruction (run stops)");
 	ev_log("assert", "unimplemented instruction at %#x (lr %#x)", addr, c->r[14]);
 	if (*hle_last_format) fprintf(stderr, "last formatted string: %s\n", hle_last_format);
 	summary("stopped"); exit(2);
@@ -477,35 +514,69 @@ void recomp_unimplemented(Cpu *c, uint32_t addr) {
 
 static uint32_t module_starts[16];
 static int nmodule_starts;
-static void load_image(const char *path) {
+/* an image file's segments into guest memory and its records registered. ondemand (modload.c): a game module loaded
+ * while the game runs -- errors are returned, not fatal, and its module_start / module_stop (0: none) and the range
+ * its segments cover go to the caller instead of the start-up list */
+static int load_image_ex(const char *path, int ondemand, uint32_t *start, uint32_t *stop, uint32_t *lo, uint32_t *hi) {
 	FILE *f = fopen(path, "rb");
-	if (!f) { perror(path); exit(1); }
+	if (!f) { perror(path); if (ondemand) return -1; exit(1); }
 	char magic[4]; uint32_t n;
-	if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "VRIM", 4) || fread(&n, 4, 1, f) != 1) { fprintf(stderr, "%s: not an image\n", path); exit(1); }
+	if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "VRIM", 4) || fread(&n, 4, 1, f) != 1) { fprintf(stderr, "%s: not an image\n", path); if (ondemand) { fclose(f); return -1; } exit(1); }
+	uint32_t l = 0xffffffffu, h_ = 0;
 	for (uint32_t i = 0; i < n; i++) {
 		uint32_t h[3];
-		if (fread(h, 4, 3, f) != 3) { fprintf(stderr, "%s: truncated\n", path); exit(1); }
-		if (h[2] && fread(G(h[0]), 1, h[1], f) != h[1]) { fprintf(stderr, "%s: truncated\n", path); exit(1); }
+		if (fread(h, 4, 3, f) != 3) { fprintf(stderr, "%s: truncated\n", path); if (ondemand) { fclose(f); return -1; } exit(1); }
+		if (h[2] && fread(G(h[0]), 1, h[1], f) != h[1]) { fprintf(stderr, "%s: truncated\n", path); if (ondemand) { fclose(f); return -1; } exit(1); }
+		if (!h[2] && ondemand) memset(G(h[0]), 0, h[1]);   /* (a reload starts from a zeroed .bss again) */
 		fprintf(stderr, "loaded %#010x %#9x%s\n", h[0], h[1], h[2] ? "" : " (zero)");
-		if (nseg < 64) { seg_lo[nseg] = h[0]; seg_hi[nseg] = h[0] + h[1]; nseg++; }
+		if (nseg < MAX_SEGS) {
+			const char *b = path; for (const char *q = path; *q; q++) if (*q == '/' || *q == '\\') b = q + 1;
+			seg_img[nseg] = i ? seg_img[nseg - 1] : strdup(b);   /* (one name per image file, shared by its segments) */
+			seg_lo[nseg] = h[0]; seg_hi[nseg] = h[0] + h[1]; nseg++;
+		}
+		if (h[0] < 0xffe00000u) {   /* (the module's range: its segments, not its imported-variable slots up there) */
+			if (h[0] < l) l = h[0];
+			if (h[0] + h[1] > h_) h_ = h[0] + h[1];
+		}
 	}
+	if (start) *start = 0;
+	if (stop) *stop = 0;
+	if (lo) *lo = l;
+	if (hi) *hi = h_;
 	char tag[4];
 	while (fread(tag, 1, 4, f) == 4) {
 		if (!memcmp(tag, "TLS", 4)) {
 			if (fread(tls_template, 4, 3, f) == 3)
 				fprintf(stderr, "TLS template %#x, %#x bytes, block %#x\n", tls_template[0], tls_template[1], tls_template[2]);
-		} else if (!memcmp(tag, "EXPT", 4)) {   /* a module's exports: (address, name) */
+		} else if (!memcmp(tag, "EXPT", 4) || !memcmp(tag, "EXPL", 4)) {   /* a module's exports: (address, name) --
+			 * EXPT: u32 address + a 60-byte name; EXPL: u32 address, u16 length, the name (the ones longer than 59
+			 * characters: C++ names such as sce::Json::Initializer::initialize, which EXPT cut and nothing matched) */
+			int lng = !memcmp(tag, "EXPL", 4);
 			if (fread(&n, 4, 1, f) != 1) break;
+			pthread_mutex_lock(&exports_lock);
 			exports = realloc(exports, (nexports + n) * sizeof *exports);
-			if (fread(exports + nexports, sizeof *exports, n, f) != n) break;
-			for (uint32_t i = 0; i < n; i++) exports[nexports + i].name[59] = 0;
-			nexports += n;
+			uint32_t got = 0;
+			for (; got < n; got++) {
+				uint32_t a; uint16_t len = 59;
+				if (fread(&a, 4, 1, f) != 1 || (lng && fread(&len, 2, 1, f) != 1)) break;
+				char nm[EXPORT_NAME] = {0}; size_t take = len < EXPORT_NAME - 1 ? len : EXPORT_NAME - 1;
+				if (lng) { if (fread(nm, 1, take, f) != take || (len > take && fseek(f, len - take, SEEK_CUR))) break; }
+				else { char raw[60]; if (fread(raw, 1, 60, f) != 60) break; memcpy(nm, raw, 59); }
+				exports[nexports + got].addr = a; memcpy(exports[nexports + got].name, nm, EXPORT_NAME);
+			}
+			nexports += got;
+			pthread_mutex_unlock(&exports_lock);
+			if (got != n) break;
 		} else if (!memcmp(tag, "PPRM", 4)) {   /* the program's process parameters */
 			extern uint32_t process_param;
 			if (fread(&process_param, 4, 1, f) != 1) break;
 		} else if (!memcmp(tag, "MSTA", 4)) {   /* a module's module_start */
 			uint32_t a; if (fread(&a, 4, 1, f) != 1) break;
-			if (nmodule_starts < 16) module_starts[nmodule_starts++] = a;
+			if (ondemand) { if (start) *start = a; }
+			else if (nmodule_starts < 16) module_starts[nmodule_starts++] = a;
+		} else if (!memcmp(tag, "MSTO", 4)) {   /* a module's module_stop (run by modload.c's unload) */
+			uint32_t a; if (fread(&a, 4, 1, f) != 1) break;
+			if (ondemand && stop) *stop = a;
 		} else if (!memcmp(tag, "VARS", 4)) {   /* imported variables: (slot address, name) */
 			if (fread(&n, 4, 1, f) != 1) break;
 			for (uint32_t i = 0; i < n; i++) {
@@ -518,24 +589,52 @@ static void load_image(const char *path) {
 		} else break;
 	}
 	fclose(f);
+	return 0;
+}
+static void load_image(const char *path) { load_image_ex(path, 0, 0, 0, 0, 0); }
+/* modload.c's side of the loader (MODLOAD-01) */
+int image_load_module(const char *img, uint32_t *start, uint32_t *stop, uint32_t *lo, uint32_t *hi) {
+	return load_image_ex(img, 1, start, stop, lo, hi);
+}
+void image_drop_exports(uint32_t lo, uint32_t hi) {   /* an unloaded module's exports stop resolving (entries kept, address 0) */
+	pthread_mutex_lock(&exports_lock);
+	for (uint32_t i = 0; i < nexports; i++) if (exports[i].addr >= lo && exports[i].addr < hi) exports[i].addr = 0;
+	pthread_mutex_unlock(&exports_lock);
+}
+void imports_reset(void) {   /* every import resolves again at its next call (a module came or went) */
+	for (uint32_t h = 0; h < RESOLVE_SLOTS; h++) __atomic_store_n(&resolved[h].known, 0, __ATOMIC_RELEASE);
 }
 
 /* ---- guest profiler (a build with -DRECOMP_TRACE, see build.sh): every guest instruction
  * reports its address; with RECOMP_PROFILE=<seconds> set, the main thread's instructions are
  * counted per guest function from that time on, and printed when the run ends */
+__thread uint32_t recomp_last_pc;   /* profile builds: the guest instruction this thread ran last (kernel.c's write watch names it) */
+uint32_t recomp_last_pc_now(void) { return recomp_last_pc; }   /* (platform_win32.c's exception log: a weak reference to a function links everywhere) */
 #ifdef RECOMP_TRACE
 #include <time.h>
 static __thread int prof_main;
 static int prof_on;
 static uint32_t *prof_hits;            /* per 2-byte instruction slot in the image */
 #define PROF_BASE 0x81000000u
-#define PROF_SIZE 0x01000000u   /* 4 -> 16 MB, the eboot spans up to 0x81c9xxxx */
+#define PROF_SIZE 0x01000000u   /* N01b-11 diagnostic: 4 -> 16 MB, the eboot spans up to 0x81c9xxxx */
 void recomp_trace(Cpu *c, uint32_t addr) {
+	recomp_last_pc = addr;
 #ifdef RECOMP_VERIFY
 	extern void verify_trace(Cpu *c, uint32_t addr);
 	verify_trace(c, addr);
 #endif
-	if (prof_on && addr - PROF_BASE < PROF_SIZE) prof_hits[(addr - PROF_BASE) >> 1]++;   /* count every guest thread (the spinner is not the host main thread) */
+	if (prof_on && addr - PROF_BASE < PROF_SIZE) prof_hits[(addr - PROF_BASE) >> 1]++;   /* N01b-11 diagnostic: count every guest thread (the spinner is not the host main thread) */
+	/* RECOMP_TRACE_TID=<guest thread uid>: every recompiled function that thread enters, with its lr and r0-r1, in
+	 * order (the path a thread took to a failure -- which branch a function skipped needs this, an import log can't
+	 * show it); RECOMP_TRACE_TID_FROM=<frame>: from that presented frame on */
+	static uint32_t trace_tid = 1; static uint64_t trace_from;
+	if (trace_tid == 1) { const char *e = getenv("RECOMP_TRACE_TID"), *f = getenv("RECOMP_TRACE_TID_FROM");
+		trace_tid = e ? (uint32_t)strtoul(e, 0, 0) : 0; trace_from = f ? strtoull(f, 0, 0) : 0; }
+	if (trace_tid) { extern uint32_t kernel_current_tid(void); extern uint64_t display_frames(void);
+		if (kernel_current_tid() == trace_tid && display_frames() >= trace_from && recomp_lookup(addr))
+			fprintf(stderr, "    trace t%#x f%llu: enter %#x lr %#x r0 %#x r1 %#x r2 %#x r3 %#x stk %#x %#x %#x %#x r4 %#x r5 %#x r6 %#x r7 %#x sp %#x\n", trace_tid,
+			        (unsigned long long)display_frames(), addr, c->r[14], c->r[0], c->r[1], c->r[2], c->r[3],
+			        RD32(c->r[13]), RD32(c->r[13] + 4), RD32(c->r[13] + 8), RD32(c->r[13] + 12), c->r[4], c->r[5], c->r[6], c->r[7], c->r[13]); }
 }
 static void *prof_timer(void *arg) {
 	usleep((useconds_t)(atof((char *)arg) * 1e6));
@@ -630,7 +729,7 @@ static void *stall_dump(void *arg) {
 			}
 		}
 		kernel_report_pcs();
-		{   /* the A/B watch counts: the loader's completion signal, the render-start event
+		{   /* the A/B watch counts (N01b-7): the loader's completion signal, the render-start event
 			 * and the GXM scene calls counted so far, whatever the log level */
 			static const char *const watch_names[] = {"sceKernelSignalSema", "sceKernelSetEvent", "sceGxmBeginScene", "sceGxmEndScene", 0};
 			for (int w = 0; watch_names[w]; w++)
@@ -705,6 +804,7 @@ static void on_crash(const char *what, void *addr) {   /* (platform.h: the defau
 static void on_signal(int sig) {   /* a run stopped from outside still reports where it was */
 	(void)sig;
 	summary("interrupted");
+	gaps_report();
 	prof_report();
 	_exit(130);
 }
@@ -733,6 +833,7 @@ static void builtin_env(void) {
 }
 int main(int argc, char **argv) {
 	builtin_env();
+	atexit(gaps_report);   /* GAPS-01: the GAPS line + table and gaps.json at the end of every run */
 #ifdef __linux__
 	/* RECOMP_DEBUGGABLE=1: let any process attach a debugger (Yama ptrace_scope 1 only allows the
 	 * parent): `gdb -p` / `eu-stack -p` thread dumps of a stalled run without root */
@@ -776,6 +877,7 @@ int main(int argc, char **argv) {
 		char list[4096]; snprintf(list, sizeof list, "%s", getenv("RECOMP_MODULES"));
 		for (char *p = strtok(list, ","); p; p = strtok(0, ",")) load_image(p);
 	}
+	{ extern void recomp_watch_fixed_arm(void); recomp_watch_fixed_arm(); }   /* RECOMP_WATCH_FIXED=<addr>,<len> (kernel.c) */
 	game_entry = strtoul(argv[2], 0, 16);
 	if (!guest_lookup(game_entry & ~1u)) { fprintf(stderr, "%#x is not a recompiled function\n", game_entry); return 1; }
 	window_run(game, 0);   /* window.c: on its own thread with a window, or right here headless */

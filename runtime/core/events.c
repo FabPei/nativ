@@ -1,4 +1,4 @@
-/* events.c -- the bounded event stream; see events.h. Pure stdio: no runtime, SDL or
+/* events.c -- the bounded event stream (N02g-3); see events.h. Pure stdio: no runtime, SDL or
  * guest dependency, so the ring and its format can be exercised on their own. display_frames()
  * gives the presented-frame number (0 before the first present, frozen while nothing renders);
  * a monotonic host clock gives milliseconds. */

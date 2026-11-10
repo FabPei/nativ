@@ -17,6 +17,7 @@
 
 /* memory */
 void *plat_reserve(size_t bytes);                       /* zeroed, read-write, backed on first touch; 0 on failure */
+void plat_thread_guard(void);   /* (AUTO-01 LBP-9) this thread keeps room for its fault handlers when its stack overflows (Windows: SetThreadStackGuarantee; elsewhere nothing) */
 void plat_thread_name(char *buf, size_t n);   /* this thread's name ("" when it has none): kernel.c names host threads after guest threads -- diagnostics say which */
 int plat_protect(void *p, size_t bytes, int writable);  /* whole pages, read-only (0), read-write (1) or no access (-1); 0 on success */
 size_t plat_page_size(void);

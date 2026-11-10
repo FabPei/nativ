@@ -21,6 +21,7 @@
 #include "gfx.h"
 #include "usse.h"
 #include "platform.h"
+#include "gaps.h"   /* GAPS-01 */
 
 static GfxTarget target;
 /* depth buffers, one per depth/stencil surface address (ds_data; t->data, the COLOUR address, for
@@ -110,6 +111,7 @@ static int depth_pass(uint32_t f, float z, float d) {
 	}
 }
 static uint64_t frame;
+static long shot_ms_every, shot_ms_last = -1, shot_ms_next, shot_ms_latched = -1;   /* RECOMP_SHOT_MS (below, with shot()) */
 static long dump_frame = -1, shot_every, shot_last = -1, shot_from = 0, shot_to = -1;   /* RECOMP_SHOT_LAST=n: exit once frame n's shot is written (a test needs nothing after its frame) */
 static int inited;
 static int shaders_interp;
@@ -133,6 +135,8 @@ static void init(void) {
 	if (getenv("RECOMP_SHOT_FROM")) shot_from = atol(getenv("RECOMP_SHOT_FROM"));   /* RECOMP_SHOT_FROM/_TO=n: shots only in that frame window (every frame of a flicker, without a run's worth of them) */
 	if (getenv("RECOMP_SHOT_TO")) shot_to = atol(getenv("RECOMP_SHOT_TO"));
 	if (getenv("RECOMP_SHOT_LAST")) shot_last = atol(getenv("RECOMP_SHOT_LAST"));
+	if (getenv("RECOMP_SHOT_MS")) shot_ms_every = atol(getenv("RECOMP_SHOT_MS"));   /* RECOMP_SHOT_MS=n: a shot every n ms of wall time (tshot_<step>.ppm) */
+	if (getenv("RECOMP_SHOT_LAST_MS")) shot_ms_last = atol(getenv("RECOMP_SHOT_LAST_MS"));
 	if (!shaders_interp) shaders_interp = getenv("RECOMP_SHADERS") && !strcmp(getenv("RECOMP_SHADERS"), "interp");
 }
 /* the shader interpreter regardless of RECOMP_SHADERS: gfx_gpu.c's CPU fallback and its check
@@ -752,8 +756,8 @@ static void apply_swizzle(uint32_t format, int ncomp, float o[4]) {
 /* which swizzle family a texture base format's components take (1: the SWIZZLE1 modes, 4: the
  * SWIZZLE4 ones), 0 for formats whose components are placed by the decode itself */
 static int swizzle_ncomp(uint32_t base) {
-	return base == 0x00000000u || base == 0x01000000u || base == 0x09000000u || base == 0x0a000000u || base == 0x0b000000u || base == 0x12000000u || base == 0x88000000u ? 1
-	     : base == 0x0c000000u || base == 0x0d000000u || base == 0x1b000000u || base == 0x02000000u || base == 0x04000000u || (base >= 0x85000000u && base <= 0x87000000u)
+	return base == 0x00000000u || base == 0x01000000u || base == 0x09000000u || base == 0x0a000000u || base == 0x0b000000u || base == 0x12000000u || base == 0x13000000u || base == 0x88000000u ? 1
+	     : base == 0x0c000000u || base == 0x0d000000u || base == 0x1b000000u || base == 0x02000000u || base == 0x04000000u || base == 0x0e000000u || (base >= 0x85000000u && base <= 0x87000000u)
 	       || base == 0x94000000u || base == 0x95000000u ? 4   /* P4 / P8: their palette entries are U8U8U8U8 */
 	     : base == 0x98000000u || base == 0x99000000u ? 3 : 0;
 }
@@ -914,9 +918,9 @@ static void texel(const GfxTexture *t, float u, float v, float out[4]) {
  * address by 4x4 block via block_index, not a flat per-texel stride -- see cube_texel) */
 static uint32_t tex_bytes_per_texel(uint32_t base) {
 	switch (base) {
-	case 0x1b000000u: return 8;                                                           /* F16F16F16F16 */
+	case 0x1b000000u: case 0x1e000000u: return 8;                                         /* F16F16F16F16 / F32F32 */
 	case 0x0c000000u: case 0x0d000000u: case 0x15000000u: case 0x9a000000u: case 0x12000000u:
-	case 0x11000000u: case 0x1a000000u: return 4;                                          /* *8U8U8U8/S8S8S8S8/X8U24/U2F10F10F10/F32/F16F16/F11F11F10 */
+	case 0x11000000u: case 0x1a000000u: case 0x13000000u: case 0x0e000000u: return 4;     /* *8U8U8U8/S8S8S8S8/X8U24/U2F10F10F10/F32/F16F16/F11F11F10/F32M/U2U10U10U10 */
 	case 0x05000000u: case 0x09000000u: case 0x0a000000u: case 0x0b000000u: case 0x07000000u:
 	case 0x02000000u: case 0x04000000u: return 2;                                          /* U5U6U5/U16/S16/F16/U8U8/U4U4U4U4/U1U5U5U5 */
 	case 0x98000000u: case 0x99000000u: return 3;                                          /* U8U8U8 / S8S8S8: three bytes, no padding */
@@ -1184,10 +1188,21 @@ static void texel_raw(const GfxTexture *t, float u, float v, float out[4]) {
 		float f = (int16_t)RD16(at + 2 * texel_index(t, x, y)) / 32767.f; out[0] = f < -1 ? -1 : f; out[1] = out[2] = 0; out[3] = 1;
 	} else if (base == 0x0b000000u) {    /* F16 */
 		out[0] = half_to_float_soft(RD16(at + 2 * texel_index(t, x, y))); out[1] = out[2] = 0; out[3] = 1;
-	} else if (base == 0x12000000u) {    /* F32 */
+	} else if (base == 0x12000000u || base == 0x13000000u) {    /* F32, and F32M (the same one 32-bit float component: a depth
+	                                       * value sampled as a texture -- Gravity Rush's, undecoded, sampled as magenta) */
 		uint32_t p = RD32(at + 4 * texel_index(t, x, y)); memcpy(&out[0], &p, 4); out[1] = out[2] = 0; out[3] = 1;
+	} else if (base == 0x0e000000u) {    /* U2U10U10U10, ABGR: R in the low 10 bits, then G, B, and a 2-bit alpha on top (the
+	                                       * SWIZZLE4 modes reorder them). Gravity Rush renders its scene into a U2U10U10U10
+	                                       * colour target and composites it from here: undecoded, its whole frame was magenta */
+		uint32_t p = RD32(at + 4 * texel_index(t, x, y));
+		out[0] = (p & 0x3ff) / 1023.f; out[1] = ((p >> 10) & 0x3ff) / 1023.f; out[2] = ((p >> 20) & 0x3ff) / 1023.f; out[3] = (p >> 30) / 3.f;
 	} else if (base == 0x07000000u) {    /* U8U8: two components, R then G */
 		uint16_t p = RD16(at + 2 * texel_index(t, x, y)); out[0] = (p & 0xff) / 255.f; out[1] = (p >> 8) / 255.f; out[2] = 0; out[3] = 1;
+	} else if (base == 0x1e000000u) {    /* F32F32: two 32-bit floats, R then G, sampled as (r, g, 0, 1) -- an F32F32 colour target
+	                                       * (0x11000000, gfx_encode_target_f32 stores it bit for bit) read back as a texture (God Eater
+	                                       * samples one every frame of its start-up; undecoded, each texel was the magenta fallback) */
+		const uint32_t a = at + 8 * texel_index(t, x, y); uint32_t p0 = RD32(a), p1 = RD32(a + 4);
+		memcpy(&out[0], &p0, 4); memcpy(&out[1], &p1, 4); out[2] = 0; out[3] = 1;
 	} else if (base == 0x11000000u) {    /* F16F16 */
 		uint32_t p = RD32(at + 4 * texel_index(t, x, y)); out[0] = half_to_float_soft(p & 0xffff); out[1] = half_to_float_soft(p >> 16); out[2] = 0; out[3] = 1;
 	} else if (base == 0x02000000u) {    /* U4U4U4U4, ABGR: R in the low nibble (as U8U8U8U8's byte order; Killzone: Mercenary's
@@ -1206,7 +1221,7 @@ static void texel_raw(const GfxTexture *t, float u, float v, float out[4]) {
 	else {
 		static uint32_t warned[64]; static int nw;
 		int seen = 0; for (int i = 0; i < nw; i++) if (warned[i] == t->format) seen = 1;
-		if (!seen && nw < 64) { warned[nw++] = t->format; fprintf(stderr, "    soft: texture format %#x not handled\n", t->format); }
+		if (!seen && nw < 64) { warned[nw++] = t->format; fprintf(stderr, "    soft: texture format %#x not handled\n", t->format); gap(GAP_TEX_FORMAT, t->format, "texture format not decoded (sampled as magenta)"); }
 		out[0] = 1; out[1] = 0; out[2] = 1; out[3] = 1;
 	}
 }
@@ -1238,6 +1253,28 @@ static uint16_t float_to_half_soft(float f) {
 	if (ne >= 31) return (uint16_t)(s | 0x7c00);
 	if (ne <= 0) { if (ne < -10) return (uint16_t)s; m |= 0x800000; return (uint16_t)(s | (m >> (14 - ne))); }
 	return (uint16_t)(s | (uint32_t)ne << 10 | (m >> 13));
+}
+/* U2U10U10U10 (colour format 0x60800000): ABGR = R in bits 0-9, G 10-19, B 20-29, A 30-31; ARGB swaps R and B; RGBA =
+ * A in bits 0-1, then B, G, R upwards; BGRA = A low, then R, G, B -- the 8-bit formats' orders with 10-bit fields */
+static void u10_unpack(uint32_t p, uint32_t order, float c[4]) {
+	float lo = (p & 0x3ff) / 1023.f, mid = ((p >> 10) & 0x3ff) / 1023.f, hi = ((p >> 20) & 0x3ff) / 1023.f, a = (p >> 30) / 3.f;
+	float a2 = (p & 3) / 3.f, f0 = ((p >> 2) & 0x3ff) / 1023.f, f1 = ((p >> 12) & 0x3ff) / 1023.f, f2 = ((p >> 22) & 0x3ff) / 1023.f;
+	switch (order) {
+	case 0: c[0] = lo; c[1] = mid; c[2] = hi; c[3] = a; break;
+	case 1: c[0] = hi; c[1] = mid; c[2] = lo; c[3] = a; break;
+	case 2: c[0] = f2; c[1] = f1; c[2] = f0; c[3] = a2; break;
+	default: c[0] = f0; c[1] = f1; c[2] = f2; c[3] = a2; break;
+	}
+}
+static uint32_t u10_q(float f) { return f <= 0 ? 0 : f >= 1 ? 1023 : (uint32_t)(f * 1023.f + .5f); }
+static uint32_t u10_pack(const float c[4], uint32_t order) {
+	uint32_t r = u10_q(c[0]), g = u10_q(c[1]), b = u10_q(c[2]), a = c[3] <= 0 ? 0 : c[3] >= 1 ? 3 : (uint32_t)(c[3] * 3 + .5f);
+	switch (order) {
+	case 0: return r | g << 10 | b << 20 | a << 30;
+	case 1: return b | g << 10 | r << 20 | a << 30;
+	case 2: return a | b << 2 | g << 12 | r << 22;
+	default: return a | r << 2 | g << 12 | b << 22;
+	}
 }
 static uint32_t target_base_of(const GfxTarget *t) { return t->format & 0xF1800000u; }
 static int target_bpp_of(const GfxTarget *t) {
@@ -1295,6 +1332,9 @@ static void target_read_raw_of(const GfxTarget *t, int x, int y, float c[4]) {
 	case 0x11000000u: { uint32_t r = RD32(a), g = RD32(a + 4); memcpy(&c[0], &r, 4); memcpy(&c[1], &g, 4); c[2] = 0; c[3] = 1; return; }
 	case 0x10800000u: { uint32_t r = RD32(a); memcpy(&c[0], &r, 4); c[1] = c[2] = 0; c[3] = 1; return; }
 	case 0x41000000u: { uint32_t p = RD32(a); c[0] = small_float(p & 0x3ff, 5); c[1] = small_float((p >> 10) & 0x3ff, 5); c[2] = small_float((p >> 20) & 0x3ff, 5); c[3] = (p >> 30) / 3.f; return; }
+	case 0x60800000u: {   /* U2U10U10U10: three 10-bit components and a 2-bit alpha, in the 8-bit formats' orders (u10_unpack) */
+		u10_unpack(RD32(a), (t->format >> 20) & 3, c); return;
+	}
 	case 0x21000000u: { uint32_t p = RD32(a); c[0] = small_float(p & 0x7ff, 6); c[1] = small_float((p >> 11) & 0x7ff, 6); c[2] = small_float(p >> 22, 5); c[3] = 1; return; }
 	/* U8/S8/U8U8/S8S8/U16/S16: 1-2 raw components at their real size -- these used to fall into the
 	 * 4-byte default below (which target_bpp_of already said they weren't), reading/writing 2-4x
@@ -1351,6 +1391,7 @@ static void target_write_raw_of(const GfxTarget *t, int x, int y, const float c[
 		WR32(a, to_small_float(c[0], 5) | to_small_float(c[1], 5) << 10 | to_small_float(c[2], 5) << 20 | al << 30); return;
 	}
 	case 0x21000000u: WR32(a, to_small_float(c[0], 6) | to_small_float(c[1], 6) << 11 | to_small_float(c[2], 5) << 22); return;
+	case 0x60800000u: WR32(a, u10_pack(c, (t->format >> 20) & 3)); return;            /* U2U10U10U10 */
 	case 0x80800000u: WR8(a, (uint8_t)to8(c[0])); return;                              /* U8 */
 	case 0x90800000u: WR8(a, (uint8_t)to8s(c[0])); return;                             /* S8 */
 	case 0xB0800000u: WR8(a, (uint8_t)to8(c[0])); WR8(a + 1, (uint8_t)to8(c[1])); return;    /* U8U8 */
@@ -1864,7 +1905,13 @@ static void shade_interp(const Tri *t, const DrawRec *r, int x, int y, float b0,
 	/* FRAGCOLOR_USED: the program reads the pixel's current colour (programmable blending -- Unit 13's
 	 * occlusion pass multiplies the lit HDR buffer by its half-res AO; without the preload it
 	 * multiplied by zero and the whole frame went black under the later passes) */
-	if (fl->frag_color_used) { float cur[4]; target_read(x, y, cur); usse_preload_color(&finst, fl, cur); }
+	if (fl->frag_color_used) {
+		if (fl->native_color && target.data) {   /* NATIVECOLOR: the pixel's own bits, word by word (usse.h) */
+			int bpp = target_bpp_of(&target); uint8_t px[16] = {0};
+			memcpy(px, G(target.data + (uint32_t)bpp * target_index(&target, x, y)), bpp <= 16 ? (size_t)bpp : 16);
+			for (int k = 0; k < (bpp + 3) / 4 && k < 4; k++) memcpy(&finst.o[k].u, px + 4 * k, 4);
+		} else { float cur[4]; target_read(x, y, cur); usse_preload_color(&finst, fl, cur); }
+	}
 	uint64_t t0 = usse_profile_on() ? now_ns() : 0;
 	/* RECOMP_TRACE_DRAW=k with RECOMP_DEBUG_PIXEL=x,y: that pixel's fragment program instruction by
 	 * instruction (the vertex trace above covers vertex 0 only; a text glyph's alpha went negative
@@ -1908,7 +1955,7 @@ static void shade_interp(const Tri *t, const DrawRec *r, int x, int y, float b0,
 				for (int i = 0; i < 40; i++) fprintf(stderr, "%s%2d=%08x(%g)", i % 8 ? " " : "\n   ", i, r->fdraw.sa[i].u, r->fdraw.sa[i].f);
 				fprintf(stderr, "\n");
 			}
-			fprintf(stderr, "debug draw %d pixel %d,%d f %#x (%d iterators, %s):", r->draw_index, x, y, r->d.fprog, fl->niters, r->use_interp ? "interp" : "stand-in");
+			fprintf(stderr, "debug draw %d pixel %d,%d f %#x (%d iterators, %s; colour type %d x%d at %s%d%s):", r->draw_index, x, y, r->d.fprog, fl->niters, r->use_interp ? "interp" : "stand-in", fl->color_type, fl->color_comps, fl->native_color ? "o" : "pa", fl->color_pa_start, fl->frag_color_used ? ", reads fb" : "");
 			for (int i = 0; i < fl->niters; i++) {
 				const UsseIter *it = &fl->iters[i]; float comps[4] = {0, 0, 0, 1}; int base, ncomp;
 				if (it->is_tex) sample_nondep(&r->d, it, r->vlayout, vary, 0, comps);
@@ -1919,7 +1966,9 @@ static void shade_interp(const Tri *t, const DrawRec *r, int x, int y, float b0,
 		}
 	}
 	*nraw = 0;
-	if (!probed && (fl->color_type == 8 /* TY_U32 */ || fl->color_type == 9 /* TY_S32 */)) {   /* a probe shows as floats even on a raw-word target */
+	if (!probed && fl->native_color && target_bpp_of(&target) <= 4 && usse_native_raw32(r->fprog, r->d.fprog)) {
+		raw[0] = finst.o[0].u; *nraw = 1;   /* NATIVECOLOR in a 32-bit register format: O0 is the surface's word (usse.h) */
+	} else if (!probed && (fl->color_type == 8 /* TY_U32 */ || fl->color_type == 9 /* TY_S32 */)) {   /* a probe shows as floats even on a raw-word target */
 		const UWord *bank = fl->native_color ? finst.o : finst.pa;
 		int n = fl->color_comps > 0 && fl->color_comps <= 4 ? fl->color_comps : 1;
 		for (int k = 0; k < n; k++) raw[k] = bank[(fl->color_pa_start + k) % 160].u;
@@ -2272,6 +2321,7 @@ static void dump(const GfxDraw *d, int k) {
 
 /* each program pair the stand-in shaders can't fully interpret, once: its parameter names */
 static void unhandled(const GfxDraw *d, const char *why) {
+	gap_str(GAP_SHADER_SOFT, why);   /* GAPS-01 (each draw) */
 	static uint64_t seen[256]; static int n;
 	uint64_t k = (uint64_t)d->vprog << 32 | d->fprog;
 	for (int i = 0; i < n; i++) if (seen[i] == k) return;
@@ -2375,6 +2425,9 @@ static int render_interp(const GfxDraw *d) {
 static void render(const GfxDraw *d) {
 	if (shaders_interp && render_interp(d)) return;
 	Shader s = shader_of(d);
+	/* a program the stand-ins can't place (its position attribute named otherwise: LittleBigPlanet's position_sdfyofs):
+	 * the shader interpreter runs the game's own programs instead of skipping the draw */
+	if (s.pos_reg < 0 && !shaders_interp && render_interp(d)) return;
 	if (s.pos_reg < 0) { unhandled(d, "no position attribute, draw skipped"); stats_skipped++; return; }
 	check_known(d);
 	if (nrecs == cap_recs) { cap_recs = cap_recs ? 2 * cap_recs : 256; recs = realloc(recs, cap_recs * sizeof *recs); }
@@ -2451,8 +2504,17 @@ void gfx_soft_end_scene(void) {
 	if (scene_depth && scene_target.ds_data && scene_target.ds_force_store) depth_store_to_guest(scene_depth, &scene_target);
 }
 
+/* RECOMP_SHOT_MS=n (RECOMP_SHOT_LAST_MS=m: exit after the shot at m ms): shots keyed by wall time since the first
+ * present instead of by frame -- runs at different frame rates (30/60/120) then shoot the same instants, for
+ * comparing how fast a game animates at each (the ledger's tools/anim_sync.py). tshot_<k>.ppm is the shot at k*n ms. */
+static long run_ms(void) { static uint64_t t0; struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); uint64_t us = (uint64_t)t.tv_sec * 1000000 + t.tv_nsec / 1000; if (!t0) t0 = us; return (long)((us - t0) / 1000); }
+static int shot_ms_due(void) { return shot_ms_every > 0 && run_ms() >= shot_ms_next; }
+static void shot_named(const char *name, uint32_t base, uint32_t w, uint32_t h, uint32_t pitch);
 static void shot(uint32_t base, uint32_t w, uint32_t h, uint32_t pitch) {
 	char name[64]; snprintf(name, sizeof name, "shot_%05llu.ppm", (unsigned long long)frame);
+	shot_named(name, base, w, h, pitch);
+}
+static void shot_named(const char *name, uint32_t base, uint32_t w, uint32_t h, uint32_t pitch) {
 	FILE *f = fopen(name, "wb");
 	if (!f) return;
 	fprintf(f, "P6\n%u %u\n255\n", w, h);
@@ -2461,12 +2523,17 @@ static void shot(uint32_t base, uint32_t w, uint32_t h, uint32_t pitch) {
 	fclose(f);
 }
 static int shot_window(void) { return (long)frame >= shot_from && (shot_to < 0 || (long)frame <= shot_to); }
-int gfx_soft_shot_due(void) { init(); return shot_every && frame % shot_every == 0 && shot_window(); }   /* will this present write a RECOMP_SHOT? (gfx_gpu.c syncs guest memory only then) */
+int gfx_soft_shot_due(void) { init(); if (shot_ms_due()) { shot_ms_latched = (long)frame; return 1; } return shot_every && frame % shot_every == 0 && shot_window(); }   /* will this present write a RECOMP_SHOT? (gfx_gpu.c syncs guest memory only then) */
 int gfx_soft_skip_window;   /* set by gfx_gpu.c when it has shown the frame itself */
 void gfx_soft_present(uint32_t base, uint32_t width, uint32_t height, uint32_t pitch, uint32_t format) {
 	init();
 	if ((long)frame == dump_frame) fprintf(stderr, " present frame %llu: %u draws\n", (unsigned long long)frame, ndraw);
 	if (shot_every && frame % shot_every == 0 && shot_window()) shot(base, width, height, pitch);
+	if (shot_ms_every > 0 && (shot_ms_latched == (long)frame || shot_ms_due())) {
+		char name[64]; snprintf(name, sizeof name, "tshot_%05ld.ppm", shot_ms_next / shot_ms_every); shot_named(name, base, width, height, pitch);
+		long now = run_ms(); while (shot_ms_next <= now) shot_ms_next += shot_ms_every;   /* (a long frame skips the instants it passed) */
+		if (shot_ms_last >= 0 && now >= shot_ms_last) { fprintf(stderr, "frame %llu at %ld ms: the last timed shot (RECOMP_SHOT_LAST_MS), exiting\n", (unsigned long long)frame, now); fflush(stderr); gfx_gpu_builds_stop(); exit(0); }
+	}
 	if (shot_last >= 0 && (long)frame >= shot_last) { fprintf(stderr, "frame %llu shot: the last one asked for (RECOMP_SHOT_LAST), exiting\n", (unsigned long long)frame); fflush(stderr); gfx_gpu_builds_stop(); exit(0); }   /* a scripted test used to run to its timeout: minutes for a frame that takes seconds */
 	usse_profile_report();
 	extern void window_present(uint32_t base, uint32_t w, uint32_t h, uint32_t pitch);

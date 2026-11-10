@@ -6,18 +6,21 @@
  * monotonically while the timer runs, a stopped timer freezes, restart resumes, a bad uid
  * fails, and the wide variant returns the 64-bit value split lo/hi (r0/r1).
  *
- * Pre-fix control: without these handlers the timer imports were not dispatched at all and fell to
+ * Pre-fix control: before N01b-2 the timer imports were not dispatched at all and fell to
  * the generic stub whose time source read 0 ("a stub that always read 0: its poll
  * conditions could never fire"). Building with -DTIMER_STUB_CONTROL mirrors exactly that
  * contract behind the same wrapper calls: the suite must then FAIL (the checks can tell the
- * stub from the real clock -- the PASS criterion of the suite).
+ * stub from the real clock -- the PASS criterion of N01b-9).
  *
- * Build and run: see run_timer_tests.sh in this directory (post-fix, stub control, kernel gate).
+ * Build and run: see README.md in this directory (timer_test.c entry).
  */
 #include <sys/mman.h>
 #include <signal.h>
 #include <stdarg.h>
 #include "../core/kernel.c"
+__thread uint32_t recomp_last_pc;   /* (main.c defines it in the runtime: the write watch names the last guest pc) */
+void plat_thread_guard(void) {}   /* (platform_*.c defines it in the runtime: AUTO-01 LBP-9 stack guarantee; nothing here) */
+void ev_log(const char *kind, const char *fmt, ...) { (void)kind; (void)fmt; }   /* events.c: not linked here */
 
 /* ---- the runtime kernel.c expects (same shim set as kernel_test.c) */
 uint8_t *recomp_mem;
@@ -34,8 +37,6 @@ uint32_t tls_block(void) { return guest_alloc(0x100, 64); }
 void recomp_runfast(void) {}
 uint64_t guest_time_us(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000 + t.tv_nsec / 1000; }
 int guest_clock_fixed(void) { return 0; }
-void ev_log(const char *kind, const char *fmt, ...) { (void)kind; (void)fmt; }   /* events.c's, not under test */
-void ev_dump(const char *why) { (void)why; }
 void guest_time_slept(uint32_t us) { (void)us; }
 void display_vblank_callbacks(void) {}
 uint32_t io_guest_fd(int fd) { return (uint32_t)fd + 0x100; }

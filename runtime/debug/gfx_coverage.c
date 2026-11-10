@@ -26,6 +26,7 @@
 #include "usse.h"
 #include "usse_spirv.h"
 #include "gfx_coverage.h"
+#include "gaps.h"   /* GAPS-01 */
 
 static int enabled = -1;
 static const char *out_path;
@@ -104,7 +105,7 @@ static const char *tex_base_name(uint32_t b) {
 }
 /* gfx_soft.c's texel_raw decodes these (gfx_gpu.c uploads through the same decoder) */
 static int tex_base_supported(uint32_t b) {
-	static const uint8_t ok[] = {0x00, 0x02, 0x04, 0x05, 0x07, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x11, 0x12, 0x15, 0x1a, 0x1b, 0x9a, 0x90, 0x91, 0x92, 0x98, 0x99, 0x94, 0x95, 0x85, 0x86, 0x87, 0x88, 0x80, 0x81, 0x82, 0x83};
+	static const uint8_t ok[] = {0x00, 0x02, 0x04, 0x05, 0x07, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x11, 0x12, 0x13, 0x15, 0x1a, 0x1b, 0x1e, 0x9a, 0x90, 0x91, 0x92, 0x98, 0x99, 0x94, 0x95, 0x85, 0x86, 0x87, 0x88, 0x80, 0x81, 0x82, 0x83};
 	for (size_t i = 0; i < sizeof ok; i++) if (ok[i] == b) return 1;
 	return 0;
 }
@@ -346,6 +347,7 @@ void gfxcov_draw(const GfxDraw *d) {
 }
 
 void gfxcov_gap(const char *key, const char *value, int partial, const char *note) {
+	{ char k[96]; snprintf(k, sizeof k, "%s=%s", key, value); gap_str(GAP_GXM_STATE, k); }   /* GAPS-01: with or without the coverage record */
 	if (!gfxcov_on()) return;
 	pthread_mutex_lock(&lock);
 	feat(key, value, partial ? PARTIAL : NO, partial ? PARTIAL : NO, note);

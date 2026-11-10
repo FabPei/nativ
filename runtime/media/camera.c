@@ -22,9 +22,12 @@
 #include <string.h>
 #include <SDL3/SDL.h>
 #include "hle.h"
+#include "hle_small.h"
+#include "platform.h"
 #include "gfx.h"
 #include "settings.h"
 #include "overlay.h"
+#include "device_pick.h"   /* (UI-02b) settings "camera_device": the chosen camera by name, else the first */
 
 #define CAM_ERR_PARAM 0x802E0000u
 #define CAM_ERR_ALREADY_OPEN 0x802E0003u
@@ -49,13 +52,17 @@ enum { BUF_SETBYOPEN = 0, BUF_SETBYREAD = 1 };
 #define CI_PITCH 0x2c
 #define CI_BUFFER 0x2e
 #define CR_SIZE 0x00
+#define CR_MODE 0x04     /* SCE_CAMERA_READ_MODE_WAIT_NEXTFRAME_ON 0 / _OFF 1 (Vita3K camera.h) */
 #define CR_STATUS 0x0c
 #define CR_FRAME 0x10
 #define CR_TIMESTAMP 0x18
 #define CR_SIZE_I 0x20
 #define CR_P_I 0x2c
+#define CR_SIZE_NEW 0x48   /* the newer SDK's SceCameraRead: 16 bytes more before the plane sizes */
+#define CR_SIZE_I_NEW 0x30
+#define CR_P_I_NEW 0x3c
 
-typedef struct { int open, started; uint32_t format, width, height, pitch, buffer, range; uint32_t base[3], size[3]; uint64_t frame; } Cam;
+typedef struct { int open, started; uint32_t format, width, height, pitch, buffer, range; uint32_t base[3], size[3]; uint64_t frame; uint64_t next_us, last_us, frame_us; } Cam;   /* (PTW-CAM) its frame grid: hle_small.h */
 static Cam cams[2];   /* SCE_CAMERA_DEVICE_FRONT 0, BACK 1 */
 static int light_on = -1;   /* the `light` source's lamp; -1: not yet set, the game's default (RECOMP_CAMERA_LAMP) */
 
@@ -80,12 +87,21 @@ static int res_dims(uint32_t res, uint32_t *w, uint32_t *h) {
 /* ---- the computer's camera (SDL3), opened on first use and kept open */
 static SDL_Camera *webcam; static int webcam_tried;
 static SDL_Surface *webcam_frame(void) {   /* the newest frame, or 0 (caller destroys it) */
+	{	/* (UI-02b) another camera chosen in the menu since it opened: that one from the next frame */
+		static char opened_for[128] = "\1"; char want[128]; settings_str("camera_device", "", want, sizeof want);
+		if (strcmp(want, opened_for)) { if (webcam) { SDL_CloseCamera(webcam); webcam = 0; } webcam_tried = 0; snprintf(opened_for, sizeof opened_for, "%s", want); }
+	}
 	if (!webcam && !webcam_tried) {
 		webcam_tried = 1;
 		if (!SDL_WasInit(SDL_INIT_CAMERA) && !SDL_InitSubSystem(SDL_INIT_CAMERA)) { fprintf(stderr, "camera: no camera subsystem (%s): using the light\n", SDL_GetError()); return 0; }
 		int n = 0; SDL_CameraID *ids = SDL_GetCameras(&n);
-		if (ids && n > 0) webcam = SDL_OpenCamera(ids[0], 0);
-		fprintf(stderr, "camera: %s\n", webcam ? "this computer's camera is the Vita's" : "no camera opened: using the light");
+		const char *names[16]; const int m = n < 16 ? n : 16;
+		for (int i = 0; i < m; i++) { const char *nm = SDL_GetCameraName(ids[i]); names[i] = nm ? nm : ""; }
+		char want[128]; settings_str("camera_device", "", want, sizeof want);
+		const int k = device_pick(names, m, want);
+		if (k >= 0) webcam = SDL_OpenCamera(ids[k], 0);
+		if (webcam) fprintf(stderr, "camera: this computer's camera is the Vita's: %s%s\n", names[k], want[0] && !device_present(names, m, want) ? " (the chosen one isn't connected: the first one instead)" : "");
+		else fprintf(stderr, "camera: no camera opened: using the light\n");
 		SDL_free(ids);
 	}
 	if (!webcam) return 0;
@@ -188,6 +204,7 @@ static void h_open(Cpu *c) {   /* (devnum, SceCameraInfo *) */
 	if (fmt < 1 || fmt > 6) { RET(CAM_ERR_FORMAT_UNKNOWN); return; }
 	if (!res_dims(RD16(ci + CI_RESOLUTION), &w, &h)) { RET(CAM_ERR_RESOLUTION_UNKNOWN); return; }
 	memset(k, 0, sizeof *k);
+	k->frame_us = hle_camera_frame_us(RD16(ci + CI_FRAMERATE));
 	k->open = 1; k->format = fmt; k->width = w; k->height = h; k->pitch = RD16(ci + CI_PITCH); k->buffer = RD16(ci + CI_BUFFER); k->range = RD16(ci + CI_RANGE);
 	for (int i = 0; i < 3; i++) { k->size[i] = RD32(ci + CI_SIZE_I + 4 * i); k->base[i] = RD32(ci + CI_P_I + 4 * i); }
 	WR16(ci + CI_WIDTH, (uint16_t)w); WR16(ci + CI_HEIGHT, (uint16_t)h);
@@ -195,16 +212,24 @@ static void h_open(Cpu *c) {   /* (devnum, SceCameraInfo *) */
 	        k->buffer == BUF_SETBYREAD ? "per read" : "from open", source() == 1 ? "webcam" : source() == 2 ? "dark" : "light (F7)");
 	RET(0);
 }
+/* (CAM-TOAST) the webcam note: the camera chosen in the menu by its name; none chosen: no guess at the machine
+ * (it once said "your Mac's" on every system) */
+void camera_webcam_note(const char *dev, char *b, size_t n) {
+	if (dev && *dev) snprintf(b, n, "The game is using the Vita's camera: the camera \"%s\" stands in for it\nChange it: [F10] > Controls", dev);
+	else snprintf(b, n, "The game is using the Vita's camera: your computer's camera stands in for it\nChange it: [F10] > Controls");
+}
 static void h_close(Cpu *c) { Cam *k = dev(c); if (!k) { RET(CAM_ERR_PARAM); return; } if (!k->open) { RET(CAM_ERR_NOT_OPEN); return; } k->open = k->started = 0; RET(0); }
 static void h_start(Cpu *c) {
 	Cam *k = dev(c); if (!k) { RET(CAM_ERR_PARAM); return; }
 	if (!k->open) { RET(CAM_ERR_NOT_OPEN); return; }
 	if (k->started) { RET(CAM_ERR_ALREADY_START); return; }
-	k->started = 1; k->frame = 0;
+	k->started = 1; k->frame = 0; k->next_us = k->last_us = 0;
 	static int said;   /* what the camera sees, once a session: a puzzle may be waiting on it */
 	if (!said) {
 		said = 1; int src = source();
-		overlay_toast_titled("Camera", src == 1 ? "The game is using the Vita's camera: your Mac's camera stands in for it\nChange it: [F10] > Controls"
+		char dev[128], cam[256]; settings_str("camera_device", "", dev, sizeof dev);
+		camera_webcam_note(dev, cam, sizeof cam);
+		overlay_toast_titled("Camera", src == 1 ? cam
 		              : src == 0 && camera_light() ? "The game is using the Vita's camera: it sees a bright lamp\n[F7] turns it off"
 		              : "The game is using the Vita's camera: it sees a dark room\n[F7] shines a lamp into it", 6.0);
 	}
@@ -214,28 +239,53 @@ static void h_stop(Cpu *c) { Cam *k = dev(c); if (!k) { RET(CAM_ERR_PARAM); retu
 static void h_read(Cpu *c) {   /* (devnum, SceCameraRead *) */
 	Cam *k = dev(c); uint32_t rd = A1;
 	if (!k || !rd) { RET(CAM_ERR_PARAM); return; }
-	uint32_t sz = RD32(rd + CR_SIZE); if (sz <= 24 || sz > 0x40) { RET(CAM_ERR_PARAM); return; }
+	uint32_t sz = RD32(rd + CR_SIZE); if (sz <= 24 || sz > CR_SIZE_NEW) { RET(CAM_ERR_PARAM); return; }
 	if (!k->open) { RET(CAM_ERR_NOT_OPEN); return; }
 	if (!k->started) { RET(CAM_ERR_NOT_START); return; }
+	/* two layouts: the 0x38 one (vita-headers) and the newer SDK's 0x48 one with 16 more bytes before the plane
+	 * sizes -- Soul Sacrifice Delta's AR mode passes 0x48 with sizes at +0x30 and bases at +0x3c; up to 0x40 the old */
+	uint32_t o_size = sz > 0x40 ? CR_SIZE_I_NEW : CR_SIZE_I, o_base = sz > 0x40 ? CR_P_I_NEW : CR_P_I;
 	uint32_t base[3], size[3];
 	for (int i = 0; i < 3; i++) {
-		int have = k->buffer == BUF_SETBYREAD && sz >= CR_P_I + 4u * (uint32_t)i + 4u;
-		base[i] = have ? RD32(rd + CR_P_I + 4 * i) : k->base[i]; size[i] = have ? RD32(rd + CR_SIZE_I + 4 * i) : k->size[i];
+		int have = k->buffer == BUF_SETBYREAD && sz >= o_base + 4u * (uint32_t)i + 4u;
+		base[i] = have ? RD32(rd + o_base + 4 * i) : k->base[i]; size[i] = have ? RD32(rd + o_size + 4 * i) : k->size[i];
 	}
 	if (!base[0] || !size[0]) { RET(CAM_ERR_PARAM); return; }
+	/* (PTW-CAM) the camera's frame grid (hle_small.h): before the next frame is due, WAIT_NEXTFRAME_ON waits for it and
+	 * WAIT_NEXTFRAME_OFF answers IS_ALREADY_READ with the last frame (Vita3K camera.cpp); a new frame per read was a camera
+	 * as fast as the game's reads */
+	uint64_t now = guest_time_us(), w = k->next_us ? hle_camera_wait_us(now, k->next_us) : 0;
+	if (w) {
+		if (RD32(rd + CR_MODE) == HLE_CAMERA_READ_WAIT_OFF || guest_clock_fixed()) {
+			if (k->frame) {
+				WR32(rd + CR_STATUS, HLE_CAMERA_STATUS_ALREADY_READ);
+				if (sz >= CR_FRAME + 8) { uint64_t f = k->frame - 1; WR32(rd + CR_FRAME, (uint32_t)f); WR32(rd + CR_FRAME + 4, (uint32_t)(f >> 32)); }
+				if (sz >= CR_TIMESTAMP + 8) { WR32(rd + CR_TIMESTAMP, (uint32_t)k->last_us); WR32(rd + CR_TIMESTAMP + 4, (uint32_t)(k->last_us >> 32)); }
+				RET(0); return;
+			}
+		} else { plat_sleep_ns(w * 1000); now = guest_time_us(); }
+	}
+	hle_camera_take(now, &k->next_us, &k->last_us, k->frame_us);
 	write_frame(k, base, size);
 	WR32(rd + CR_STATUS, 0);   /* SCE_CAMERA_STATUS_IS_ACTIVE */
 	if (sz >= CR_FRAME + 8) { uint64_t f = k->frame; WR32(rd + CR_FRAME, (uint32_t)f); WR32(rd + CR_FRAME + 4, (uint32_t)(f >> 32)); }
-	if (sz >= CR_TIMESTAMP + 8) { uint64_t t = guest_time_us(); WR32(rd + CR_TIMESTAMP, (uint32_t)t); WR32(rd + CR_TIMESTAMP + 4, (uint32_t)(t >> 32)); }
+	if (sz >= CR_TIMESTAMP + 8) { WR32(rd + CR_TIMESTAMP, (uint32_t)k->last_us); WR32(rd + CR_TIMESTAMP + 4, (uint32_t)(k->last_us >> 32)); }
 	k->frame++;
 	RET(0);
 }
 static void h_is_active(Cpu *c) { Cam *k = dev(c); if (!k) { RET(CAM_ERR_PARAM); return; } if (!k->open) { RET(CAM_ERR_NOT_OPEN); return; } if (!k->started) { RET(CAM_ERR_NOT_START); return; } RET(1); }
 static void h_setting(Cpu *c) { Cam *k = dev(c); if (!k) { RET(CAM_ERR_PARAM); return; } if (!k->open) { RET(CAM_ERR_NOT_OPEN); return; } RET(0); }   /* EV, white balance, auto control hold: the picture is ours */
+/* (devnum, SceFVector3 *): where the camera sits on the device. The firmware's values are not public; a zero vector
+ * (as Vita3K writes). Soul Sacrifice Delta opens the camera only when this answers 0 */
+static void h_location(Cpu *c) {
+	if (A0 >= 2 || !A1) { RET(CAM_ERR_PARAM); return; }
+	WR32(A1, 0); WR32(A1 + 4, 0); WR32(A1 + 8, 0);
+	RET(0);
+}
 
 const HleEntry hle_camera[] = {
 	{"sceCameraOpen", h_open}, {"sceCameraClose", h_close}, {"sceCameraStart", h_start}, {"sceCameraStop", h_stop},
-	{"sceCameraRead", h_read}, {"sceCameraIsActive", h_is_active},
-	{"sceCameraSetEV", h_setting}, {"sceCameraSetWhiteBalance", h_setting}, {"sceCameraSetAutoControlHold", h_setting},
+	{"sceCameraRead", h_read}, {"sceCameraIsActive", h_is_active}, {"sceCameraGetDeviceLocation", h_location},
+	{"sceCameraSetEV", h_setting}, {"sceCameraSetISO", h_setting}, {"sceCameraSetWhiteBalance", h_setting}, {"sceCameraSetAutoControlHold", h_setting},
 	{0, 0},
 };

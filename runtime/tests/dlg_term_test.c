@@ -19,12 +19,15 @@
 #define APPUTIL_UNDER_TEST "../core/apputil.c"
 #endif
 #include APPUTIL_UNDER_TEST
+#include "../core/imedlg.c"   /* (HLE-LIB-05: apputil.c's IME dialog shares its state) */
 
 /* ---- apputil.c expects these (same shim style as monitor_test.c / kernel_test.c) */
 uint8_t *recomp_mem;
 uint32_t recomp_watch_lo = 0, recomp_watch_hi = 0;
 void recomp_watch_write(uint32_t a, uint32_t v, int width) { (void)a; (void)v; (void)width; }
 uint32_t guest_alloc(uint32_t size, uint32_t align) { (void)align; static uint32_t heap = 0x81000000; uint32_t a = heap; heap += size; return a; }
+uint32_t guest_call(Cpu *parent, uint32_t fn, uint32_t a0, uint32_t a1) { (void)parent; (void)fn; (void)a0; (void)a1; return 0; }   /* (HLE-LIB-06: the in-game IME hands its events to the game) */
+int sched_block_begin(void) { return 0; } void sched_block_end(void) {}   /* (NIGHT-01: a save keeps its minimum duration with the run slot released) */
 void gwatch_read_open(uint32_t addr, uint32_t len) { (void)addr; (void)len; }
 int net_online(void) { return 0; }
 const char *net_online_needs(void) { return ""; }
@@ -34,7 +37,7 @@ void plat_random(void *buf, size_t n) { memset(buf, 0x5a, n); }
 const char *settings_str(const char *key, const char *def, char *buf, int bufsize) { (void)key; (void)buf; (void)bufsize; return def; }
 void settings_set_str(const char *key, const char *v) { (void)key; (void)v; }
 void settings_set_own(const char *key, const char *v) { (void)key; (void)v; }
-void settings_save(void) {}
+int settings_save(void) { return 1; }
 
 static int fails;
 static void check(const char *what, int ok) {

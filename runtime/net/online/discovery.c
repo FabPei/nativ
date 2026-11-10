@@ -46,7 +46,7 @@ uint64_t np_account_id(void);
 static void name_clash(const uint8_t their[16], uint64_t their_account);   /* (below) */
 void overlay_toast_titled(const char *title, const char *body, double seconds);
 void settings_set_own(const char *key, const char *v);
-void settings_save(void);
+int settings_save(void);
 const char *settings_str(const char *key, const char *def, char *buf, int bufsize);   /* (../settings.h) */
 
 #define GROUP "239.255.86.80"

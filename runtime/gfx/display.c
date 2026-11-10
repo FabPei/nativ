@@ -15,11 +15,14 @@
 #include <sched.h>   /* sched_yield: vb_sleep_until */
 #include <math.h>
 #include "hle.h"
+#include "hle_small.h"
+#include "hle_offline.h"
 #include "gfx.h"
 #include "metrics.h"
 #include "settings.h"
 #include "input_rec.h"
 #include "events.h"
+#include "frame_rates.h"   /* the frame-rate rules (runtime/ui/frame_rates.h): allowed rates, the 120 Hz grid */
 
 static uint64_t raw_us(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000 + t.tv_nsec / 1000; }
 /* the in-game overlay's pause (display_set_paused, called by overlay.cpp as the menu opens and
@@ -165,6 +168,15 @@ float display_frame_period_ms(void) { return frame_period_ms; }
 static void load_mark(void);   /* below, with the input replay */
 static void (*frame_hook)(uint64_t);   /* display_set_frame_hook: called once per presented frame (verify.c's F6 capture steps its phases on it) */
 void display_set_frame_hook(void (*f)(uint64_t)) { frame_hook = f; }
+static int unpaced(void), frame_rate(void); static void vb_grid_follow(int);   /* below, with the vblank grid */
+/* the clock the scripted input (RECOMP_INPUT, RECOMP_INPUT_STICKS, RECOMP_TOUCH) is keyed by: presented frames, or with
+ * RECOMP_SCRIPT_MS=1 milliseconds since the first presented frame -- a script that lands at the same instants whatever
+ * the frame rate (runs at 30, 60 and 120 compared with RECOMP_SHOT_MS) */
+static uint64_t script_clock(void) {
+	static int ms = -1; if (ms < 0) { const char *e = getenv("RECOMP_SCRIPT_MS"); ms = e && *e == '1'; }
+	if (!ms) return frames;
+	return t0 ? (now_us() - t0) / 1000 : 0;
+}
 static void h_set_frame_buf(Cpu *c) {
 	metrics_game_frame();   /* once per presented game frame: frame-time stats, last frame's renderer/GPU-draw counts, the ~1 Hz RECOMP_METRICS line (metrics.c) */
 	frames++;
@@ -172,6 +184,7 @@ static void h_set_frame_buf(Cpu *c) {
 	{ uint64_t e = vb_now(); __atomic_store_n(&frame_edges, e - vb_setbuf, __ATOMIC_RELAXED); vb_setbuf = e; }
 	{ uint64_t g = __atomic_load_n(&vblanks, __ATOMIC_RELAXED); __atomic_store_n(&frame_edges_g, g - vb_setbuf_g, __ATOMIC_RELAXED); vb_setbuf_g = g; }
 	load_mark();
+	if (!unpaced()) vb_grid_follow(frame_rate());   /* the grid at 120 Hz while the rate is 120 (frame_rates.h) */
 	if (frame_hook) frame_hook(frames);
 	{ extern void memscan_frame(uint64_t); memscan_frame(frames); }   /* RECOMP_MEMSCAN (memscan.c) */
 	if (hitch_dur > 0 && hitch_dur < 200000) { float ms = hitch_dur / 1e3f; frame_period_ms += (ms - frame_period_ms) * 0.05f; }   /* the flip interval (display_frame_period_ms) */
@@ -210,9 +223,35 @@ static void h_set_frame_buf(Cpu *c) {
 /* vblank: a fixed 60 Hz grid from the first wait, as the display hardware has; a wait sleeps to
  * the next tick after now (restarting the period from "now" would add a whole period to every
  * late frame) */
-static uint64_t vblank0;
-static const uint64_t vb_period = 16667;
-static uint64_t wall_edges(void) { uint64_t t = now_us(); if (!vblank0) vblank0 = t; return (t - vblank0) / vb_period; }   /* edges since the first wait */
+/* At the frame_rate 120 (frame_rates.h) the grid runs at 120 Hz: vb_period 8333 us. A switch re-anchors it at the edge
+ * it is at (vb_e0, its time vblank0), so edge numbers -- vb_setbuf, a thread's last target -- stay monotonic. */
+static uint64_t vblank0, vb_e0;   /* the time of edge vb_e0 (0: the grid not started) */
+static uint64_t vb_period = 16667;
+static int vb_grid_rate = 60;     /* the grid's edges a second */
+static pthread_mutex_t vb_grid_m = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t wall_edges(void) {   /* edges since the first wait */
+	pthread_mutex_lock(&vb_grid_m);
+	uint64_t t = now_us(); if (!vblank0) vblank0 = t;
+	uint64_t e = vb_e0 + (t - vblank0) / vb_period;
+	pthread_mutex_unlock(&vb_grid_m);
+	return e;
+}
+static uint64_t vb_edge_time(uint64_t e) {   /* when edge e is on the wall (now_us) */
+	pthread_mutex_lock(&vb_grid_m);
+	uint64_t at = vblank0 + (e > vb_e0 ? (e - vb_e0) * vb_period : 0);
+	pthread_mutex_unlock(&vb_grid_m);
+	return at;
+}
+static void vb_grid_follow(int rate) {   /* once a presented frame: the grid at the rate's period */
+	const uint64_t p = fr_grid_period_us(rate);
+	pthread_mutex_lock(&vb_grid_m);
+	if (p != vb_period) {
+		if (vblank0) { uint64_t t = now_us(), e = vb_e0 + (t - vblank0) / vb_period; vblank0 += (e - vb_e0) * vb_period; vb_e0 = e; }
+		vb_period = p; vb_grid_rate = fr_grid_hz(rate);
+		static int k; if (k++ < 8) fprintf(stderr, "    vblank grid: %d Hz from frame %llu (frame rate %d)\n", vb_grid_rate, (unsigned long long)frames, rate);
+	}
+	pthread_mutex_unlock(&vb_grid_m);
+}
 /* RECOMP_UNPACED=1 (with RECOMP_CLOCK=fixed): a throughput benchmark. The grid is the fixed clock's own vblank count instead of
  * the wall's: a wait that counts vblanks moves the clock and returns, one that counts none (a polling pad thread) waits for
  * another thread to move it, and nothing sleeps to an edge. The game sees the same clock as in a paced run (the fixed clock
@@ -226,7 +265,7 @@ static int unpaced(void) {
 	return from >= 0 && frames >= (uint64_t)from;
 }
 static uint64_t vb_now(void) { return unpaced() ? vclock_edges() : wall_edges(); }
-static uint64_t edge_us(uint64_t e) { return unpaced() ? 0 : vblank0 + e * vb_period; }   /* when edge e is, for a sleep to it (0: at once) */
+static uint64_t edge_us(uint64_t e) { return unpaced() ? 0 : vb_edge_time(e); }   /* when edge e is, for a sleep to it (0: at once) */
 /* vb_setbuf (above): the edge count when the frame buffer was last set: the flip lands at the next edge */
 static __thread uint64_t vb_last_target;    /* the edge this thread last waited for */
 /* sleep until edge `target` (at least the next one), counting it for the fixed guest clock */
@@ -265,11 +304,11 @@ static void vb_sleep_until(uint64_t at) {   /* at: now_us() time; the thread is 
 	}
 	if (b) sched_block_end();
 }
-static void vb_sleep_to_edge(uint64_t edge) { (void)vb_now(); vb_sleep_until(vblank0 + edge * vb_period); }   /* (vb_now starts the grid if nothing waited yet) */
+static void vb_sleep_to_edge(uint64_t edge) { (void)vb_now(); vb_sleep_until(vb_edge_time(edge)); }   /* (vb_now starts the grid if nothing waited yet) */
 static void vb_wait_until(uint64_t target, uint32_t count) {
 	reads_in_row = 0;
 	uint64_t now = vb_now(); if (target <= now) target = now + 1;
-	uint64_t t = now_us(), at = vblank0 + target * vb_period;
+	uint64_t t = now_us(), at = vb_edge_time(target);
 	if (getenv("RECOMP_VBLANK_TRACE")) { static int k; if (k++ < 60) fprintf(stderr, "    vblank wait: edge %llu (now %llu), sleeping %lld us (frame %llu)\n", (unsigned long long)target, (unsigned long long)now, (long long)(at > t ? at - t : 0), (unsigned long long)frames); }
 	if (at > t) vb_sleep_until(at);
 	if (unpaced() && !count) {   /* (a wait that moves no clock: until another thread's does, or a while) */
@@ -308,14 +347,18 @@ static void vb_wait_setbuf(uint64_t target, uint32_t count) {
 	vb_last_target = vb_now();
 	vblanks_add(count);
 }
-/* the "frame_rate" setting (settings.h; RECOMP_FRAME_RATE wins): 60 caps the swap interval a game asks
- * WaitSetFrameBufMulti for at one edge -- it presents every vblank it has a frame ready. Experimental:
- * a game's own fixed 1/30 s steps then run at its frame rate. Read every call (once a frame), so the
- * menu's choice applies at once. */
+/* the "frame_rate" setting (settings.h; RECOMP_FRAME_RATE wins): 60 and 120 cap the swap interval a game asks
+ * WaitSetFrameBufMulti for at one edge -- it presents every vblank it has a frame ready -- and 120 runs the vblank
+ * grid at 120 Hz (frame_rates.h). Only the rates the game's pack allows (RECOMP_FRAME_RATES in its RUN_ENV; absent:
+ * 30 and 60): the highest allowed one at or below the setting. Experimental: a game's own fixed 1/30 s steps then
+ * run at its frame rate. Read every call (once a frame), so the menu's choice applies at once. */
 static int forced_rate = -1;   /* display_force_frame_rate: a capture's switch (verify.c's F6), over everything else */
 void display_force_frame_rate(int fr) { forced_rate = fr; }
-static int frame_rate_60(void) {
-	if (forced_rate >= 0) return forced_rate >= 60;
+static int fr_allowed_now(void) { static int m = -1; if (m < 0) m = fr_allowed(getenv("RECOMP_FRAME_RATES")); return m; }
+int display_frame_rates_allowed(void) { return fr_allowed_now(); }   /* (overlay.cpp: the rows it offers) */
+static int frame_rate(void) {
+	if (forced_rate >= 0) return fr_effective(forced_rate, FR_30 | FR_60 | FR_120);
+	const int allowed = fr_allowed_now();
 	static int env = -2; static long from = -2;
 	if (env == -2) { const char *e = getenv("RECOMP_FRAME_RATE"); env = e && *e ? atoi(e) : -1; }
 	/* RECOMP_FRAME_RATE_AT="frame:rate,...": the rate from each presented frame on (the last entry at or before the frame
@@ -324,28 +367,29 @@ static int frame_rate_60(void) {
 	if (at) {
 		int r = 30;
 		for (const char *q = at; *q; ) { unsigned long f = strtoul(q, (char **)&q, 10); int v = 30; if (*q == ':') v = (int)strtol(q + 1, (char **)&q, 10); if (frames >= f) r = v; if (*q == ',') q++; else break; }
-		return r >= 60;
+		return fr_effective(r, allowed);
 	}
 	/* RECOMP_FRAME_RATE_FROM=n: 60 from presented frame n on (a recorded session plays its frame-keyed
 	 * input at 30 into a level, then the measurement runs at 60) */
 	if (from == -2) { const char *e = getenv("RECOMP_FRAME_RATE_FROM"); from = e && *e ? atol(e) : -1; }
-	if (from >= 0) return frames >= (uint64_t)from;
+	if (from >= 0) return frames >= (uint64_t)from ? fr_effective(60, allowed) : 30;
 	/* RECOMP_FRAME_RATE_UNTIL=n: 60 up to presented frame n, 30 from there (a recorded 60 fps session
 	 * replayed to a frame-rate bug, then the same moment at 30: Uncharted's companion stuck on a log) */
 	static long until = -2;
 	if (until == -2) { const char *e = getenv("RECOMP_FRAME_RATE_UNTIL"); until = e && *e ? atol(e) : -1; }
-	if (until >= 0) return frames < (uint64_t)until;
-	int r60 = (env >= 0 ? env : settings_int("frame_rate", 30)) >= 60;
+	if (until >= 0) return frames < (uint64_t)until ? fr_effective(60, allowed) : 30;
+	int r = fr_effective(env >= 0 ? env : settings_int("frame_rate", 30), allowed);
 	/* RECOMP_MOVIE_30=1 (a pack's): 30 fps while a movie plays (a picture decoded within the last 15 presented frames).
 	 * The movies are 30 fps themselves; what a game times to them in its own updates (Persona 4 Dancing's anime
 	 * cutscenes: their event-script subtitles, one script frame an update) keeps its time */
 	static int movie30 = -1; if (movie30 < 0) movie30 = getenv("RECOMP_MOVIE_30") != 0;
-	if (r60 && movie30) { extern uint64_t video_last_picture_frame; if (video_last_picture_frame && frames < video_last_picture_frame + 15) return 0; }
-	return r60;
+	if (r > 30 && movie30) { extern uint64_t video_last_picture_frame; if (video_last_picture_frame && frames < video_last_picture_frame + 15) return 30; }
+	return r;
 }
-int display_frame_rate_60(void) { return frame_rate_60(); }
-float display_frame_dt(void) { uint64_t e = __atomic_load_n(clock_fixed() ? &frame_edges_g : &frame_edges, __ATOMIC_RELAXED); return (float)(e < 1 ? 1 : e > 2 ? 2 : e) / 60.0f; }   /* 1/60..1/30 s (hooks.c: a game's fixed 1/30 steps at 60 fps) */
-static uint32_t swap_interval(uint32_t n) { if (!n) n = 1; if (n > 8) n = 8; return n > 1 && frame_rate_60() ? 1 : n; }
+int display_frame_rate(void) { return frame_rate(); }   /* 30 | 60 | 120 */
+int display_frame_rate_60(void) { return frame_rate() >= 60; }   /* above 30 (hooks.c: the frame-time hooks on) */
+float display_frame_dt(void) { uint64_t e = __atomic_load_n(clock_fixed() ? &frame_edges_g : &frame_edges, __ATOMIC_RELAXED); return fr_frame_dt(e, vb_grid_rate); }   /* 1/60..1/30 s, 1/120.. at 120 (hooks.c: a game's fixed 1/30 steps above 30 fps) */
+static uint32_t swap_interval(uint32_t n) { return fr_swap_interval(n, frame_rate()); }
 static void h_wait_setbuf(Cpu *c) { if (!swap_seen) swap_seen = 1; vb_wait_setbuf(vb_setbuf + 1, 1); RET(0); }
 static void h_wait_setbuf_multi(Cpu *c) { uint32_t n = swap_interval(A0); if (n > swap_seen) swap_seen = n; vb_wait_setbuf(vb_setbuf + n, n); RET(0); }
 
@@ -440,14 +484,24 @@ void audio_output(int dev, const void *buf, uint32_t bytes);
 static uint64_t port_next[8];
 static uint32_t port_vol[8][2];   /* sceAudioOutSetVolume: 0..0x8000 (SCE_AUDIO_VOLUME_0DB) per channel */
 static void h_audio_open(Cpu *c) {   /* (type, samples per buffer, frequency, mode) */
-	for (int i = 0; i < 8; i++) if (!port_len[i]) {
-		port_len[i] = A1; port_freq[i] = A2 ? A2 : 48000; port_ch[i] = A3 == 0 ? 1 : 2;   /* mode 0 mono, 1 stereo */
-		port_vol[i][0] = port_vol[i][1] = 0x8000;
-		port_dev[i] = audio_open(port_freq[i], port_ch[i], A1);
-		fprintf(stderr, "    audio port %d: %u samples at %u Hz, mode %u\n", i, A1, A2, A3);
-		RET(i + 1); return;
-	}
-	RET(0x80260005u);
+	const int i = hle_audio_port_free_slot(port_len);
+	if (i < 0) { RET(HLE_AUDIO_ERR_PORT_FULL); return; }
+	port_len[i] = A1; port_freq[i] = A2 ? A2 : 48000; port_ch[i] = A3 == 0 ? 1 : 2;   /* mode 0 mono, 1 stereo */
+	port_vol[i][0] = port_vol[i][1] = 0x8000; port_next[i] = 0;
+	port_dev[i] = audio_open(port_freq[i], port_ch[i], A1);
+	fprintf(stderr, "    audio port %d: %u samples at %u Hz, mode %u\n", i, A1, A2, A3);
+	RET(i + 1);
+}
+/* (HLE-PORT-01) sceAudioOutReleasePort(port): the slot is free again, its host stream closed. A placeholder before --
+ * a game that opens a port per scene or movie ran out after 8 opens (PORT_FULL) and went silent */
+void audio_close(int dev);
+static void h_audio_release(Cpu *c) {
+	const int i = hle_audio_port_slot(port_len, A0);
+	if (i < 0) { RET(HLE_AUDIO_ERR_INVALID_PORT); return; }
+	if (port_dev[i]) audio_close(port_dev[i]);
+	port_dev[i] = 0; port_len[i] = 0;
+	fprintf(stderr, "    audio port %d released\n", i);
+	RET(0);
 }
 /* RECOMP_AUDIO_WAV=<file>: port 1's output as a WAV file (the header's sizes are patched as it grows);
  * RECOMP_AUDIO_WAV_DIR=<dir>: every port's buffers, each to <dir>/port<i>_<rate>Hz_<ch>ch.wav in its
@@ -489,12 +543,12 @@ static void h_audio_set_volume(Cpu *c) {
  * goes on rather than deadlock, and says so. */
 static uint64_t port_vnext[8];
 static uint64_t guest_vblank_us(void) { return (1ull << 32) + vclock_edges() * 16667ull; }
-static void audio_wait_guest(uint32_t i, uint64_t len) {
+static void audio_wait_guest_at(uint64_t *vnext, uint32_t i, uint64_t len) {
 	vclock_idle();
 	uint64_t now = guest_vblank_us();
-	if (port_vnext[i] < now) port_vnext[i] = now;
-	uint64_t start = port_vnext[i];   /* this buffer starts playing when the previous one ends */
-	port_vnext[i] += len;
+	if (*vnext < now) *vnext = now;
+	uint64_t start = *vnext;   /* this buffer starts playing when the previous one ends */
+	*vnext += len;
 	if (start <= now) return;
 	int b = sched_block_begin();
 	pthread_mutex_lock(&vclock_m);
@@ -510,6 +564,7 @@ static void audio_wait_guest(uint32_t i, uint64_t len) {
 	pthread_mutex_unlock(&vclock_m);
 	if (b) sched_block_end();
 }
+static void audio_wait_guest(uint32_t i, uint64_t len) { audio_wait_guest_at(&port_vnext[i], i, len); }
 static void h_audio_output(Cpu *c) {   /* (port, buffer) */
 	uint32_t i = A0 - 1;
 	if (i >= 8 || !port_len[i]) { RET(0x80260003u); return; }
@@ -532,16 +587,54 @@ static void h_audio_output(Cpu *c) {   /* (port, buffer) */
 			}
 		}
 		if (clock_fixed()) audio_wait_guest(i, (uint64_t)port_len[i] * 1000000 / port_freq[i]);
-		RET(0); return;
+		RET(hle_audio_output_result(port_len[i], A1)); return;
 	}
 	uint64_t len = (uint64_t)port_len[i] * 1000000 / port_freq[i];
-	if (clock_fixed()) { audio_wait_guest(i, len); RET(0); return; }
+	if (clock_fixed()) { audio_wait_guest(i, len); RET(hle_audio_output_result(port_len[i], A1)); return; }
 	uint64_t t = now_us();
 	if (!port_next[i] || port_next[i] + len < t) port_next[i] = t;
 	if (port_next[i] > t) { int b = sched_block_begin(); usleep((useconds_t)(port_next[i] - t)); if (b) sched_block_end(); }
 	port_next[i] += len;
+	RET(hle_audio_output_result(port_len[i], A1));
+}
+
+/* ---- audio input (AUTO-01 LBP-7): a microphone that hears silence. Input hands one grain of zero samples and returns
+ * when the console's would have captured it: paced on the wall clock, or on guest time under RECOMP_CLOCK=fixed (as an
+ * output port). The stubs before returned 0 at once, and LittleBigPlanet's 'Mic Thread' (prio 148) called
+ * GetStatus/OpenPort/Input 10000s of times in seconds beside the job workers, and its runs ended differently each time */
+static uint32_t in_grain[2], in_freq[2];   /* by port type: 0 VOICE, 1 RAW (type 2) */
+static uint64_t in_next[2], in_vnext[2];
+static void h_audio_in_open(Cpu *c) {   /* (type, grain, freq, param) */
+	const uint32_t e = hle_audio_in_open_check(A0, A1, A2);
+	if (e) { RET(e); return; }
+	const int t = A0 == 2;
+	if (in_grain[t]) { RET(HLE_AUDIO_IN_ERR_PORT_FULL); return; }
+	in_grain[t] = A1; in_freq[t] = A2; in_next[t] = 0; in_vnext[t] = 0;
+	fprintf(stderr, "    audio in port %d: %u samples at %u Hz (silent microphone)\n", t + 1, A1, A2);
+	RET(t + 1);
+}
+static void h_audio_in_release(Cpu *c) {
+	const uint32_t t = A0 - 1;
+	if (t >= 2) { RET(HLE_AUDIO_IN_ERR_INVALID_PORT); return; }
+	if (!in_grain[t]) { RET(HLE_AUDIO_IN_ERR_NOT_OPENED); return; }
+	in_grain[t] = 0; RET(0);
+}
+static void h_audio_in_input(Cpu *c) {   /* (port, dest) */
+	const uint32_t t = A0 - 1;
+	if (t >= 2) { RET(HLE_AUDIO_IN_ERR_INVALID_PORT); return; }
+	if (!in_grain[t]) { RET(HLE_AUDIO_IN_ERR_NOT_OPENED); return; }
+	if (!A1) { RET(HLE_AUDIO_IN_ERR_INVALID_POINTER); return; }
+	memset(G(A1), 0, (size_t)in_grain[t] * 2);
+	const uint64_t len = hle_audio_in_grain_us(in_grain[t], in_freq[t]);
+	if (clock_fixed()) { audio_wait_guest_at(&in_vnext[t], 8 + t, len); RET(0); return; }
+	uint64_t now = now_us();
+	if (!in_next[t] || in_next[t] + len < now) in_next[t] = now;
+	in_next[t] += len;   /* this grain is captured once its time has passed */
+	if (in_next[t] > now) { int b = sched_block_begin(); usleep((useconds_t)(in_next[t] - now)); if (b) sched_block_end(); }
 	RET(0);
 }
+static void h_audio_in_status(Cpu *c) { RET(0); }   /* (select): SCE_AUDIO_IN_GETSTATUS_MUTE 1 -- not muted */
+static void h_audio_in_adopt(Cpu *c) { RET(A0 == 0 || A0 == 2 ? 1 : 0); }
 
 /* ---- input: nothing pressed yet */
 /* ---- input recording and replay. RECOMP_INPUT_RECORD=path records the pad state DELIVERED to
@@ -560,7 +653,7 @@ static void h_audio_output(Cpu *c) {   /* (port, buffer) */
  * ends), validates the trace (version, row ordering, field ranges -- a corrupt or newer trace
  * refuses to play loudly) and refuses to run together with RECOMP_INPUT_RECORD. A replay is
  * input-identical, not run-deterministic: the named ULT worker race can still take it elsewhere
- *.
+ * (N02g-2..4).
  * Why: Unit 13's enemy that turns but never walks is a room into the first mission -- a path no
  * scripted tap sequence reaches -- so we play there once with recording on and the
  * headless replay (deterministic under RECOMP_CLOCK=fixed) puts the probes on it. */
@@ -582,7 +675,7 @@ static void input_rec_shutdown(void) {   /* graceful exit: bound the last hold, 
 	input_rec_close_row(&rec_w);
 	fclose(rec_file); rec_file = NULL;
 }
-static void input_rec_checkpoint(void) {   /* the replay's stable identity at exit */
+static void input_rec_checkpoint(void) {   /* N02g-7: the replay's stable identity at exit */
 	if (!play_loaded) return;
 	play_fp.reached = frames;
 	play_fp.state = INPUT_REC_FP_REACHED;
@@ -591,7 +684,7 @@ static void input_rec_checkpoint(void) {   /* the replay's stable identity at ex
 static void input_rec_init(void) {
 	if (rec_init) return; rec_init = 1;
 	const char *r = getenv("RECOMP_INPUT_RECORD"), *pl = getenv("RECOMP_INPUT_REPLAY");
-	if (!pl) pl = getenv("RECOMP_INPUT_PLAY");   /* the earlier name, kept as an alias */
+	if (!pl) pl = getenv("RECOMP_INPUT_PLAY");   /* the pre-N02g name, kept as an alias */
 	char ferr[160];
 	if (input_rec_flags_ok(r && *r, pl && *pl, ferr, sizeof ferr) < 0) { fprintf(stderr, "%s\n", ferr); exit(1); }
 	if (r) {
@@ -763,11 +856,11 @@ static int play_motion(float a[3], float g[3], float q[4]) {   /* the latest rec
 static void ctrl_peek(Cpu *c, int pad2) {   /* (port, SceCtrlData *, count): timestamp, buttons, sticks centred */
 	input_rec_init();
 	for (uint32_t i = 0; i < A2; i++) {
-		uint32_t p = A1 + 64 * i;
+		uint32_t p = hle_ctrl_data_addr(A1, i);
 		/* the fields written here are all in the first 16 bytes: clear 32, never 64 -- Persona 4: Dancing All Night reads
 		 * into a 32-byte SceCtrlData on its stack, and the 64-byte clear zeroed the saved registers above it (its pad loop's
 		 * counter: the loop then walked a pointer through 140 KiB of its data, writing its key-repeat timer over CRI's) */
-		memset(G(p), 0, 32);
+		memset(G(p), 0, HLE_CTRL_DATA_SIZE);
 		WR64(p, guest_time_us());
 		extern void window_input(uint32_t *b, uint8_t s[4]); extern void window_input_pad2(uint32_t *b, uint8_t s[4]);
 		uint32_t b; uint8_t st[4];
@@ -784,7 +877,7 @@ static void ctrl_peek(Cpu *c, int pad2) {   /* (port, SceCtrlData *, count): tim
 			unsigned long a = strtoul(q, (char **)&q, 10), z = a, m = 0;
 			if (*q == '-') z = strtoul(q + 1, (char **)&q, 10);
 			if (*q == ':') m = strtoul(q + 1, (char **)&q, 16);
-			if (frames >= a && frames <= z) {
+			if (script_clock() >= a && script_clock() <= z) {
 				WR32(p + 8, RD32(p + 8) | (uint32_t)m);
 				/* RECOMP_LOG_CTRL=1: the scripted presses as the game reads them (port, buffers asked,
 				 * the mask) -- Uncharted's menu ignored a scripted cross and this showed why */
@@ -804,7 +897,7 @@ static void ctrl_peek(Cpu *c, int pad2) {   /* (port, SceCtrlData *, count): tim
 			long v[4] = {128, 128, 128, 128};
 			if (*q == '-') z = strtoul(q + 1, (char **)&q, 10);
 			if (*q == ':') { q++; for (int k = 0; k < 4; k++) { v[k] = strtol(q, (char **)&q, 10); if (*q == ',') q++; else break; } }
-			if (frames >= a && frames <= z) for (int k = 0; k < 4; k++) WR8(p + 12 + k, (uint8_t)v[k]);
+			if (script_clock() >= a && script_clock() <= z) for (int k = 0; k < 4; k++) WR8(p + 12 + k, (uint8_t)v[k]);
 			if (*q == ';') q++; else break;
 		}
 		if (i == 0) {
@@ -818,7 +911,7 @@ static void ctrl_peek(Cpu *c, int pad2) {   /* (port, SceCtrlData *, count): tim
 					input_rec_shutdown();
 				}
 			}
-			/* the event stream: one event per delivered-state CHANGE, never per held frame */
+			/* the event stream (N02g-3): one event per delivered-state CHANGE, never per held frame */
 			if (!ev_have || ev_b != db || memcmp(ev_st, dst, 4)) {
 				ev_b = db; memcpy(ev_st, dst, 4); ev_have = 1;
 				ev_log("input", "delivered %#x %u %u %u %u%s", db, dst[0], dst[1], dst[2], dst[3], played ? " (replayed)" : "");
@@ -868,6 +961,9 @@ static void h_audio_adopt(Cpu *c) { RET(1); }
 static int pstv_looked, pstv_on;
 int display_pstv_looked(void) { return __atomic_load_n(&pstv_looked, __ATOMIC_RELAXED); }
 int display_pstv_active(void) { return __atomic_load_n(&pstv_on, __ATOMIC_RELAXED); }   /* (window.c: the shoulder pair that isn't L and R is the pad's L2/R2, not the touch cursor) */
+/* (HLE-PORT-01) sceKernelGetModel: a handheld, or a PS TV while that layout is on (the same switch the "2" pad reads
+ * follow). SCE_KERNEL_MODEL_VITA 0x10000 / VITATV 0x20000 (vitasdk); the placeholder answered 0, no model at all */
+static void h_kernel_model(Cpu *c) { RET(hle_kernel_model(__atomic_load_n(&pstv_on, __ATOMIC_RELAXED))); }
 static int pstv_mode(void) {   /* the game's look at boot, answered once */
 	static int v = -1;
 	if (v < 0) {
@@ -887,8 +983,8 @@ static int pstv_port_ok(uint32_t port) { if (!port) return 1; __atomic_store_n(&
 static void h_ctrl_read2(Cpu *c) { if (!pstv_port_ok(A0)) { RET(SCE_CTRL_ERROR_INVALID_ARG); return; } read_wait(&ctrl_read_edge[A0 & 3]); ctrl_peek(c, A0 != 0); }
 static void h_ctrl_peek2(Cpu *c) { if (!pstv_port_ok(A0)) { RET(SCE_CTRL_ERROR_INVALID_ARG); return; } ctrl_peek(c, A0 != 0); }
 /* SceTouchData (0x90 bytes, VitaSDK psp2/touch.h): u64 timestamp, u32 status, u32 report count, 8
- * reports {u8 id, u8 force, s16 x, s16 y, u8 reserved[8], u16 info}. RECOMP_TOUCH="from-to:x,y;..."
- * (frame ranges, front panel coordinates 1920x1088) touches the front panel in scripted runs.
+ * reports {u8 id, u8 force, s16 x, s16 y, u8 reserved[8], u16 info}. RECOMP_TOUCH="from-to:x,y[@b];..."
+ * (frame ranges, front panel coordinates 1920x1088; @b: the back panel, 0..1919 x 108..889) touches the panels in scripted runs.
  * Each new contact gets a new report id (counting up modulo 128, the id space SceSystemGesture
  * tracks), as the panels give each touch its own; not a fixed one: gesture.c follows a touch by its id and,
  * like the firmware, won't restart a DRAG for an id whose drag already ended -- with every touch
@@ -906,14 +1002,7 @@ static void h_touch_peek(Cpu *c) {   /* (port, SceTouchData *, count) */
 	int keys[TOUCH_SLOTS], xs[TOUCH_SLOTS], ys[TOUCH_SLOTS], n = 0; uint8_t ids[TOUCH_SLOTS];
 	extern int window_touch_contacts(int port, int *keys, int *xs, int *ys, int max);
 	n = window_touch_contacts((int)port, keys, xs, ys, TOUCH_SLOTS);
-	for (const char *q = script; port == 0 && !n && q && *q; ) {
-		unsigned long a = strtoul(q, (char **)&q, 10), z = a, x = 0, y = 0;
-		if (*q == '-') z = strtoul(q + 1, (char **)&q, 10);
-		if (*q == ':') x = strtoul(q + 1, (char **)&q, 10);
-		if (*q == ',') y = strtoul(q + 1, (char **)&q, 10);
-		if (frames >= a && frames <= z) { keys[0] = 0; xs[0] = (int)x; ys[0] = (int)y; n = 1; break; }
-		if (*q == ';') q++; else break;
-	}
+	if (!n && hle_touch_script(script, port, script_clock(), &xs[0], &ys[0])) { keys[0] = 0; n = 1; }   /* front, or @b entries on the back (hle_small.h); on the script clock (frames, or ms with RECOMP_SCRIPT_MS) */
 	input_rec_init();
 	int played = 0;
 	if (play_loaded) {   /* the recording's contacts, slot by slot, with its ids */
@@ -976,15 +1065,36 @@ static void h_touch_panel_info(Cpu *c) {   /* front panel 0..1919 x 0..1087; bac
 /* sceDisplayGetRefreshRate(float *): the panel's nominal rate, 59.94 Hz, as the SDK reports it (a
  * theoretical value; the host's vblank grid above runs at 60) */
 static void h_refresh_rate(Cpu *c) { if (!A0) { RET(0x80290002u); return; } float hz = 59.94f; memcpy(G(A0), &hz, 4); RET(0); }   /* no pointer: SCE_DISPLAY_ERROR_INVALID_ADDR */
+/* sceDisplayGetVcount(): the vblank count since the display started, 60 a second on the host's monotonic
+ * clock (the panel grid above). Unimplemented before (the generic stub returned 0 forever): a game that
+ * polls the count for change hung at its first frame (the fixed-clock probe). The count is anchored at the
+ * first read, so it starts at 0 and only ever moves forward. */
+static uint64_t vcount0_us;
+static void h_vcount(Cpu *c) {
+	uint64_t s = __atomic_load_n(&vcount0_us, __ATOMIC_RELAXED);
+	if (!s) {
+		uint64_t now = raw_us() | 1;   /* never the "unset" 0 */
+		uint64_t prev = __atomic_exchange_n(&vcount0_us, now, __ATOMIC_RELAXED);
+		s = prev ? prev : now;
+	}
+	uint64_t now = raw_us();
+	RET((uint32_t)(((now > s ? now - s : 0) * 60) / 1000000));
+}
 /* sceCtrlSetSamplingMode(mode): 0 digital, 1 analog, 2 analog wide; returns the PREVIOUS mode (the
  * console starts digital). The sticks are reported either way -- a game that left the pad digital
  * doesn't read them */
 static uint32_t ctrl_mode;
 static void h_ctrl_mode(Cpu *c) { if (A0 > 2) { RET(0x80340001u); return; } RET(__atomic_exchange_n(&ctrl_mode, A0, __ATOMIC_RELAXED)); }   /* SCE_CTRL_ERROR_INVALID_ARG */
 /* sceTouchSetSamplingState(port, state): the host samples the panels whenever asked */
+static uint32_t touch_state[2];   /* (HLE-LIB-03) what the game set, read back by GetSamplingState (STOP at boot) */
 static void h_touch_sampling(Cpu *c) {   /* (port, state): logged (rare; a game booted as a PS TV never starts it: Killzone 1.12) */
 	fprintf(stderr, "    touch: panel %u sampling %s (frame %llu, from %#x)\n", A0, A1 ? "on" : "off", (unsigned long long)frames, c->r[14]);
-	RET(A0 > 1 ? 0x80350001u : 0);   /* SCE_TOUCH_ERROR_INVALID_ARG */
+	if (A0 > 1) { RET(0x80350001u); return; }   /* SCE_TOUCH_ERROR_INVALID_ARG */
+	__atomic_store_n(&touch_state[A0], A1, __ATOMIC_RELAXED); RET(0);
+}
+static void h_touch_get_sampling(Cpu *c) {   /* (port, SceTouchSamplingState *) */
+	if (A0 > 1 || !A1) { RET(0x80350001u); return; }
+	WR32(A1, __atomic_load_n(&touch_state[A0], __ATOMIC_RELAXED)); RET(0);
 }
 
 /* ---- SceMotion. With a gamepad's gyro live (motion.c: a DS4/DualSense's gyroscope and accelerometer,
@@ -1012,6 +1122,14 @@ static int motion_now(float a[3], float g[3], float q[4]) {
 		if (logm) { static unsigned n; if (n++ % 60 == 0) fprintf(stderr, "    motion: frame %llu (replay) acc %.3f %.3f %.3f gyro %.3f %.3f %.3f quat %.3f %.3f %.3f %.3f\n", (unsigned long long)frames, a[0], a[1], a[2], g[0], g[1], g[2], q[0], q[1], q[2], q[3]); }
 		return 1;
 	}
+	{	/* RECOMP_MOTION (hle_small.h): the scripted accelerometer of a headless run, gyro still, level */
+		static const char *ms = (const char *)1; if (ms == (const char *)1) ms = getenv("RECOMP_MOTION");
+		if (ms && hle_motion_script(ms, frames, a)) {
+			g[0] = g[1] = g[2] = 0; q[0] = 1; q[1] = q[2] = q[3] = 0;
+			if (logm) { static unsigned n; if (n++ % 60 == 0) fprintf(stderr, "    motion: frame %llu (script) acc %.3f %.3f %.3f\n", (unsigned long long)frames, a[0], a[1], a[2]); }
+			return 1;
+		}
+	}
 	if (!motion_live(a, g, q)) return 0;
 	if (logm) { static unsigned n; if (n++ % 60 == 0) fprintf(stderr, "    motion: frame %llu (live) acc %.3f %.3f %.3f gyro %.3f %.3f %.3f quat %.3f %.3f %.3f %.3f\n", (unsigned long long)frames, a[0], a[1], a[2], g[0], g[1], g[2], q[0], q[1], q[2], q[3]); }
 	if (rec_file) fprintf(rec_file, "M %llu %g %g %g %g %g %g %g %g %g %g\n", (unsigned long long)frames, a[0], a[1], a[2], g[0], g[1], g[2], q[0], q[1], q[2], q[3]);
@@ -1033,6 +1151,22 @@ static void basic_update(const float a[3]) {
  * vectors' length jump 1 -> 0 -> 1, twice in a row: its "shake" gesture, which can dismiss a touch prompt
  * (the machete minigame's, 2026-10-12) */
 static void ms_put_f(uint8_t *b, uint32_t off, float v) { memcpy(b + off, &v, 4); }
+/* (HLE-LIB-06) sceMotionRotateYaw(radians): the game turns the reported heading about the vertical axis -- the
+ * accumulated turn (hle_offline.h) multiplies every orientation on the left, so the matrices turn with it; sceMotionReset
+ * clears it. Identity until a game calls it, so nothing changes for the others */
+static pthread_mutex_t mot_yaw_lock = PTHREAD_MUTEX_INITIALIZER;
+static float mot_yaw[4] = {0, 0, 0, 1};
+static void motion_game_yaw(float q[4]) {
+	pthread_mutex_lock(&mot_yaw_lock); float y[4]; memcpy(y, mot_yaw, sizeof y); pthread_mutex_unlock(&mot_yaw_lock);
+	if (y[3] == 1.0f) return;
+	float o[4]; hle_quat_mul(y, q, o); memcpy(q, o, sizeof o);
+}
+static void h_motion_rotate_yaw(Cpu *c) {
+	float r; uint32_t bits = A0; memcpy(&r, &bits, 4);   /* (float radians: softfp, in r0) */
+	pthread_mutex_lock(&mot_yaw_lock); if (isfinite(r)) hle_motion_rotate_yaw(mot_yaw, r); pthread_mutex_unlock(&mot_yaw_lock);
+	if (motion_log()) fprintf(stderr, "    motion: rotate yaw %.4f rad at frame %llu\n", r, (unsigned long long)frames);
+	RET(0);
+}
 static void h_motion_state(Cpu *c) {
 	if (!motion_on) { RET(0x80360206u); return; }   /* SCE_MOTION_ERROR_NOT_SAMPLING */
 	if (!A0) { RET(0x80360200u); return; }   /* SCE_MOTION_ERROR_DATA_INVALID */
@@ -1042,10 +1176,12 @@ static void h_motion_state(Cpu *c) {
 	float a[3], g[3], q[4];
 	if (!motion_now(a, g, q)) {
 		ms_put_f(b, 12, -1.0f);   /* acceleration z */
-		ms_put_f(b, 52, 1.0f);    /* quaternion w */
-		for (int i = 0; i < 4; i++) { ms_put_f(b, 56 + 20 * i, 1.0f); ms_put_f(b, 120 + 20 * i, 1.0f); }
+		float qi[4] = {0, 0, 0, 1}, m[16]; motion_game_yaw(qi); motion_matrix(qi, m);   /* identity unless the game turned the heading */
+		for (int i = 0; i < 4; i++) ms_put_f(b, 40 + 4 * i, qi[i]);
+		for (int i = 0; i < 16; i++) { ms_put_f(b, 56 + 4 * i, m[i]); ms_put_f(b, 120 + 4 * i, m[i]); }
 		ms_put_f(b, 196, 1.0f);   /* basic orientation z */
 	} else {
+		motion_game_yaw(q);
 		float m[16]; motion_matrix(q, m); basic_update(a);
 		for (int i = 0; i < 3; i++) { ms_put_f(b, 4 + 4 * i, a[i]); ms_put_f(b, 16 + 4 * i, g[i]); ms_put_f(b, 188 + 4 * i, basic_or[i]); }
 		for (int i = 0; i < 4; i++) ms_put_f(b, 40 + 4 * i, q[i]);
@@ -1053,6 +1189,23 @@ static void h_motion_state(Cpu *c) {
 	}
 	memcpy(G(p), b, sizeof b);
 	RET(0);
+}
+/* sceMotionGetSensorState(SceMotionSensorState *, numRecords): the raw sensors, numRecords records (the newest
+ * readings), from the same source as GetState: the live pad or a replay, else a device lying still face up -- gravity
+ * along -z, no rotation. The count filled is returned */
+static void h_motion_sensor(Cpu *c) {
+	if (!motion_on) { RET(0x80360206u); return; }   /* SCE_MOTION_ERROR_NOT_SAMPLING */
+	if (!A0 || (int32_t)A1 <= 0) { RET(0x80360200u); return; }   /* SCE_MOTION_ERROR_DATA_INVALID */
+	float a[3] = {0, 0, -1.0f}, g[3] = {0, 0, 0}, q[4];
+	if (!motion_now(a, g, q)) { a[0] = a[1] = 0; a[2] = -1.0f; g[0] = g[1] = g[2] = 0; }
+	static uint32_t counter; uint64_t t = guest_time_us();
+	uint32_t n = A1 > 64 ? 64 : A1;
+	for (uint32_t i = 0; i < n; i++) {
+		uint8_t r[HLE_MOTION_SENSOR_SIZE];
+		hle_motion_sensor_record(r, a, g, (uint32_t)t, counter++, t);
+		memcpy(G(A0 + HLE_MOTION_SENSOR_SIZE * i), r, sizeof r);
+	}
+	RET(n);
 }
 static void h_motion_basic(Cpu *c) {   /* (SceFVector3 *) */
 	if (!motion_on) { RET(0x80360206u); return; }
@@ -1063,10 +1216,22 @@ static void h_motion_basic(Cpu *c) {   /* (SceFVector3 *) */
 	RET(0);
 }
 /* sceMotionReset: the console restarts its orientation estimate; here, the heading recentres */
-static void h_motion_reset(Cpu *c) { if (motion_log()) fprintf(stderr, "    motion: reset at frame %llu (lr %#x)\n", (unsigned long long)frames, c->r[14]); motion_recenter(); RET(0); }
+static void h_motion_reset(Cpu *c) {
+	if (motion_log()) fprintf(stderr, "    motion: reset at frame %llu (lr %#x)\n", (unsigned long long)frames, c->r[14]);
+	motion_recenter();
+	pthread_mutex_lock(&mot_yaw_lock); mot_yaw[0] = mot_yaw[1] = mot_yaw[2] = 0; mot_yaw[3] = 1; pthread_mutex_unlock(&mot_yaw_lock);   /* (HLE-LIB-06) */
+	RET(0);
+}
 
 /* set-up calls with nothing to set up (motion tuning). SceSystemGesture is gesture.c */
 static void h_input_ok(Cpu *c) { RET(0); }
+/* (HLE-LIB-03) sceMotionSet/GetDeadband, sceMotionSet/GetTiltCorrection: the game's switch is kept and read back (both on
+ * at boot, as on the console); the host's gyro fusion (motion.c) doesn't apply them */
+static int mot_deadband = 1, mot_tilt = 1;
+static void h_motion_set_deadband(Cpu *c) { __atomic_store_n(&mot_deadband, A0 ? 1 : 0, __ATOMIC_RELAXED); RET(0); }
+static void h_motion_get_deadband(Cpu *c) { RET(__atomic_load_n(&mot_deadband, __ATOMIC_RELAXED)); }
+static void h_motion_set_tilt(Cpu *c) { __atomic_store_n(&mot_tilt, A0 ? 1 : 0, __ATOMIC_RELAXED); RET(0); }
+static void h_motion_get_tilt(Cpu *c) { RET(__atomic_load_n(&mot_tilt, __ATOMIC_RELAXED)); }
 
 const HleEntry hle_display[] = {
 	{"sceDisplaySetFrameBuf", h_set_frame_buf}, {"sceDisplayWaitVblankStart", h_wait_vblank},
@@ -1076,6 +1241,9 @@ const HleEntry hle_display[] = {
 	{"sceDisplayWaitSetFrameBufCB", h_wait_setbuf_cb}, {"sceDisplayWaitSetFrameBufMultiCB", h_wait_setbuf_multi_cb},
 	{"sceDisplayRegisterVblankStartCallback", h_register_vblank_cb}, {"sceDisplayUnregisterVblankStartCallback", h_unregister_vblank_cb},
 	{"sceAudioOutOpenPort", h_audio_open}, {"sceAudioOutOutput", h_audio_output}, {"sceAudioOutSetVolume", h_audio_set_volume},
+	{"sceAudioOutReleasePort", h_audio_release},
+	{"sceAudioInOpenPort", h_audio_in_open}, {"sceAudioInReleasePort", h_audio_in_release}, {"sceAudioInInput", h_audio_in_input},
+	{"sceAudioInGetStatus", h_audio_in_status}, {"sceAudioInGetAdopt", h_audio_in_adopt}, {"sceKernelGetModel", h_kernel_model},   /* (HLE-PORT-01) */
 	{"sceCtrlPeekBufferPositive", h_ctrl_peek}, {"sceTouchPeek", h_touch_peek},
 	{"sceCtrlReadBufferPositive", h_ctrl_read}, {"sceTouchRead", h_touch_read}, {"sceTouchGetPanelInfo", h_touch_panel_info},
 	/* the "2" reads (Killzone 1.12): the same SceCtrlData, on a handheld only from port 0 -- the PS TV's paired pads are ports 1-4,
@@ -1083,9 +1251,12 @@ const HleEntry hle_display[] = {
 	 * PS TV, which has no touch screen, and it never created its touch recognizers (no menu answered a tap) */
 	{"sceCtrlReadBufferPositive2", h_ctrl_read2}, {"sceCtrlPeekBufferPositive2", h_ctrl_peek2},
 	{"sceAudioOutGetAdopt", h_audio_adopt},   /* (port type): 1, the type can be opened -- only voice chat or the system's music takes one */
-	{"sceDisplayGetRefreshRate", h_refresh_rate},
-	{"sceCtrlSetSamplingMode", h_ctrl_mode}, {"sceCtrlSetSamplingModeExt", h_ctrl_mode}, {"sceTouchSetSamplingState", h_touch_sampling},
+	{"sceDisplayGetRefreshRate", h_refresh_rate}, {"sceDisplayGetVcount", h_vcount},
+	{"sceCtrlSetSamplingMode", h_ctrl_mode}, {"sceCtrlSetSamplingModeExt", h_ctrl_mode}, {"sceTouchSetSamplingState", h_touch_sampling}, {"sceTouchGetSamplingState", h_touch_get_sampling},
 	{"sceMotionStartSampling", h_motion_start}, {"sceMotionStopSampling", h_motion_stop}, {"sceMotionGetState", h_motion_state},
-	{"sceMotionGetBasicOrientation", h_motion_basic}, {"sceMotionReset", h_motion_reset}, {"sceMotionSetDeadband", h_input_ok}, {"sceMotionSetTiltCorrection", h_input_ok},
+	{"sceMotionGetSensorState", h_motion_sensor},
+	{"sceMotionGetBasicOrientation", h_motion_basic}, {"sceMotionReset", h_motion_reset}, {"sceMotionSetDeadband", h_motion_set_deadband}, {"sceMotionSetTiltCorrection", h_motion_set_tilt},
+	{"sceMotionGetDeadband", h_motion_get_deadband}, {"sceMotionGetTiltCorrection", h_motion_get_tilt},   /* (HLE-LIB-03) */
+	{"sceMotionRotateYaw", h_motion_rotate_yaw},   /* (HLE-LIB-06) */
 	{0, 0},
 };

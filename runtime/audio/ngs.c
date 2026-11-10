@@ -19,6 +19,7 @@
 #include <string.h>
 #include <time.h>
 #include "hle.h"
+#include "hle_small.h"
 #ifndef _WIN32
 #include <dlfcn.h>
 #include <execinfo.h>
@@ -49,11 +50,12 @@ enum { DEF_MASTER = 1, DEF_SIMPLE, DEF_REVERB, DEF_OTHER, DEF_SCREAM, DEF_SCREAM
 #define P_SCALAR 60
 #define P_CHANNELS 76
 #define P_TYPE 79
-#define P_START 80
+#define P_START HLE_NGS_PLAYER_START_BUFFER   /* (PTW-NGS: +81, not +80; hle_small.h) */
 #define PARAMS_SIZE 512
 typedef struct Voice {
 	uint32_t handle, def;
 	int playing, paused;
+	int started;   /* the game's Play on a voice the runtime runs from its creation (master, reverb, bus): hle_ngs_voice_play_state */
 	uint32_t params[MAX_MODULES];          /* guest memory: each module's parameter block */
 	int bypass[MAX_MODULES];
 	/* player state */
@@ -85,7 +87,7 @@ typedef struct Voice {
 	float bq[5][2][2];
 	uint64_t at9_waited, at9_decoded;   /* RECOMP_NGS_AT9_LOG: output samples spent waiting for data, source samples decoded */
 } Voice;
-typedef struct { uint32_t src, dst, input; float vol[2][2]; int active; } Patch;
+typedef struct { uint32_t src, dst, input; float vol[2][2]; int active; int32_t out, sub; } Patch;   /* (out, sub: the source output and its slot -- HLE-PORT-01) */
 #define ENV_ID 0x5ce3   /* the envelope module's parameter block id (voice_stages, below) */
 static int stages_off(void); static int stage_module(const Voice *v, uint32_t id);
 
@@ -365,6 +367,11 @@ static void h_patch_create(Cpu *c) {
 	pthread_mutex_lock(&lock);
 	Patch *p = &patches[npatches < 1024 ? npatches++ : 1023];
 	p->src = RD32(A0); p->dst = RD32(A0 + 12); p->input = RD32(A0 + 16);
+	{	/* (HLE-PORT-01) SceNgsPatchSetupInfo's source output (+4) and slot (+8; -1: the first free one) */
+		HleNgsPatchSrc ps[1024]; int n = (int)(p - patches);
+		for (int k = 0; k < n; k++) ps[k] = (HleNgsPatchSrc){patches[k].src, patches[k].out, patches[k].sub, patches[k].active};
+		p->out = (int32_t)RD32(A0 + 4); p->sub = hle_ngs_patch_sub(ps, n, p->src, p->out, (int32_t)RD32(A0 + 8));
+	}
 	p->vol[0][0] = p->vol[1][1] = 1; p->vol[0][1] = p->vol[1][0] = 0; p->active = 1;
 	pthread_mutex_unlock(&lock);
 	dump_setup();
@@ -373,6 +380,17 @@ static void h_patch_create(Cpu *c) {
 }
 static Patch *patch_of(uint32_t h) { uint32_t i = h - 0x60000000u; return i < (uint32_t)npatches ? &patches[i] : 0; }
 static void h_patch_remove(Cpu *c) { Patch *p = patch_of(A0); if (p) p->active = 0; RET(0); }
+/* (HLE-PORT-01) sceNgsVoiceGetOutputPatch(voice, output, slot, SceNgsHPatch *out): the active patch from that output slot,
+ * else SCE_NGS_ERROR_PATCH_NOT_AVAIL with a null handle (vitasdk ngs.h; the placeholder answered 0 and wrote nothing) */
+static void h_voice_output_patch(Cpu *c) {
+	if (!A0 || !A3 || (int32_t)A1 < 0 || (int32_t)A2 < 0) { RET(0x804A0002u); return; }   /* SCE_NGS_ERROR_INVALID_PARAM */
+	pthread_mutex_lock(&lock);
+	int found = -1;
+	for (int k = 0; k < npatches && found < 0; k++) if (patches[k].active && patches[k].src == A0 && patches[k].out == (int32_t)A1 && patches[k].sub == (int32_t)A2) found = k;
+	pthread_mutex_unlock(&lock);
+	WR32(A3, found < 0 ? 0 : 0x60000000u + (uint32_t)found);
+	RET(found < 0 ? 0x804A000Eu : 0);
+}
 static void h_patch_volumes(Cpu *c) {   /* (patch, SceNgsVolumeMatrix*: float m[2][2]) */
 	Patch *p = patch_of(A0);
 	if (p && A1) for (int i = 0; i < 4; i++) { float f; memcpy(&f, G(A1 + 4 * i), 4); p->vol[i / 2][i % 2] = f; }
@@ -431,12 +449,16 @@ static void vo_state_log(Voice *v, uint32_t lr, uint64_t us) {
 /* ---- voices */
 static void h_voice_play(Cpu *c) {
 	Voice *v = voice_of(A0);
+	if (v && hle_ngs_voice_play_state(PLAYER_VOICE(v->def), &v->playing, &v->started)) {   /* (NGS-PLAY-01, hle_small.h) already playing: untouched */
+		static uint8_t said[512]; if (!said[VIDX(v)]) { said[VIDX(v)] = 1; fprintf(stderr, "    ngs: Play on voice %d, which plays already: left as it is (SCE_NGS_ERROR)\n", VIDX(v)); }
+		RET(HLE_NGS_ERROR); return;
+	}
 	if (v) { v->playing = 1; v->paused = 0; v->buffer = 0; v->byte_pos = 0; v->samples_gen = v->bytes_consumed = 0; v->loops_done = 0; v->upd_active = 0;
 		v->frac = 1; memset(v->rs_h, 0, sizeof v->rs_h); v->rs_i = 0;   /* (1: the first output fetches the first source sample) */
 		v->pcm_len = v->pcm_pos = 0; v->at9_cfg = 0; v->stage_on = 0;   /* (a fresh decoder: ATRAC9 frames carry state) */
 		v->ad_valid = 0; v->ad_idx = 0; memset(v->ad_hist, 0, sizeof v->ad_hist);
 		v->at9_waited = v->at9_decoded = 0; v->env_pt = 0; v->env_ms = 0; v->env_level = 0; v->releasing = v->released_out = 0; v->rel_ms = 0; memset(v->bq, 0, sizeof v->bq);
-		uint32_t pp = v->params[0]; if (pp && PCM_PLAYER(v->def)) { v->buffer = (uint8_t)RD8(pp + P_START); if (v->buffer > 3) v->buffer = 0; } }
+		uint32_t pp = v->params[0]; if (pp && PCM_PLAYER(v->def)) { v->buffer = hle_ngs_player_start((int8_t)RD8(pp + P_START)); } }
 	dump_setup();
 	if (v && dump_dir && PLAYER_VOICE(v->def)) {
 		VStat *st = &vstat[VIDX(v)]; uint32_t pp = v->params[0]; int at9 = v->def == DEF_SCREAM_AT9;
@@ -462,7 +484,7 @@ static void h_voice_play(Cpu *c) {
 static void h_voice_kill(Cpu *c) {   /* stopped dead: no callback */
 	Voice *v = voice_of(A0);
 	if (v && v->def == DEF_SCREAM_AT9 && vo_log_on()) fprintf(stderr, "    vo: v%d kill us %llu upd %llu lr %#x\n", VIDX(v), (unsigned long long)vo_us(), (unsigned long long)updates, c->r[14]);
-	if (v) { v->playing = 0; v->finishing = 0; v->releasing = v->released_out = 0; }
+	if (v) { v->playing = 0; v->started = 0; v->finishing = 0; v->releasing = v->released_out = 0; }
 	RET(0);
 }
 /* key-off = release: a voice with an envelope module plays on through its release (voice_stages) and
@@ -475,7 +497,7 @@ static void h_voice_keyoff(Cpu *c) {
 	if (v && v->def == DEF_SCREAM_AT9 && vo_log_on()) fprintf(stderr, "    vo: v%d keyoff us %llu upd %llu lr %#x\n", VIDX(v), (unsigned long long)vo_us(), (unsigned long long)updates, c->r[14]);
 	if (v && v->playing && !v->paused && PLAYER_VOICE(v->def) && !stages_off() && stage_module(v, ENV_ID) >= 0) {
 		if (!v->releasing) { v->releasing = 1; v->rel_ms = 0; v->rel_from = v->env_level; }
-	} else if (v) { if (v->playing && PLAYER_VOICE(v->def)) v->finishing = 1; v->playing = 0; v->releasing = 0; }
+	} else if (v) { if (v->playing && PLAYER_VOICE(v->def)) v->finishing = 1; v->playing = 0; v->started = 0; v->releasing = 0; }
 	pthread_mutex_unlock(&lock);
 	RET(v ? 0 : 0x804a0005u);
 }
@@ -672,6 +694,12 @@ static void rs_read(const Voice *v, double step, float *l, float *r) {
 	*l = sl; *r = sr;
 }
 
+/* (PTW-NGS) the buffer a PCM / ADPCM player goes on with when its current one has no data: its next one if that has, else -1 */
+static int player_skip_empty(const Voice *v, uint32_t pp, uint32_t frame_bytes) {
+	const int16_t nx = (int16_t)RD16(pp + P_BUF(v->buffer) + 10);
+	if (nx < 0 || nx > 3) return -1;
+	return hle_ngs_player_skip_empty((int)v->buffer, nx, RD32(pp + P_BUF(nx)), RD32(pp + P_BUF(nx) + 4), frame_bytes);
+}
 /* the Scream/simple player's ADPCM type (SCE_NGS_PLAYER_TYPE_ADPCM, 1): HE-VAG frames of 16 bytes
  * per channel (stereo: a left frame then a right frame), 28 samples each, through the same buffer
  * chain and resampling as PCM. Unit 13's weapon and world effects are all ADPCM -- 563 of its 565
@@ -683,7 +711,11 @@ static int fetch_adpcm(Voice *v, uint32_t pp, int ch, float rate, float *l, floa
 	for (;;) {
 		if (v->buffer > 3) return 0;
 		uint32_t data = RD32(pp + P_BUF(v->buffer)), bytes = RD32(pp + P_BUF(v->buffer) + 4);
-		if (!data || bytes < frame_bytes) return 0;
+		if (!data || bytes < frame_bytes) {   /* (PTW-NGS) an empty buffer that links on to data: that one (as the PCM path) */
+			const int nb = player_skip_empty(v, pp, frame_bytes);
+			if (nb < 0) return 0;
+			v->buffer = (uint32_t)nb; v->byte_pos = 0; v->loops_done = 0; v->ad_idx = 0; v->ad_valid = 0; continue;
+		}
 		if (v->byte_pos + frame_bytes > bytes) {   /* this buffer is done: repeat it, or move to the next (as the PCM path) */
 			int16_t loops = (int16_t)RD16(pp + P_BUF(v->buffer) + 8), next = (int16_t)RD16(pp + P_BUF(v->buffer) + 10);
 			v->byte_pos = 0; v->ad_idx = 0; v->ad_valid = 0;
@@ -724,7 +756,11 @@ static int fetch_pcm(Voice *v, uint32_t pp, int ch, float rate, float *l, float 
 	for (;;) {
 		if (v->buffer > 3) return 0;
 		uint32_t data = RD32(pp + P_BUF(v->buffer)), bytes = RD32(pp + P_BUF(v->buffer) + 4);
-		if (!data || bytes < frame_bytes) return 0;
+		if (!data || bytes < frame_bytes) {   /* (PTW-NGS) an empty buffer that links on to data: that one (hle_small.h) */
+			const int nb = player_skip_empty(v, pp, frame_bytes);
+			if (nb < 0) return 0;
+			v->buffer = (uint32_t)nb; v->byte_pos = 0; v->loops_done = 0; continue;
+		}
 		if (v->byte_pos + frame_bytes > bytes) {   /* this buffer is done: repeat it, or move to the next */
 			int16_t loops = (int16_t)RD16(pp + P_BUF(v->buffer) + 8), next = (int16_t)RD16(pp + P_BUF(v->buffer) + 10);
 			v->byte_pos = 0;
@@ -1248,7 +1284,7 @@ const HleEntry hle_ngs[] = {
 	{"sceNgsSystemRelease", h_ok}, {"sceNgsSystemUpdate", h_system_update},
 	{"sceNgsRackGetRequiredMemorySize", h_rack_mem}, {"sceNgsRackInit", h_rack_init}, {"sceNgsRackRelease", h_ok},
 	{"sceNgsRackGetVoiceHandle", h_rack_voice},
-	{"sceNgsPatchCreateRouting", h_patch_create}, {"sceNgsPatchRemoveRouting", h_patch_remove},
+	{"sceNgsPatchCreateRouting", h_patch_create}, {"sceNgsPatchRemoveRouting", h_patch_remove}, {"sceNgsVoiceGetOutputPatch", h_voice_output_patch},
 	{"sceNgsVoicePatchSetVolumesMatrix", h_patch_volumes},
 	{"sceNgsVoicePlay", h_voice_play}, {"sceNgsVoiceKill", h_voice_kill}, {"sceNgsVoicePause", h_voice_pause},
 	{"sceNgsVoiceKeyOff", h_voice_keyoff},   /* key-off = release and stop, then the finished callback: stubbed, a keyed-off voice stayed "playing" and a sound system that waits for a voice to stop before reusing it (Unit 13 polls GetStateData 100K times a session; Killzone frees its voice in the finished callback) never got a free voice -- a silent gun */

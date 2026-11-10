@@ -26,6 +26,12 @@ void overlay_toast(const char *msg, double seconds);   /* (no title) */
  * question -- and the overlay is drawing it: window.c then routes the keyboard to the overlay instead of the
  * game, drops the mouse capture and lets go of what was held (the game is polling the dialog, not the pad) */
 int overlay_dialog_active(void);
+/* window.c: the keys and the pad stop (or start) going to the overlay -- the menu or a dialog closed (or opened): ImGui
+ * lets go of every key it thinks held (savedlg_ui_input_lost) */
+void overlay_input_lost(void);
+/* overlay_modal_open: one of our modal dialogs is up (the menu's "Reset all settings…"): window.c must leave Esc
+ * to it, so the dialog cancels instead of the whole menu closing */
+int overlay_modal_open(void);
 
 /* once, after the SDL_GPUDevice (and, in windowed mode, the SDL_Window) exist. `window` is the real
  * window in interactive mode, or NULL for a headless one-shot render (RECOMP_OVERLAY_DUMP below) --
@@ -64,6 +70,12 @@ int overlay_game_paused(void);
  * menu and hides the bar. */
 int overlay_mouse_captured(void);
 void overlay_bar_dismiss(void);
+/* (INTRO-01) the first-start touch card is up (the game paused under it); overlay_intro_skip ends it -- window.c calls it for a
+ * key or a pad button that isn't part of a touch (intro_skip.h) */
+int overlay_intro_up(void);
+void overlay_intro_skip(void);
+/* (HINT-01) a controller was connected (window.c: SDL_EVENT_GAMEPAD_ADDED): the overlay names its menu buttons briefly */
+void overlay_pad_added(void);
 
 /* one-shot flags the Quit and Capture frame buttons set; window.c polls and clears them once a loop
  * iteration, the same way it reacts to SDL_EVENT_QUIT and F12 */

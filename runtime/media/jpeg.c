@@ -19,6 +19,7 @@
 #include <string.h>
 #include "hle.h"
 #include "gfx.h"
+#include "hle_offline.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_JPEG
@@ -39,7 +40,6 @@
 #define SCE_JPEGENC_ERROR_INVALID_POINTER 0x80650205u
 
 static int jdebug(void) { static int d = -1; if (d < 0) d = getenv("RECOMP_JPEG_DEBUG") != 0; return d; }
-static int align_up(int v, int a) { return (v + a - 1) / a * a; }
 static uint8_t clamp8(float v) { return v <= 0 ? 0 : v >= 255 ? 255 : (uint8_t)(v + 0.5f); }
 
 /* the CPU is about to read (or write) guest memory the GPU backend may hold newer contents of: its
@@ -71,19 +71,10 @@ static int jpeg_sampling(uint32_t jpeg, uint32_t size) {
 	}
 	return 0x22;
 }
-/* the decoded size and plane pitches for a decode mode */
-typedef struct { int w, h, cw, ch, py, pyh, pc, pch, hs, vs; } Layout;
-static void layout(int w, int h, int sampling, int mode, Layout *l) {
-	int ratio = (mode & 0x70) == 0x10 ? 2 : (mode & 0x70) == 0x20 ? 4 : (mode & 0x70) == 0x40 ? 8 : 1;
-	int standard = (mode & 7) < 2;
-	l->hs = (sampling >> 4) >= 2 ? 2 : 1; l->vs = (sampling & 15) >= 2 ? 2 : 1;
-	int bw = 8 * l->hs, bh = 8 * l->vs;
-	l->w = (w + ratio - 1) / ratio; l->h = (h + ratio - 1) / ratio;
-	l->py = align_up(align_up(w, bw) / ratio, bw); l->pyh = align_up(align_up(h, bh) / ratio, standard ? 8 : 1);
-	l->pc = l->py / l->hs; l->pch = l->pyh / l->vs;
-	if (standard && (l->hs == 2)) l->pc = align_up(l->pc, 16);
-	l->cw = (l->w + l->hs - 1) / l->hs; l->ch = (l->h + l->vs - 1) / l->vs;
-}
+/* the decoded size and plane pitches for a decode mode: hle_offline.h (HLE-LIB-06 moved it there, unchanged, so
+ * sceJpegGetOutputInfo promises exactly what the decoders write) */
+typedef HleJpegLayout Layout;
+static void layout(int w, int h, int sampling, int mode, Layout *l) { hle_jpeg_layout(w, h, sampling, mode, l); }
 /* the RGB image box-filtered down to l->w x l->h */
 static void sample_rgb(const Img *im, const Layout *l, int x, int y, float rgb[3]) {
 	int r = (im->w + l->w - 1) / l->w; if (r < 1) r = 1;
@@ -134,6 +125,20 @@ static void h_jpeg_decode_ycbcr(Cpu *c) {
 	if (jdebug()) fprintf(stderr, "    jpeg: YCbCr decode %ux%u (sampling %#x, mode %#x) -> %dx%d pitch %d/%d at %#x\n", im.w, im.h, jpeg_sampling(jpeg, size), mode, l.w, l.h, l.py, l.pc, out);
 	stbi_image_free(im.rgb);
 	RET((uint32_t)l.py << 16 | (uint32_t)l.pyh);
+}
+/* (HLE-LIB-06) sceJpegGetOutputInfo(jpeg, size, format, decodeMode, SceJpegOutputInfo *): the frame header and the
+ * decoders' layout (hle_offline.h); the JPEG itself is not decoded */
+static void h_jpeg_output_info(Cpu *c) {
+	const uint32_t jpeg = A0, size = A1, out = STK(0);
+	HleJpegOutputInfo o;
+	const uint32_t r = out ? hle_jpeg_output_info(jpeg ? G(jpeg) : 0, size, (int32_t)A2, (int)A3, &o) : HLE_JPEG_ERR_PTR;
+	if (!r) {
+		WR32(out, o.color_space); WR16(out + 4, o.width); WR16(out + 6, o.height);
+		WR32(out + 8, o.output_size); WR32(out + 0xc, o.temp_size); WR32(out + 0x10, o.coef_size);
+		for (int k = 0; k < 4; k++) { WR32(out + 0x14 + 8 * k, o.pitch[k][0]); WR32(out + 0x18 + 8 * k, o.pitch[k][1]); }
+	}
+	if (jdebug()) fprintf(stderr, "    jpeg: output info (format %d, mode %#x) -> %#x: %ux%u colour space %#x output %u temp %u\n", (int32_t)A2, A3, r, o.width, o.height, o.color_space, o.output_size, o.temp_size);
+	RET(r);
 }
 /* (jpeg, size, out RGBA, out size, decodeMode, temp buffer, temp size, coef buffer, coef size): RGBA8888
  * rows of the luma pitch */
@@ -252,6 +257,7 @@ static void h_enc_encode(Cpu *c) {
 const HleEntry hle_jpeg[] = {
 	{"sceJpegInitMJpeg", h_jpeg_init}, {"sceJpegInitMJpegWithParam", h_jpeg_init}, {"sceJpegFinishMJpeg", h_jpeg_finish},
 	{"sceJpegDecodeMJpegYCbCr", h_jpeg_decode_ycbcr}, {"sceJpegDecodeMJpeg", h_jpeg_decode_rgba},
+	{"sceJpegGetOutputInfo", h_jpeg_output_info},   /* (HLE-LIB-06) */
 	{"sceJpegEncoderGetContextSize", h_enc_context_size}, {"sceJpegEncoderInit", h_enc_init}, {"sceJpegEncoderInitWithParam", h_enc_init_param},
 	{"sceJpegEncoderEnd", h_enc_end}, {"sceJpegEncoderSetValidRegion", h_enc_valid_region}, {"sceJpegEncoderSetCompressionRatio", h_enc_ratio},
 	{"sceJpegEncoderSetOutputAddr", h_enc_output}, {"sceJpegEncoderSetHeaderMode", h_enc_end}, {"sceJpegEncoderCsc", h_enc_csc},

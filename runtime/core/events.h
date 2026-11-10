@@ -1,4 +1,4 @@
-/* events.h -- the bounded event stream: low-frequency `  ev` lines that correlate input
+/* events.h -- the bounded event stream (N02g-3): low-frequency `  ev` lines that correlate input
  * delivery, observable load transitions and failures in ONE timeline, plus a last-N ring dumped
  * on failure. Volume stays small by design: only changes and terminal events are logged (input is
  * an edge, never every unchanged frame), and nothing is dumped on a healthy run. Disable with

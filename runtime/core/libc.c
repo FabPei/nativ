@@ -27,7 +27,7 @@ static void h_realloc(Cpu *c) {
 }
 
 /* ---- strings and memory */
-/* a bulk copy/set overlapping the armed store-trace window logs the window word after the write (width 10) */
+/* P0b: a bulk copy/set overlapping the armed store-trace window logs the window word after the write (width 10) */
 static void watch_bulk(uint32_t a, uint32_t n) {
 	if (recomp_watch_hi && n && a < recomp_watch_lo + recomp_watch_hi && recomp_watch_lo < a + n)
 		recomp_watch_write(recomp_watch_lo, RD32(recomp_watch_lo), 10);
@@ -517,7 +517,7 @@ const HleEntry hle_libc[] = {
 	{"sscanf", h_sscanf}, {"vsscanf", h_vsscanf}, {"qsort", h_qsort}, {"expf", h_expf}, {"exp2f", h_exp2f},
 	{"fmaxf", h_fmaxf}, {"fminf", h_fminf}, {"_ZNKSt9type_info4nameEv", h_typeinfo_name}, {"_ZNKSt9type_infoeqERKS_", h_typeinfo_eq},
 	{"_Stoul", h_stoul}, {"strtoul", h_strtoul}, {"rand", h_rand}, {"srand", h_srand}, {"time", h_time}, {"strtok", h_strtok},
-	{"__sce_aeabi_idiv0", h_divzero}, {"__aeabi_idiv0", h_divzero},
+	{"__sce_aeabi_idiv0", h_divzero}, {"__sce_aeabi_ldiv0", h_divzero}, {"__aeabi_idiv0", h_divzero},
 	{"sceClibMemcpy", h_memcpy}, {"sceClibMemcpy_safe", h_memcpy}, {"sceClibMemmove", h_memcpy}, {"sceClibMemcmp", h_memcmp}, {"sceClibMemchr", h_memchr},
 	{"sceClibStrcmp", h_strcmp}, {"sceClibStrncmp", h_strncmp}, {"sceClibStrncasecmp", h_strncasecmp}, {"sceClibStrnlen", h_strnlen}, {"sceClibStrncpy", h_strncpy},
 	{"sceClibStrncat", h_strncat}, {"sceClibStrlcat", h_strlcat}, {"sceClibStrrchr", h_strrchr}, {"sceClibStrchr", h_strchr}, {"sceClibStrstr", h_strstr},
@@ -546,7 +546,7 @@ const HleEntry hle_libc[] = {
 	{"strtol", h_strtol},
 	{"abs", h_abs},
 	{"printf", h_printf},
-	{"sceClibPrintf", h_printf},
+	{"sceClibPrintf", h_printf}, {"sceClibVprintf", h_vprintf},   /* (HLE-LIB-03: fmt, va_list) */
 	{"vprintf", h_vprintf},
 	{"fprintf", h_fprintf},
 	{"vfprintf", h_vfprintf},

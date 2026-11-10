@@ -15,6 +15,14 @@
  * Keys (consumer, values):
  *   render_scale  gfx_gpu.c   1..6                      internal resolution (5760x3264 at 6)
  *   aspect        window.c    fit | stretch | fill      how the 960x544 picture meets the window
+ *   present_mode  window.c    vsync | mailbox | immediate (default empty = today's rule: mailbox on Vulkan, else vsync)
+ *                             how frames reach the screen; read once at the swapchain setup (RECOMP_PRESENT_MODE wins)
+ *   menu_lang     overlay.cpp  auto | en | de (default auto)   the menu's language; auto = the system's
+ *                             preference (SDL_GetPreferredLocales); the catalog is runtime/ui/ui_text.c
+ *   pad_bind_<vita>  window.c   "" (default) | none | south | east | west | north | start | back | dpad_up |
+ *                             dpad_down | dpad_left | dpad_right | left_stick | right_stick   the pad button bound
+ *                             to that Vita button (Controls > Controller buttons); the shoulders keep their
+ *                             touch-modifier pair, Guide and Back+Start stay the menu's
  *   post_aa       post.c      0 | 1 (default 1)         FXAA on the finished frame (RECOMP_POST_AA wins)
  *   sharpen       post.c      0..1 (default 0.35)       CAS sharpening at output resolution, 0 off (RECOMP_SHARPEN wins)
  *   anisotropy    gfx_gpu.c   1 | 2 | 4 | 8 | 16 (default 16)   anisotropic texture filtering (RECOMP_ANISO wins)
@@ -46,7 +54,8 @@
  *   fov           hooks.c     a multiplier, 1.0 = the game's own vertical field of view (Unit 13's
  *                             camera update, Uncharted's render camera; culling included; RECOMP_FOV wins; read live, so the
  *                             menu's slider applies at once)
- *   frame_rate    display.c   30 | 60                   60: the swap interval capped at one vblank
+ *   frame_rate    display.c   30 | 60 | 120             60/120: the swap interval capped at one vblank; 120: a 120 Hz vblank grid;
+ *                                                     only the pack's RECOMP_FRAME_RATES (runtime/ui/frame_rates.h)
  *                             (experimental; RECOMP_FRAME_RATE wins; read every frame)
  *   touch_cursor_speed  window.c  a multiplier, 1.0 default   the bumper touch cursor's speed (either stick)
  *   gyro          motion.c    0 | 1 (default 1)         a DS4/DualSense gyro as the Vita's motion sensor
@@ -76,7 +85,14 @@ void settings_set_int(const char *key, int v);
 void settings_set_float(const char *key, double v);
 void settings_set_str(const char *key, const char *v);
 void settings_set_own(const char *key, const char *v);   /* into the game's own file whatever the key: this game's value apart from the shared one */
-void settings_save(void);   /* writes the changed files now, merged with them as they are on disk (the setters don't) */
+int settings_save(void);   /* writes the changed files now, merged with them as they are on disk (the setters don't);
+                            * 1 ok, 0 = a write failed (U8: the menu's foot says so until a later save succeeds) */
+int settings_reset_all(const char *const *keep);   /* every key of both files goes except keep (a NULL-terminated name
+                                                    * list; a name ending in '*' matches by prefix, "np_*" = every np
+                                                    * key), then the files are saved; 0 = a write failed. The identity
+                                                    * keys must stay: open_psid, online_id, np_*, menu_hint_shown */
+extern const char *const settings_default_keep[];   /* exactly those identity keys (settings.c): what the menu's reset
+                                                     * passes, so the list cannot drift from what a reset protects */
 int settings_shared_dir(char *buf, int n);   /* the shared file's folder, with its separator (0: none -- a test, or RECOMP_SETTINGS) */
 int settings_game_option(const char *name);   /* this game's pack offers that option (RECOMP_GAME_OPTIONS, its RUN_ENV: "fov,online") */
 

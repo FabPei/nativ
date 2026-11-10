@@ -1,7 +1,8 @@
 #!/bin/zsh
 # Build Project Nativ's launcher (hub.cpp): build.sh [out]  ->  launcher/nativ by default.
-# Dear ImGui's objects are the runtime build's cached ones (build/imgui/obj), built here too when missing;
-# only ImGui's own objects are linked -- that folder also holds the in-game overlay, which the hub doesn't use.
+# Dear ImGui's objects are the launcher's own (build/imgui/obj*_hub), built here when missing: ImGui with its item hooks on
+# (IMGUI_ENABLE_TEST_ENGINE, for the screenshot runs' fit check, ATIV_SHOT_FIT), which changes ImGui's internal layout, so
+# they can't be the runtime build's objects.
 # TARGET=windows: nativ.exe with llvm-mingw (runtime/platform/win/setup-toolchain.sh; ATIV_WIN_TOOLCHAIN, default ~/toolchains/ativ-win),
 # a windowed program with its manifest (nativ.manifest: UTF-8 as the process code page, Windows 10 1903+, so the UTF-8 paths
 # the launcher passes around -- a folder picked in a dialog, a player's own folder name -- reach fopen, stat and the stages'
@@ -47,15 +48,21 @@ else
     if [[ -n $MT ]]; then SDL_CFLAGS=(-I$MT/SDL3/include -mmacosx-version-min=11.0); SDL_LIBS=(-L$MT/SDL3/lib -lSDL3 -Wl,-rpath,@executable_path -mmacosx-version-min=11.0); IMGUIOBJ=$ROOT/build/imgui/obj_mt11; ROOTDEF=.; fi
   fi
 fi
+IMGUIOBJ=${IMGUIOBJ}_hub
 mkdir -p $IMGUIOBJ
-CXXFLAGS=(-O2 -std=c++17 -w -I $IMGUI -I $IMGUI/backends -I $ROOT/runtime/ui -I $ROOT/runtime/platform $SDL_CFLAGS)
+CXXFLAGS=(-O2 -std=c++17 -w -DIMGUI_ENABLE_TEST_ENGINE -I $IMGUI -I $IMGUI/backends -I $ROOT/runtime/ui -I $ROOT/runtime/platform $SDL_CFLAGS)
 objs=()
 for s in $IMGUI/imgui.cpp $IMGUI/imgui_draw.cpp $IMGUI/imgui_tables.cpp $IMGUI/imgui_widgets.cpp $IMGUI/backends/imgui_impl_sdl3.cpp $IMGUI/backends/imgui_impl_sdlgpu3.cpp; do
   o=$IMGUIOBJ/${s:t:r}.o; objs+=($o)
   if [[ ! -f $o || $s -nt $o ]]; then ($CXX -c $CXXFLAGS $IMFLAGS $s -o $o.$$ && mv -f $o.$$ $o && echo "  c++ ${s:t}") & fi
 done
 wait
-$CXX $CXXFLAGS -Wall -DREPO_ROOT="\"$ROOTDEF\"" $H/hub.cpp $objs $SDL_LIBS $LINK -o $OUT
+# the menu string catalog is C: built as C (-x c) by the same driver, since clang refuses -std=c++17 on a .c file
+UITEXT=$IMGUIOBJ/ui_text.o
+if [[ ! -f $UITEXT || $ROOT/runtime/ui/ui_text.c -nt $UITEXT || $ROOT/runtime/ui/ui_text.h -nt $UITEXT ]]; then
+  $CXX -x c -c -O2 -w -I $ROOT/runtime/ui $SDL_CFLAGS $ROOT/runtime/ui/ui_text.c -o $UITEXT.$$ && mv -f $UITEXT.$$ $UITEXT && echo "  cc ui_text.c"
+fi
+$CXX $CXXFLAGS -Wall -DREPO_ROOT="\"$ROOTDEF\"" $H/hub.cpp $UITEXT $objs $SDL_LIBS $LINK -o $OUT
 [[ $TARGET == windows ]] && cp -f $SDLW/bin/SDL3.dll ${OUT:h}/
 [[ -n ${LT:-} ]] && cp -f $LT/SDL3/lib/libSDL3.so.0 ${OUT:h}/libSDL3.so.0.new$$ && mv -f ${OUT:h}/libSDL3.so.0.new$$ ${OUT:h}/libSDL3.so.0
 [[ -n ${MT:-} ]] && cp -f $MT/SDL3/lib/libSDL3.0.dylib ${OUT:h}/libSDL3.0.dylib.new$$ && mv -f ${OUT:h}/libSDL3.0.dylib.new$$ ${OUT:h}/libSDL3.0.dylib   # (whole: a running launcher keeps its file)

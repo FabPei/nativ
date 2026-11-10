@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Fixture: the non-link branch / LR contract of the recompiler, in isolation.
+"""N01b-8 fixture: the non-link branch / LR contract of the recompiler, in isolation.
 
 Reference basis (ARMv7-M Architecture Reference Manual, branch instructions):
 - b / cbz / cbnz / conditional branches do NOT write r14 (LR). LR is live guest data
-  across such an edge (a game's tree-insert path can keep its hint node in lr across a
-  cross-function b).
+  across such an edge (the PCSF00532 RB-insert path keeps its hint node in lr across a
+  cross-function b -- docs/progress.md 2026-11-02 N01b-2).
 - bl / blx write LR = the address of the instruction following the call (Thumb bit set
   when the caller is Thumb).
 - bx lr returns through r14 unchanged.
 
-Observed defect (fixed in recompiler/recomp.py Fn.call/Fn.branch): a non-link
+Observed defect (N01b-2, fixed in recompiler/recomp.py Fn.call/Fn.branch): a non-link
 branch to a target outside the current function's labels was emitted through the call
 helper, which unconditionally wrote c->r[14] = <next>u before the callee -- destroying
 the live LR data.

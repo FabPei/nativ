@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "hle.h"
+#include "gaps.h"   /* GAPS-01 */
 
 static int log_gpu(void) { static int v = -1; if (v < 0) { const char *e = getenv("RECOMP_LOG_GPU"); v = e && *e == '1'; } return v; }
 
@@ -55,7 +56,7 @@ static void misc_info(uint32_t mi) {
 		WR32(mi + 0x10, 0x10711); WR32(mi + 0x14, 5029); WR32(mi + 0x20, 0x30322518);
 		break;
 	default:
-		fprintf(stderr, "gpu misc info request %u (unimplemented)\n", req);
+		fprintf(stderr, "gpu misc info request %u (unimplemented)\n", req); gap(GAP_GPU_REQ, req, "gpu misc info request");
 	}
 }
 
@@ -327,6 +328,7 @@ static void h_bridge(Cpu *c) {   /* PVRSRV_BridgeDispatchKM(id, package) */
 		if (b.out && b.out_size) memset(G(b.out), 0, b.out_size);   /* error 0 (PVRSRV_OK) unless the handler says otherwise */
 		known = bridge(&b);
 	}
+	if (!known) gap(GAP_GPU_REQ, b.id, "gpu bridge call");
 	if (log_gpu() || !known) {
 		fprintf(stderr, "gpu bridge %#x in %#x[%#x] out %#x[%#x]%s:", b.id, b.in, b.in_size, b.out, b.out_size, known ? "" : " (unimplemented)");
 		for (uint32_t i = 0; i < b.in_size && i < 0x30; i += 4) fprintf(stderr, " %08x", RD32(b.in + i));

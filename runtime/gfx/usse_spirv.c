@@ -25,6 +25,7 @@
 #include <math.h>
 #include "usse_internal.h"
 #include "usse_spirv.h"
+#include "gaps.h"   /* GAPS-01 */
 
 /* ---------------------------------------------------------------- SPIR-V opcodes/constants used */
 enum {
@@ -47,7 +48,7 @@ enum {
 	SpvOpFOrdEqual = 180, SpvOpFOrdNotEqual = 182, SpvOpFOrdLessThanEqual = 188, SpvOpFOrdGreaterThan = 186,
 	SpvOpLogicalOr = 166, SpvOpLogicalAnd = 167, SpvOpLogicalNot = 168, SpvOpBitwiseXor = 198, SpvOpINotEqualB = 171,
 	SpvOpSLessThan = 177, SpvOpSLessThanEqual = 179, SpvOpSGreaterThanEqual = 175,
-	SpvOpBranch = 249, SpvOpBranchConditional = 250, SpvOpSelectionMerge = 247,
+	SpvOpBranch = 249, SpvOpBranchConditional = 250, SpvOpSelectionMerge = 247, SpvOpLoopMerge = 246,
 	SpvOpSNegate = 126, SpvOpShiftRightArithmetic = 195, SpvOpNot = 200, SpvOpBitFieldSExtract = 202,
 	SpvOpULessThan = 176, SpvOpUGreaterThan = 172, SpvOpUMod = 137,
 	SpvOpImage = 100, SpvOpImageFetch = 95, SpvOpImageGather = 96, SpvOpImageQuerySizeLod = 103, SpvOpDPdx = 207, SpvOpDPdy = 208,
@@ -813,7 +814,10 @@ static void emit_vtstmsk(Gen *g, const UOp *op, int *ok) {
  * translate time when s2 is an immediate -- usse.c's exec_vbw */
 static void emit_vbw(Gen *g, const UOp *op, int *ok) {
 	Spv *s = &g->s;
-	uint32_t a = read_raw_comp(g, &op->s1, 0, 0, ok), b;
+	static const int unit[4] = {1, 1, 1, 1};
+	for (int rep = 0; rep < op->reps; rep++) {   /* usse.c's exec_vbw: repeat count, SLMSI, one word a step */
+	int off1 = slot_off(g, op->repmode, op->s1.bank, rep, unit, 1, ok), off2 = slot_off(g, op->repmode, op->s2.bank, rep, unit, 2, ok), offd = slot_off(g, op->repmode, op->dst.bank, rep, unit, 3, ok);
+	uint32_t a = read_raw_comp(g, &op->s1, off1, 0, ok), b;
 	int rot = op->args[0] & 31;
 	if (op->s2.bank == BK_IMM) {
 		uint32_t bi = (uint32_t)op->s2.num | ((uint32_t)op->imm << 7) | ((uint32_t)op->args[2] << 14);
@@ -821,7 +825,7 @@ static void emit_vbw(Gen *g, const UOp *op, int *ok) {
 		if (op->args[1]) bi = op->sub3 ? (~bi & 0xFFFFu) : ~bi;
 		b = c_uint(s, bi);
 	} else {
-		b = read_raw_comp(g, &op->s2, 0, 0, ok);
+		b = read_raw_comp(g, &op->s2, off2, 0, ok);
 		if (op->sub3) {
 			int r16 = rot & 15;
 			b = r16 ? uop2(s, SpvOpBitwiseAnd, uop2(s, SpvOpBitwiseOr, uop2(s, SpvOpShiftLeftLogical, b, c_uint(s, (uint32_t)r16)), uop2(s, SpvOpShiftRightLogical, b, c_uint(s, (uint32_t)(16 - r16)))), c_uint(s, 0xFFFF))
@@ -839,7 +843,8 @@ static void emit_vbw(Gen *g, const UOp *op, int *ok) {
 	default: r = a; break;
 	}
 	if (op->sub3) r = uop2(s, SpvOpBitwiseAnd, r, c_uint(s, 0xFFFF));
-	write_raw_comp(g, &op->dst, 0, 0, r, ok);
+	write_raw_comp(g, &op->dst, offd, 0, r, ok);
+	}
 }
 /* usse.c's test_lane_raw: zero/nonzero/negative/negative-or-zero of a raw lane of `type` */
 static uint32_t test_lane_spv(Spv *s, uint32_t raw, int type, int cmpsel) {
@@ -873,12 +878,12 @@ static uint32_t ubits(Spv *s, uint32_t w, int shift, int bits);
  * and aop, packed (u8_pack4's clamp01(v) * 255 + 0.5 truncated) and written as byte 0 of the
  * destination word only (write_raw_lane's insert_lane lane 0), bytes 1-3 preserved.
  *
- * Byte 0 only is the OBSERVED working contract: a synthetic oracle (runtime/tests/
- * usse_sop2_test.c) and an A/B on a game measured that writing the packed word's bytes
- * 1-3 (the ISA doc's and Vita3K's SOP2 handler reading) corrupts that game's rendering (a
+ * Byte 0 only is the OBSERVED working contract: Q12-05's synthetic oracle (runtime/tests/
+ * usse_sop2_test.c) and an A/B on the real title measured that writing the packed word's bytes
+ * 1-3 (the ISA doc's and Vita3K's SOP2 handler reading) corrupts this title's rendering (a
  * full-screen green overlay; the same change through the interpreter), while byte-0 writes render
  * the accepted reference. The wider per-lane read/write convention divergence is an open
- * investigation, not settled here. */
+ * investigation (docs/progress.md, Q12-05), not settled here. */
 static uint32_t sop2_cop(Spv *s, int cop, uint32_t x, uint32_t y) {
 	switch (cop & 3) {
 	case 0: return fop2(s, SpvOpFAdd, x, y);
@@ -1077,7 +1082,7 @@ static uint32_t sop_pack(Spv *s, const uint32_t v[4]) {   /* usse.c u8_pack4: cl
 	}
 	return w;
 }
-/* emit_sop2: the earlier definition above (identical arithmetic) serves both; the fork's copy was dropped in the merge */
+/* emit_sop2: the earlier definition above (local SOP2 translation, identical arithmetic) serves both; the fork's copy was dropped in the merge */
 static void emit_sop2m(Gen *g, const UOp *op, int *ok) {
 	Spv *s = &g->s;
 	uint32_t w1 = read_word(g, &op->s1, 0, ok), w2 = read_word(g, &op->s2, 0, ok), wd = read_word(g, &op->dst, 0, ok);
@@ -1375,21 +1380,28 @@ static uint32_t srgb_mask_comp(Gen *g, int comp) {
 	INS(&s->func, SpvOpAccessChain, g->ptr_sa_u, id, g->var_sa, c_uint(s, 3), c_uint(s, (uint32_t)comp));
 	return load(s, t_uint(s), id);
 }
-static uint32_t srgb_fixup(Gen *g, int unit, uint32_t texel) {
+/* decode 0: the raw-word path (a result-format-0 texture iterator) -- the texel as stored: a gamma texture over plain data
+ * is NOT decoded (the interpreter's usse_texfn_raw reads the bytes, no tex_gamma), but a non-gamma texture over an sRGB
+ * target is still re-encoded (the GPU decoded the target's stored sRGB bytes). Open: a gamma texture over an sRGB target
+ * would need an encode no mask word names (the GPU's linear value goes out). */
+static uint32_t srgb_fixup_mode(Gen *g, int unit, uint32_t texel, int decode);
+static uint32_t srgb_fixup(Gen *g, int unit, uint32_t texel) { return srgb_fixup_mode(g, unit, texel, 1); }
+static uint32_t srgb_fixup_mode(Gen *g, int unit, uint32_t texel, int decode) {
 	Spv *s = &g->s; uint32_t tf = t_float(s), tb = t_bool(s), tu = t_uint(s), bit = c_uint(s, 1u << (unit & 15));
-	uint32_t dec = result2(s, &s->func, SpvOpINotEqual, tb, result2(s, &s->func, SpvOpBitwiseAnd, tu, srgb_mask_comp(g, 0), bit), c_uint(s, 0));
+	uint32_t dec = decode ? result2(s, &s->func, SpvOpINotEqual, tb, result2(s, &s->func, SpvOpBitwiseAnd, tu, srgb_mask_comp(g, 0), bit), c_uint(s, 0)) : 0;
 	uint32_t enc = result2(s, &s->func, SpvOpINotEqual, tb, result2(s, &s->func, SpvOpBitwiseAnd, tu, srgb_mask_comp(g, 1), bit), c_uint(s, 0));
 	uint32_t ch[4];
 	for (int c = 0; c < 4; c++) ch[c] = composite_extract1(s, tf, texel, (uint32_t)c);
 	for (int c = 0; c < 3; c++) {
 		uint32_t x = fclamp(s, ch[c], 0.0f, 1.0f);
-		uint32_t lin = result3(s, &s->func, SpvOpSelect, tf, result2(s, &s->func, SpvOpFOrdLessThanEqual, tb, x, c_float(s, 0.04045f)),
+		uint32_t lin = !decode ? 0 : result3(s, &s->func, SpvOpSelect, tf, result2(s, &s->func, SpvOpFOrdLessThanEqual, tb, x, c_float(s, 0.04045f)),
 		                       fop2(s, SpvOpFDiv, x, c_float(s, 12.92f)),
 		                       glsl2(s, GLSLPow, fop2(s, SpvOpFDiv, fop2(s, SpvOpFAdd, x, c_float(s, 0.055f)), c_float(s, 1.055f)), c_float(s, 2.4f)));
 		uint32_t srgb = result3(s, &s->func, SpvOpSelect, tf, result2(s, &s->func, SpvOpFOrdLessThanEqual, tb, x, c_float(s, 0.0031308f)),
 		                        fop2(s, SpvOpFMul, x, c_float(s, 12.92f)),
 		                        fop2(s, SpvOpFSub, fop2(s, SpvOpFMul, c_float(s, 1.055f), glsl2(s, GLSLPow, x, c_float(s, 1.0f / 2.4f))), c_float(s, 0.055f)));
-		ch[c] = result3(s, &s->func, SpvOpSelect, tf, dec, lin, result3(s, &s->func, SpvOpSelect, tf, enc, srgb, ch[c]));
+		uint32_t keep = result3(s, &s->func, SpvOpSelect, tf, enc, srgb, ch[c]);
+		ch[c] = decode ? result3(s, &s->func, SpvOpSelect, tf, dec, lin, keep) : keep;
 	}
 	uint32_t id = nid(s); INS(&s->func, SpvOpCompositeConstruct, t_vec(s, tf, 4), id, ch[0], ch[1], ch[2], ch[3]);
 	return id;
@@ -1690,8 +1702,29 @@ static void emit_sample_nondep(Gen *g, const UsseIter *it, const uint32_t sa_tex
 		if (base >= 0 && it->tex_proj >= 2 && g->vl->ncomp_tex[it->tex_coord_src] > 2) { u = read_vary_comp(g, base, ok); v = read_vary_comp(g, base + 1, ok); }
 		coord = cube_coord(g, u, v, w3, grad);
 	} else coord = result2(s, &s->func, SpvOpCompositeConstruct, t_vec(s, t_float(s), 2), u, v);
-	uint32_t texel = srgb_fixup(g, it->tex_unit, (g->snap_mask >> (it->tex_unit & 15) & 1) && !slot_is_cube(g, slot) ? snap_fetch(g, slot, it->tex_unit, u, v)
-	                                               : sample_lod(g, slot, it->tex_unit, coord, 0, 0, grad));
+	const int raw_word = it->result_fmt == 0 && !slot_is_cube(g, slot);   /* (below: the texel as stored, no gamma decode) */
+	uint32_t texel = srgb_fixup_mode(g, it->tex_unit, (g->snap_mask >> (it->tex_unit & 15) & 1) && !slot_is_cube(g, slot) ? snap_fetch(g, slot, it->tex_unit, u, v)
+	                                               : sample_lod(g, slot, it->tex_unit, coord, 0, 0, grad), !raw_word);
+	if (raw_word) {
+		/* result format 0 asks for no conversion: the texture unit hands over the texel's native packed
+		 * word, a U8U8U8U8 (or block-decoded) texel as ONE word, bytes R G B A from the low end -- what
+		 * usse_pack_iter_raw / gfx_soft.c's usse_texfn_raw give the interpreter. Writing four F32 words
+		 * instead left a program that moves PA0 bit for bit (a VBW copy to the U8 output) showing the
+		 * float bits of red as its colour: a full-screen menu background of yellow/blue noise.
+		 * The translator does not see texture formats: packing to unorm8 covers the 8-bit families and
+		 * BC (the interpreter's 1-word cases); wider texels are not covered (open: the 2-word raw case). */
+		uint32_t word = 0;
+		for (int c = 0; c < 4; c++) {
+			uint32_t f = composite_extract1(s, t_float(s), texel, (uint32_t)c);
+			f = glsl2(s, GLSLFMin, glsl2(s, GLSLFMax, f, c_float(s, 0.0f)), c_float(s, 1.0f));
+			uint32_t q = result1(s, &s->func, SpvOpConvertFToU, t_uint(s), glsl1(s, GLSLFloor, fop2(s, SpvOpFAdd, fop2(s, SpvOpFMul, f, c_float(s, 255.0f)), c_float(s, 0.5f))));
+			if (c) q = uop2(s, SpvOpShiftLeftLogical, q, c_uint(s, 8u * (uint32_t)c));
+			word = c ? uop2(s, SpvOpBitwiseOr, word, q) : q;
+		}
+		UOperand rd = dst; rd.type = TY_F32;   /* one whole 32-bit word */
+		write_raw_comp(g, &rd, 0, 0, word, ok);
+		return;
+	}
 	for (int c = 0; c < 4; c++) write_comp_f(g, &dst, 0, c, composite_extract1(s, t_float(s), texel, (uint32_t)c), ok);
 }
 /* fragment-shader prologue: pack every iterator (usse_fragment_layout) into PA exactly like
@@ -1771,6 +1804,10 @@ static void emit_frag_color_preload(Gen *g, uint32_t texel, int *ok) {
 	o.bank = (uint8_t)(fl->native_color ? BK_O : BK_PA); o.num = (uint16_t)fl->color_pa_start; o.type = (uint8_t)fl->color_type;
 	for (int k = 0; k < 4; k++) o.swiz[k] = (uint8_t)k;
 	int n = fl->color_comps > 0 ? fl->color_comps : 4;
+	if (fl->native_color && (g->color_kind & USSE_KIND_NATIVE)) {   /* NATIVECOLOR: the surface's bits (usse.h) -- RGBA8's bytes in O0, RGBA16F's halves in O0-O1, RGBA32F's words */
+		int tk = g->color_kind & 0xff;
+		o.type = (uint8_t)(tk == 1 ? TY_F16 : tk == 2 ? TY_F32 : TY_U8); n = 4;
+	}
 	int norm = o.type == TY_U8 || o.type == TY_S8 || o.type == TY_U16 || o.type == TY_S16;
 	for (int c = 0; c < n && c < 4 && *ok; c++) {
 		uint32_t v = composite_extract1(s, t_float(s), texel, (uint32_t)c);
@@ -1840,6 +1877,19 @@ static void emit_frag_epilogue(Gen *g, int *ok) {
 		}
 	}
 	uint32_t comp[4];
+	if (fl->native_color && (g->color_kind & USSE_KIND_RAW32)) {   /* NATIVECOLOR in a 32-bit register format: O0 is the surface's word (usse.h) */
+		uint32_t w0; { UOperand r = o; r.type = TY_U32; w0 = read_raw_comp(g, &r, 0, 0, ok); }
+		int tk = g->color_kind & 0xff;
+		for (int c = 0; c < 4; c++) {
+			if (tk == 1) comp[c] = c < 2 ? half_to_float_spv(s, extract_lane_spv(s, w0, TY_F16, c)) : c_float(s, c == 3 ? 1.0f : 0.0f);   /* (a half pair into RGBA16F) */
+			else if (tk == 2) comp[c] = c == 0 ? result1(s, &s->func, SpvOpBitcast, t_float(s), w0) : c_float(s, c == 3 ? 1.0f : 0.0f);
+			else comp[c] = fop2(s, SpvOpFDiv, result1(s, &s->func, SpvOpConvertUToF, t_float(s), extract_lane_spv(s, w0, TY_U8, c)), c_float(s, 255.0f));   /* RGBA8: bytes */
+		}
+		if (!*ok) return;
+		uint32_t id = nid(s); INS(&s->func, SpvOpCompositeConstruct, t_vec(s, t_float(s), 4), id, comp[0], comp[1], comp[2], comp[3]);
+		store(s, g->var_frag_color, id);
+		return;
+	}
 	if (o.type == TY_U32 || o.type == TY_S32) {   /* raw words (Unit 13's packed G-buffer): placed so the target holds the bits */
 		uint32_t w[4];
 		for (int k = 0; k < 4; k++) w[k] = k < n ? read_raw_comp(g, &o, 0, k, ok) : c_uint(s, 0);
@@ -1878,6 +1928,13 @@ static void emit_vert_epilogue(Gen *g, int *ok) {
 	uint32_t vz = load(s, t_vec(s, t_float(s), 4), pz);
 	uint32_t zoff = composite_extract1(s, t_float(s), vz, 0), zscale = composite_extract1(s, t_float(s), vz, 1);
 	pos[2] = fop2(s, SpvOpFAdd, fop2(s, SpvOpFMul, zoff, pos[3]), fop2(s, SpvOpFMul, zscale, pos[2]));
+	if (!g->points) {   /* SCE_GXM_VIEWPORT_DISABLED (VPDIS-01, gfx/viewport_map.h): the position is in target pixels; with the
+		 * host's factors in viewport_z[2..3] (2/W, -2/H; 0 for every other draw) x' = x*ax - w, y' = y*ay + w puts it in NDC */
+		uint32_t tf = t_float(s), ax = composite_extract1(s, tf, vz, 2), ay = composite_extract1(s, tf, vz, 3);
+		uint32_t on = result2(s, &s->func, SpvOpFOrdNotEqual, t_bool(s), ax, c_float(s, 0.0f));
+		uint32_t nx = fop2(s, SpvOpFSub, fop2(s, SpvOpFMul, pos[0], ax), pos[3]), ny = fop2(s, SpvOpFAdd, fop2(s, SpvOpFMul, pos[1], ay), pos[3]);
+		pos[0] = result3(s, &s->func, SpvOpSelect, tf, on, nx, pos[0]); pos[1] = result3(s, &s->func, SpvOpSelect, tf, on, ny, pos[1]);
+	}
 	if (g->pos_only) {   /* the motion variant's second run: its position, nothing else */
 		uint32_t id = nid(s); INS(&s->func, SpvOpCompositeConstruct, t_vec(s, t_float(s), 4), id, pos[0], pos[1], pos[2], pos[3]);
 		store(s, g->var_mv_prev, id); return;
@@ -2404,23 +2461,90 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 				g.pcf_dv = fop2(s, SpvOpFMul, pcf_step[1], c_float(s, (float)(tap / side) - (float)(side - 1) * 0.5f));
 			}
 		}
-		struct { int end; uint32_t merge; } brstack[8]; int nbr = 0;
+		/* (NIGHT-01 USSE-CF) two more structured forms, as compilers emit them (Injustice's skinning-style vertex
+		 * programs, Gravity Rush's two fallbacks):
+		 * - if/else: a predicated skip range whose LAST instruction is an unconditional forward branch -- the range is
+		 *   the then part, the branch jumps over the else part (range end .. its target);
+		 * - loops: an unconditional backward branch at j to h is a loop with header h (usse.c runs both as pc += imm);
+		 *   a predicated forward branch inside it to j+1 is a break, to j a continue. The loop is OpLoopMerge with
+		 *   the header at h, a continue block that only branches back, and the merge after j; a break is glslang's
+		 *   `if (c) break;` (a selection whose then block branches to the loop's merge).
+		 * Each entry is an if (kind 0: closes at end; with an else part pending at else_at) or a loop (kind 1: closes at
+		 * its back edge); a branch nested in an entry must stay inside it (limit). */
+		struct { int kind, end, else_at, else_end, back; uint32_t merge, else_lbl, cont, header; } brstack[16]; int nbr = 0;
+		int loop_at[n > 0 ? n : 1];   /* header -> its back edge, -1 none */
+		for (int i = 0; i < n; i++) loop_at[i] = -1;
+		for (int j = 0; j < n && ok; j++) if (code[j].op == OP_BR && code[j].pred_kind == 0 && code[j].imm < 0 && !code[j].args[0]) {
+			int h = j + (int)code[j].imm;
+			if (h < 0 || loop_at[h] >= 0) { snprintf(m.err, sizeof m.err, "backward branch at instruction %d (offset %d) outside the structured forms translated", j, (int)code[j].imm); ok = 0; }
+			else loop_at[h] = j;
+		}
+#define BR_LIMIT(e) ((e).kind == 1 ? (e).back : (e).end)
 		for (int i = 0; i < n && ok; i++) {
 			const UOp *op = &code[i];
-			while (nbr && brstack[nbr - 1].end <= i) { INS(&s->func, SpvOpBranch, brstack[nbr - 1].merge); INS(&s->func, SpvOpLabel, brstack[nbr - 1].merge); nbr--; }
+			int consumed = 0;
+			while (nbr) {
+				if (brstack[nbr - 1].kind == 0 && brstack[nbr - 1].else_at == i) {   /* the then part's closing jump: the else part follows */
+					INS(&s->func, SpvOpBranch, brstack[nbr - 1].merge); INS(&s->func, SpvOpLabel, brstack[nbr - 1].else_lbl);
+					brstack[nbr - 1].end = brstack[nbr - 1].else_end; brstack[nbr - 1].else_at = -1; consumed = 1; break;
+				}
+				if (brstack[nbr - 1].kind == 1 && brstack[nbr - 1].back == i) {   /* the back edge: continue block, then the merge */
+					INS(&s->func, SpvOpBranch, brstack[nbr - 1].cont); INS(&s->func, SpvOpLabel, brstack[nbr - 1].cont);
+					INS(&s->func, SpvOpBranch, brstack[nbr - 1].header); INS(&s->func, SpvOpLabel, brstack[nbr - 1].merge);
+					nbr--; consumed = 1; break;
+				}
+				if (brstack[nbr - 1].kind == 0 && brstack[nbr - 1].end <= i) { INS(&s->func, SpvOpBranch, brstack[nbr - 1].merge); INS(&s->func, SpvOpLabel, brstack[nbr - 1].merge); nbr--; continue; }
+				break;
+			}
+			if (consumed && loop_at[i] >= 0) { snprintf(m.err, sizeof m.err, "loop header on a consumed branch at instruction %d", i); ok = 0; break; }
+			if (consumed) continue;
+			if (loop_at[i] >= 0) {   /* a loop's header: its body runs from here to the back edge */
+				int back = loop_at[i];
+				if (nbr >= 16 || (nbr && back >= BR_LIMIT(brstack[nbr - 1]))) { snprintf(m.err, sizeof m.err, "loop at instructions %d-%d outside the structured forms translated", i, back); ok = 0; break; }
+				uint32_t header = nid(s), body = nid(s);
+				brstack[nbr].kind = 1; brstack[nbr].back = back; brstack[nbr].end = back + 1; brstack[nbr].else_at = -1;
+				brstack[nbr].header = header; brstack[nbr].cont = nid(s); brstack[nbr].merge = nid(s);
+				INS(&s->func, SpvOpBranch, header); INS(&s->func, SpvOpLabel, header);
+				INS(&s->func, SpvOpLoopMerge, brstack[nbr].merge, brstack[nbr].cont, 0 /*None*/);
+				INS(&s->func, SpvOpBranch, body); INS(&s->func, SpvOpLabel, body);
+				nbr++;
+			}
 			if (op->op == OP_BR) {
-				int target = i + (int)op->imm;
-				if (op->pred_kind == 0 || op->imm <= 0 || op->args[0] || target > n || (nbr && target > brstack[nbr - 1].end) || nbr >= 8) {
+				int target = i + (int)op->imm, lp = nbr - 1;
+				while (lp >= 0 && brstack[lp].kind != 1) lp--;   /* the innermost loop */
+				if (op->pred_kind != 0 && op->imm > 0 && !op->args[0] && lp >= 0 && (target == brstack[lp].back + 1 || target == brstack[lp].back)) {
+					/* break (to just past the back edge) or continue (to the back edge) */
+					uint32_t p = load(s, t_bool(s), pred_ptr(&g, op->pred_reg));
+					uint32_t taken = op->pred_kind == 1 ? p : result1(s, &s->func, SpvOpLogicalNot, t_bool(s), p);
+					uint32_t then = nid(s), join = nid(s);
+					INS(&s->func, SpvOpSelectionMerge, join, 0 /*None*/);
+					INS(&s->func, SpvOpBranchConditional, taken, then, join);
+					INS(&s->func, SpvOpLabel, then);
+					INS(&s->func, SpvOpBranch, target == brstack[lp].back ? brstack[lp].cont : brstack[lp].merge);
+					INS(&s->func, SpvOpLabel, join);
+					continue;
+				}
+				if (op->pred_kind == 0 || op->imm <= 0 || op->args[0] || target > n || (nbr && target > BR_LIMIT(brstack[nbr - 1])) || nbr >= 16) {
 					snprintf(m.err, sizeof m.err, "branch at instruction %d (%s, offset %d) outside the structured forms translated", i, op->pred_kind ? "predicated" : "unconditional", (int)op->imm); ok = 0; break;
+				}
+				/* an else part: the range's last instruction jumps forward over it, and stays inside the enclosing entry */
+				int else_end = -1;
+				if (target - 1 > i) {
+					const UOp *j = &code[target - 1];
+					int t2 = target - 1 + (int)j->imm;
+					if (j->op == OP_BR && j->pred_kind == 0 && j->imm > 0 && !j->args[0] && t2 <= n && (!nbr || t2 <= BR_LIMIT(brstack[nbr - 1]))) else_end = t2;
 				}
 				uint32_t p = load(s, t_bool(s), pred_ptr(&g, op->pred_reg));
 				uint32_t taken = op->pred_kind == 1 ? p : result1(s, &s->func, SpvOpLogicalNot, t_bool(s), p);
 				uint32_t run = result1(s, &s->func, SpvOpLogicalNot, t_bool(s), taken);   /* the skipped range runs when the branch is NOT taken */
-				uint32_t then = nid(s), merge = nid(s);
+				uint32_t then = nid(s), merge = nid(s), els = else_end >= 0 ? nid(s) : 0;
 				INS(&s->func, SpvOpSelectionMerge, merge, 0 /*None*/);
-				INS(&s->func, SpvOpBranchConditional, run, then, merge);
+				INS(&s->func, SpvOpBranchConditional, run, then, els ? els : merge);
 				INS(&s->func, SpvOpLabel, then);
-				brstack[nbr].end = target; brstack[nbr].merge = merge; nbr++;
+				brstack[nbr].kind = 0; brstack[nbr].merge = merge; brstack[nbr].back = -1;
+				if (els) { brstack[nbr].end = target - 1; brstack[nbr].else_at = target - 1; brstack[nbr].else_end = else_end; brstack[nbr].else_lbl = els; }
+				else { brstack[nbr].end = target; brstack[nbr].else_at = -1; }
+				nbr++;
 				continue;
 			}
 			/* (pN) / (!pN) predication: the instruction runs inside a structured if on the predicate
@@ -2473,7 +2597,7 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 			default: ok = 0; break;
 			}
 			if (pred_merge) { INS(&s->func, SpvOpBranch, pred_merge); INS(&s->func, SpvOpLabel, pred_merge); }
-			if (!ok) snprintf(m.err, sizeof m.err, "unsupported at primary instruction %d (op %d)%s%s", i, op->op, g.why[0] ? ": " : "", g.why);
+			if (!ok) { snprintf(m.err, sizeof m.err, "unsupported at primary instruction %d (op %d)%s%s", i, op->op, g.why[0] ? ": " : "", g.why); gap(GAP_SPIRV, (uint32_t)op->op, "spirv: primary op not translated"); }
 			{	/* RECOMP_PROBE=t|p|o:<word>@<instr>: the register word as of this instruction, for emit_frag_epilogue */
 				const char *pr = probe_env(); const char *at = pr ? strchr(pr, '@') : 0;
 				int vmode = pr && pr[0] >= 'A' && pr[0] <= 'Z', bl = pr ? (pr[0] | 0x20) : 0;
@@ -2481,6 +2605,7 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 			}
 		}
 		while (ok && nbr) { INS(&s->func, SpvOpBranch, brstack[nbr - 1].merge); INS(&s->func, SpvOpLabel, brstack[nbr - 1].merge); nbr--; }   /* ranges ending at the program's end */
+#undef BR_LIMIT
 		if (ok) { if (g.is_fragment) emit_frag_epilogue(&g, &ok); else emit_vert_epilogue(&g, &ok); }
 		if (g.motion && ok && !tap) store(s, g.var_mv_cur, load(s, t_v4, g.var_pos));   /* (this frame's position, as gl_Position got it) */
 		if (taps > 1 && ok && g.is_fragment) { uint32_t col = load(s, t_v4, g.var_frag_color); if (lerp) lerp_col[tap] = col; else pcf_acc = pcf_acc ? result2(s, &s->func, SpvOpFAdd, t_v4, pcf_acc, col) : col; }

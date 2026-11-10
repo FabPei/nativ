@@ -3,7 +3,7 @@
  *
  * SOP2 (docs/usse-isa.md §3.11) is the U8 blend op the game's UI/colour shaders lean on;
  * the software interpreter (usse.c's exec_sop2) implements it, the GPU translator (usse_spirv.c)
- * did not have a case for op 12 (OP_SOP2) and rejected every program using it -- measured in a game's
+ * did not have a case for op 12 (OP_SOP2) and rejected every program using it -- measured in SSD's
  * gfxcov gap table as 10 fallback shaders / 26,659 draws stuck on the software rasteriser.
  *
  * The fixture hand-encodes SOP2 instruction words (independent of dec_sop2's bit slicing, checked
@@ -13,11 +13,11 @@
  * it succeeds and emits a module. The GPU's rendered output is then validated on the game itself
  * by the accepted reference frame (vitarecomp check).
  *
- * The oracle pins the OBSERVED contract, not the ISA doc's packed-word write: an A/B measured on
+ * The oracle pins the OBSERVED contract, not the ISA doc's packed-word write: Q12-05 measured on
  * the real title that writing the packed word's bytes 1-3 (the doc's and Vita3K's SOP2 handler
- * reading) corrupts a game's rendering (full-screen green overlay via the interpreter too),
+ * reading) corrupts this title's rendering (full-screen green overlay via the interpreter too),
  * while exec_sop2's byte-0 read/write renders the accepted reference. The semantic divergence is
- * an open investigation -- this fixture locks the behaviour
+ * an open investigation recorded in docs/progress.md (Q12-05) -- this fixture locks the behaviour
  * both backends must share meanwhile.
  *
  * Build and run: see README.md in this directory (one cc line, run from this folder).
@@ -112,8 +112,8 @@ static void build_gxp(uint64_t insn) {
  * u8_unpack then reads that 32-bit read value's four bytes; exec_sop2's float complement applies
  * on top (the observed double modification); u8_pack4(out) is computed in full but only byte 0
  * reaches the destination word (write_raw_lane's lane-0 insert), bytes 1-3 preserved (0 here).
- * An A/B measured that writing all four packed bytes (docs/usse-isa.md §3.11 and Vita3K's
- * SOP2 handler) breaks that game's rendering; the divergence stays an open investigation. */
+ * Q12-05's A/B measured that writing all four packed bytes (docs/usse-isa.md §3.11 and Vita3K's
+ * SOP2 handler) breaks this title's rendering; the divergence stays an open investigation. */
 static uint32_t expect_sop2(uint32_t w1, uint32_t w2, int csel1, int cmod1, int csel2, int cmod2,
                             int asel1, int amod1, int asel2, int amod2, int src1_mod, int cop, int aop) {
 	uint32_t v1 = w1 & 0xFF, v2 = w2 & 0xFF;
@@ -218,7 +218,7 @@ int main(void) {
 		usse_spirv_set_canonical_varyings(1);
 		uint32_t sa[256] = {0}; int units[16] = {0}, nsmp = 0;
 		SpirvModule m = usse_spirv_translate(p, 0, usse_fragment_layout(p), sa, 16, units, &nsmp, 0, 0, 0, 0);
-		if (getenv("SOP2_DUMP") && m.ok) {   /* the emitted module for spirv structure checks */
+		if (getenv("SOP2_DUMP") && m.ok) {   /* Q12-05 diagnostic: the emitted module for spirv structure checks */
 			FILE *f = fopen(getenv("SOP2_DUMP"), "wb");
 			if (f) { fwrite(m.words ? m.words : (const void *)&m, 4, m.nwords, f); fclose(f); }
 		}

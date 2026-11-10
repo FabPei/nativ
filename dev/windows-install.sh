@@ -38,7 +38,7 @@ mkdir -p "$OUT/toolchain/zlib/share/licenses" "$OUT/toolchain/ffmpeg/share/licen
 cp "$WT/zlib-src/LICENSE" "$OUT/toolchain/zlib/share/licenses/LICENSE"
 cp "$WT/ffmpeg-src/LICENSE.md" "$WT/ffmpeg-src/COPYING.LGPLv2.1" "$OUT/toolchain/ffmpeg/share/licenses/"
 FV=$(cat "$WT/ffmpeg-src/VERSION" 2>/dev/null || cat "$WT/ffmpeg-src/RELEASE")
-printf 'FFmpeg %s (LGPL 2.1 or later), unmodified: https://ffmpeg.org/releases/ffmpeg-%s.tar.xz\nbuilt by runtime/platform/win/setup-toolchain.sh with only the H.264 and AAC decoders (plus libnativ_rawdec.a, runtime/platform/ffmpeg/rawdec.c)\n' "$FV" "$FV" > "$OUT/toolchain/ffmpeg/share/licenses/SOURCE"
+printf 'FFmpeg %s (LGPL 2.1 or later), unmodified: https://ffmpeg.org/releases/ffmpeg-%s.tar.xz\nbuilt by runtime/platform/win/setup-toolchain.sh with only the H.264 decoder\n' "$FV" "$FV" > "$OUT/toolchain/ffmpeg/share/licenses/SOURCE"
 if [[ "$(cat "$OUT/toolchain/llvm-mingw/.nativ-version" 2>/dev/null)" != "$LM_VER" ]]; then
   A=llvm-mingw-$LM_VER-ucrt-x86_64.zip
   fetch "$A" "https://github.com/mstorsjo/llvm-mingw/releases/download/$LM_VER/$A" "$LM_SHA"

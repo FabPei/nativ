@@ -67,10 +67,10 @@ void recomp_ihook_frame_dt(Cpu *c, int reg) {   /* any game's: packs/<title>/pac
 	if (getenv("RECOMP_FRAME_DT_TRACE")) { static unsigned n; if (n++ % 100 == 0) fprintf(stderr, "frame dt: 1/30 -> %.5f at %#x (%u so far)\n", dt, c->r[14], n); }
 }
 /* any game's: IHOOKS="addr:frames30" on the instruction that sets a count of frames written for 30 fps
- * (a wait, a window): doubled at 60 fps, so it lasts as long as on the console */
+ * (a wait, a window): times the rate over 30 -- doubled at 60 fps, four times at 120 -- so it lasts as long as on the console */
 void recomp_ihook_frames30(Cpu *c, int reg) {
 	if (reg < 0 || reg > 14 || !display_frame_rate_60()) return;
-	c->r[reg] *= 2;
+	c->r[reg] *= (uint32_t)(display_frame_rate() / 30);
 }
 
 /* a register holding the native aspect, 960/544 (0x3fe1e1e2, built by a movw/movt): widened by aspect_widen(), for a
@@ -81,6 +81,9 @@ void widen_aspect_reg(Cpu *c, int reg) {   /* a register holding the 960/544 con
 	if (k <= 1.0) return;
 	float a = (float)(960.0 / 544.0 * k); memcpy(&c->r[reg], &a, 4);
 }
+/* any game's: IHOOKS="addr:aspect" right after the movt that builds 960/544 in a camera's setup -- widen_aspect_reg as a
+ * hook, for a pack with no code of its own (needs RECOMP_ASPECT_HOOK=1 in its RUN_ENV, as every aspect hook) */
+void recomp_ihook_aspect(Cpu *c, int reg) { widen_aspect_reg(c, reg); }
 
 /* the callbacks a game's diagnostics plug into (a pack's hooks.c sets them from a constructor): a call-sequence capture
  * to arm (verify.c), a call to address 0 (main.c), a stall of the presented frames (stallprof.c) */
@@ -93,10 +96,24 @@ void (*hook_stall_long)(uint64_t stall_us);
  * premise) or at first draw. sceGxmShaderPatcherCreateFragmentProgram(patcher, id, output format, multisample, blend,
  * vertex program, out); sceGxmShaderPatcherCreateVertexProgram(patcher, id, attributes, n, streams, n, out). */
 static int gxm_patcher_log(void) { static int on = -1; if (on < 0) on = getenv("RECOMP_GXM_PATCHER_LOG") != 0; return on; }
+/* the registered program behind a patcher id: the first of its leading words that points at a GXP ("GXP\0").
+ * Any guest address: a game's GXPs live in its heaps (Tearaway's at 0x14xxxxxx), not only in its image */
+static uint32_t gxm_id_gxp(uint32_t id) {
+	if (id < 0x10000u || id >= 0xF0000000u || (id & 3)) return 0;
+	for (uint32_t k = 0; k < 0x20; k += 4) {
+		uint32_t p = RD32(id + k);
+		if (p >= 0x10000u && p < 0xF0000000u && !(p & 3) && RD32(p) == 0x00505847u) return p;
+	}
+	return 0;
+}
 void recomp_hook_gxm_fp_create(Cpu *c) {
+	/* every game (vitarecomp): the variant's output register format, by its GXP -- a NATIVECOLOR program's colour reaches
+	 * the surface in that format, not the GXP's declared one (gfx/usse.h usse_set_fp_output_format) */
+	{ extern void usse_set_fp_output_format(uint32_t gxp, int fmt);
+	  uint32_t g = gxm_id_gxp(c->r[1]); if (g) usse_set_fp_output_format(g, (int)c->r[2]); }
 	if (!gxm_patcher_log()) return;
 	static unsigned n; n++;
-	fprintf(stderr, "    gxm patcher: frame %llu fragment program #%u: id %#x format %u msaa %u blend %#x vertex %#x\n", (unsigned long long)display_frames(), n, c->r[1], c->r[2], c->r[3], RD32(c->r[13]), RD32(c->r[13] + 4));
+	fprintf(stderr, "    gxm patcher: frame %llu fragment program #%u: id %#x (gxp %#x) format %u msaa %u blend %#x vertex %#x\n", (unsigned long long)display_frames(), n, c->r[1], gxm_id_gxp(c->r[1]), c->r[2], c->r[3], RD32(c->r[13]), RD32(c->r[13] + 4));
 }
 void recomp_hook_gxm_vp_create(Cpu *c) {
 	if (!gxm_patcher_log()) return;

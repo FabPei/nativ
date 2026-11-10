@@ -19,6 +19,7 @@
 #include "hle.h"     /* guest_alloc; brings in rt.h (G/RD32/.../recomp_mem) */
 #include "usse.h"
 #include "usse_internal.h"   /* UOp/UOperand + the enums below: shared with usse_spirv.c */
+#include "gaps.h"   /* GAPS-01 */
 
 /* ---------------------------------------------------------------- 1. bit helpers / tables */
 #define BITS(w, hi, lo) (uint32_t)(((w) >> (lo)) & ((((uint64_t)1) << ((hi) - (lo) + 1)) - 1))
@@ -341,7 +342,10 @@ static void dec_vbw(uint64_t w, int sec, UOp *op) {
 	op->args[2] = (int32_t)BITS(w, 37, 36);     /* src2_exth */
 	op->mask = 0xF;
 	op->s0.bank = BK_NONE;
-	op->reps = 1; op->repmode = RM_EXTERNAL;
+	/* repeat count bits 47:44 (+1), SLMSI stepping, one 32-bit word a step (Vita3K's vbw: BEGIN_REPEAT, multiplier 1).
+	 * It was ignored: `or o28, sa22, #0` with repeat 2 -- a two-word copy of four halves -- copied one word, and the
+	 * other kept a stale value (a character vertex program's texcoord .zw came out in the thousands) */
+	op->reps = (uint8_t)(BITS(w, 47, 44) + 1); op->repmode = RM_SLMSI;
 }
 
 /* ---- SOP2 / SOP2M / SOP3 (§3.11): U8 RGBA blend-style sum of products ---- */
@@ -548,8 +552,8 @@ static UOp decode_one(uint64_t w, int secondary) {
 	if (op1 == 0x13) { dec_i8mad(w, secondary, &op); return op; }
 	if (op1 == 0x14) { dec_i16mad(w, secondary, &op); return op; }
 	if (op1 == 0x15) { dec_i32mad(w, secondary, &op); return op; }
-	if (op1 == 0x16 || op1 == 0x17 || op1 == 0x18 || op1 == 0x1B) { op.op = OP_UNSUPPORTED; return op; }   /* illegal */
-	if (op1 == 0x19) { op.op = OP_NOP; return op; }   /* I8MAD2: unimplemented, no-op */
+	if (op1 == 0x16 || op1 == 0x17 || op1 == 0x18 || op1 == 0x1B) { gap(GAP_USSE_OP, op1 << 8, "usse: illegal op1 (unsupported)"); op.op = OP_UNSUPPORTED; return op; }   /* illegal */
+	if (op1 == 0x19) { gap(GAP_USSE_OP, op1 << 8, "usse: I8MAD2 run as a no-op"); op.op = OP_NOP; return op; }   /* I8MAD2: unimplemented, no-op */
 	if (op1 == 0x1A) { dec_i32mad2(w, secondary, &op); return op; }
 	if (op1 == 0x1C) { dec_smp(w, secondary, &op); return op; }
 	if (op1 == 0x1F) {
@@ -560,16 +564,23 @@ static UOp decode_one(uint64_t w, int secondary) {
 			if (fc == 5) { op.op = OP_NOP; return op; }               /* NOP */
 			if (fc == 0 || fc == 1) { dec_br(w, &op); return op; }    /* BR */
 			if (fc == 2) { op.op = OP_NOP; return op; }               /* return: treated as end-of-program (interpreter stops at instr_count) */
-			op.op = OP_UNSUPPORTED; return op;
+			gap(GAP_USSE_OP, op1 << 8 | 0x80 | fc, "usse: flow-control form not decoded (unsupported)"); op.op = OP_UNSUPPORTED; return op;
 		}
 		if (opcat == 1 && op2 == 2) { dec_smlsi(w, &op); return op; }
 		if (opcat == 1 && op2 == 3) { dec_smbo(w, &op); return op; }
 		if (opcat == 2 && op2 == 4) { dec_limm(w, secondary, &op); return op; }
 		if (opcat == 3 && op2 == 1) { dec_kill(w, &op); return op; }
 		if (opcat == 3 && op2 == 3) { dec_depthf(w, secondary, &op); return op; }
-		op.op = OP_NOP; return op;   /* SPEC catch-all: no-op per docs/usse-isa.md §3.21 */
+		/* GAPS-03: two SPEC forms every game uses, no-ops here by design (docs/usse-isa.md 3.21; Vita3K's SPEC visitor
+		 * ignores them too). opcat 2 op2 3: the last instruction of a vertex program (emit vertex / end; 0xFB275000A0200000):
+		 * the program ends there anyway. opcat 2 op2 1: a data fence after LD/SMP (0xF920...): Nativ's loads and samples
+		 * complete at once, nothing to wait for. Named, so they are no longer counted as unknown forms. */
+		if (opcat == 2 && op2 == 3) { op.op = OP_NOP; op.sub = USSE_NOP_EMIT; return op; }
+		if (opcat == 2 && op2 == 1) { op.op = OP_NOP; op.sub = USSE_NOP_FENCE; return op; }
+		gap(GAP_USSE_OP, op1 << 8 | opcat << 4 | op2, "usse: SPEC form run as a no-op"); op.op = OP_NOP; return op;   /* SPEC catch-all: no-op per docs/usse-isa.md §3.21 */
 	}
 	if (op1 == 0x1D || op1 == 0x1E) { dec_ldst(w, secondary, &op); return op; }
+	gap(GAP_USSE_OP, op1 << 8, "usse: op1 not decoded (unsupported)");
 	op.op = OP_UNSUPPORTED;
 	return op;
 }
@@ -665,6 +676,7 @@ struct UsseProgram {
 	UsseFragLayout fl;
 	uint32_t literal_addr, literal_words;   /* container 16's data, for the uniform-buffer-address table */
 	int8_t additive;   /* usse_fragment_fb_blend's answer + 1, once asked (0: not yet) */
+	int8_t packed8;    /* usse_fragment_colour_packed8's answer + 1, once asked (0: not yet) */
 	struct UsseProgram *next, *hnext;   /* the address table's chain; the content table's chain (decoded entries only) */
 };
 typedef struct {
@@ -1014,9 +1026,12 @@ static void exec_vtstmsk(Ctx *cx, const UOp *op) {
 }
 static uint32_t rol32(uint32_t v, int s) { s &= 31; return s ? (v << s) | (v >> (32 - s)) : v; }
 static void exec_vbw(Ctx *cx, const UOp *op) {
-	uint32_t a = read_i32(cx, &op->s1, 0, 0), b;
+	static const int unit[4] = {1, 1, 1, 1};
+	for (int r = 0; r < op->reps; r++) {
+	int off1 = slot_offset(cx, op->repmode, op->s1.bank, 1, r, unit), off2 = slot_offset(cx, op->repmode, op->s2.bank, 2, r, unit), offd = slot_offset(cx, op->repmode, op->dst.bank, 3, r, unit);
+	uint32_t a = read_i32(cx, &op->s1, off1, 0), b;
 	if (op->s2.bank == BK_IMM) b = (uint32_t)op->s2.num | ((uint32_t)op->imm << 7) | ((uint32_t)op->args[2] << 14);
-	else b = read_i32(cx, &op->s2, 0, 0);
+	else b = read_i32(cx, &op->s2, off2, 0);
 	int rot = op->args[0] & 31;
 	b = op->sub3 ? (uint32_t)(((b << (rot & 15)) | (b >> (16 - (rot & 15)))) & 0xFFFF) : rol32(b, rot);
 	if (op->args[1]) b = op->sub3 ? (~b & 0xFFFFu) : ~b;
@@ -1029,7 +1044,8 @@ static void exec_vbw(Ctx *cx, const UOp *op) {
 	default: result = a; break;
 	}
 	if (op->sub3) result &= 0xFFFFu;
-	write_raw_lane(cx, &op->dst, 0, 0, result);
+	write_raw_lane(cx, &op->dst, offd, 0, result);
+	}
 }
 static void u8_unpack(uint32_t w, float rgb[3], float *a) { rgb[0] = (w & 0xFF) / 255.0f; rgb[1] = ((w >> 8) & 0xFF) / 255.0f; rgb[2] = ((w >> 16) & 0xFF) / 255.0f; *a = ((w >> 24) & 0xFF) / 255.0f; }
 static float clamp01(float v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
@@ -1409,6 +1425,7 @@ static void exec_instruction(Ctx *cx, const UOp *op) {
 	}
 }
 static const char *opname(int op);
+static const char *uop_name(const UOp *o);
 static void run_program(Ctx *cx, const UOp *code, int n) {
 	for (int s = 0; s < 4; s++) for (int r = 0; r <= 16; r++) cx->inc[s][r] = (int8_t)r;
 	int guard = 0;
@@ -1443,7 +1460,7 @@ static void run_program(Ctx *cx, const UOp *code, int n) {
 		 * (the harness usse_run and gfxreplay both honour it) */
 		static int trace = -1; if (trace < 0) trace = getenv("RECOMP_USSE_TRACE") != 0;
 		if ((trace || g_trace_force) && op->op != OP_NOP) {
-			fprintf(stderr, "  %3d %-8s", pc, opname(op->op));
+			fprintf(stderr, "  %3d %-8s", pc, uop_name(op));
 			if (op->op == OP_VDUAL) {   /* its UOp has no dst: each op's sources and destination words, from the shared decode */
 				static const char *const dn[15] = {"vmad","vdp","vssq","vmul","vadd","vmov","frsq","frcp","fmad","fadd","fmul","fsubflr","fexp","flog","-"};
 				static const char *const srcname[4] = {"us", "i0", "i1", "i2"};
@@ -1669,6 +1686,49 @@ const UOp *usse_program_code(const UsseProgram *p, int secondary, int *count) {
 	*count = secondary ? p->nsec : p->nprim;
 	return secondary ? p->sec : p->prim;
 }
+/* (usse.h) a NATIVECOLOR program whose colour word is an 8-bit pack: the primary code walked in order, each TEMP / PA /
+ * O word remembering what last wrote it -- a VPCK into U8/S8/O8 (packed), a plain move of a word that was (carried
+ * over), or anything else -- and the colour register's first word asked at the end. Straight-line view: a write under
+ * a predicate or behind a branch counts as if it ran (both of Tearaway's kinds of program are straight-line). */
+static int words_written(const UOp *o, int *first, int *count) {
+	int t = o->dst.type, lanes = t == TY_F16 || t == TY_U16 || t == TY_S16 ? 2 : t == TY_U8 || t == TY_S8 || t == TY_O8 ? 4 : 1;
+	int lo = 4, hi = -1; for (int l = 0; l < 4; l++) if (o->mask & (1 << l)) { if (l < lo) lo = l; if (l > hi) hi = l; }
+	if (hi < 0) return 0;
+	int reps = o->reps ? o->reps : 1;
+	*first = o->dst.num + lo / lanes; *count = (hi / lanes - lo / lanes + 1) + (reps - 1) * ((4 + lanes - 1) / lanes);
+	return 1;
+}
+int usse_fragment_colour_packed8(const UsseProgram *cp) {
+	UsseProgram *p = (UsseProgram *)cp;
+	if (p->packed8) return p->packed8 - 1;
+	enum { W_OTHER, W_PACKED };
+	static __thread uint8_t st[3][256];   /* TEMP, PA, O */
+	memset(st, W_OTHER, sizeof st);
+	int r = 0;
+	if (p->is_fragment && p->fl.native_color) {
+		for (int i = 0; i < p->nprim; i++) {
+			const UOp *o = &p->prim[i];
+			int b = o->dst.bank == BK_TEMP ? 0 : o->dst.bank == BK_PA ? 1 : o->dst.bank == BK_O ? 2 : -1, first, n;
+			if (b < 0 || o->op == OP_NOP || o->op == OP_BR || o->op == OP_KILL || o->op == OP_DEPTHF || !words_written(o, &first, &n)) continue;
+			int kind = W_OTHER, sb = o->s1.bank == BK_TEMP ? 0 : o->s1.bank == BK_PA ? 1 : o->s1.bank == BK_O ? 2 : -1;
+			int8_t ident = o->s1.swiz[0] == 0 && o->s1.swiz[1] == 1 && o->s1.swiz[2] == 2 && o->s1.swiz[3] == 3 && !o->s1.negabs;
+			if (o->op == OP_VPCK && (o->dst.type == TY_U8 || o->dst.type == TY_S8 || o->dst.type == TY_O8)) kind = W_PACKED;
+			for (int k = 0; k < n; k++) {
+				int w = first + k; if (w < 0 || w >= 256) continue;
+				int v = kind;
+				if (o->op == OP_VMOV && sb >= 0 && ident && o->s1.type == o->dst.type && o->s1.num + k < 256) v = st[sb][o->s1.num + k];   /* a move carries the word over */
+				st[b][w] = (uint8_t)v;
+			}
+		}
+		int c = p->fl.color_pa_start; r = c >= 0 && c < 256 && st[2][c] == W_PACKED;
+	}
+	p->packed8 = (int8_t)(r + 1);
+	return r;
+}
+int usse_native_raw32(const UsseProgram *p, uint32_t gxp) {
+	static int env = -1; if (env < 0) env = getenv("RECOMP_FP_OUTFMT") != 0;
+	return env ? usse_output_format_raw32(usse_fp_output_format(gxp)) : usse_fragment_colour_packed8(p);
+}
 const UsseVertexLayout *usse_vertex_layout(const UsseProgram *p) { return &p->vl; }
 const UsseFragLayout *usse_fragment_layout(const UsseProgram *p) { return &p->fl; }
 const UsseAttrSlot *usse_find_attr(const UsseVertexLayout *vl, int reg) {
@@ -1778,6 +1838,38 @@ void usse_read_color(const UsseInst *inst, const UsseFragLayout *fl, float out[4
 		uint32_t raw = read_i32(&cx, &o, 0, c);
 		out[c] = norm ? lane_to_float_norm(raw, o.type) : lane_to_float(raw, o.type);
 	}
+}
+/* (usse.h) GXP -> its variants' output register format: a small open-addressed table, written by the patcher hook
+ * (the game's threads) and read per draw; a word per slot, so a reader sees a slot whole or not at all */
+#define FP_OUTFMT_SLOTS 4096
+static volatile uint64_t fp_outfmt[FP_OUTFMT_SLOTS];   /* gxp << 8 | format; 0 empty */
+void usse_set_fp_output_format(uint32_t gxp, int fmt) {
+	if (!gxp) return;
+	for (uint32_t i = 0, h = (gxp >> 2) * 2654435761u; i < FP_OUTFMT_SLOTS; i++) {
+		uint32_t k = (h + i) % FP_OUTFMT_SLOTS; uint64_t e = fp_outfmt[k];
+		if (!e || (uint32_t)(e >> 8) == gxp) { fp_outfmt[k] = (uint64_t)gxp << 8 | (uint64_t)(fmt & 0xff); return; }
+	}
+}
+int usse_fp_output_format(uint32_t gxp) {
+	static int env = -1; static uint32_t eg[64]; static int ef[64], ne, edef;
+	if (env < 0) {
+		const char *e = getenv("RECOMP_FP_OUTFMT"); env = e != 0;
+		for (const char *p = e; p && *p && ne < 64; ) {
+			char *end; uint32_t g = *p == '*' ? (p++, 0u) : (uint32_t)strtoul(p, &end, 16);
+			if (g) p = end;
+			if (*p != ':') break;
+			int f = (int)strtol(p + 1, &end, 10); p = end;
+			if (g) { eg[ne] = g; ef[ne++] = f; } else edef = f;
+			if (*p == ',') p++;
+		}
+	}
+	if (env) { for (int i = 0; i < ne; i++) if (eg[i] == gxp) return ef[i]; if (edef) return edef; }
+	for (uint32_t i = 0, h = (gxp >> 2) * 2654435761u; i < FP_OUTFMT_SLOTS; i++) {
+		uint64_t e = fp_outfmt[(h + i) % FP_OUTFMT_SLOTS];
+		if (!e) return 0;
+		if ((uint32_t)(e >> 8) == gxp) return (int)(e & 0xff);
+	}
+	return 0;
 }
 void usse_preload_color(UsseInst *inst, const UsseFragLayout *fl, const float in[4]) {
 	UOperand o; memset(&o, 0, sizeof o);
@@ -1970,6 +2062,12 @@ int usse_fragment_fb_blend(const UsseProgram *cp) {
 	return cls;
 }
 /* ---------------------------------------------------------------- 8. disassembler */
+static const char *opname(int op);
+static const char *uop_name(const UOp *o) {   /* opname, with the no-ops that stand for a known instruction named */
+	if (o->op == OP_NOP && o->sub == USSE_NOP_EMIT) return "EMIT";
+	if (o->op == OP_NOP && o->sub == USSE_NOP_FENCE) return "DFENCE";
+	return opname(o->op);
+}
 static const char *opname(int op) {
 	switch (op) {
 	case OP_NOP: return "NOP"; case OP_VMAD2: return "VMAD2"; case OP_VNMAD: return "VNMAD"; case OP_VMAD: return "VMAD"; case OP_VDP: return "VDP";
@@ -1999,7 +2097,7 @@ int usse_disassemble(const UsseProgram *p, void *out_FILE) {
 		fprintf(f, " %s:\n", which ? "primary" : "secondary");
 		for (int i = 0; i < n; i++) {
 			const UOp *o = &ops[i];
-			fprintf(f, "  %4d: %016llx  %-8s", i, (unsigned long long)o->raw, opname(o->op));
+			fprintf(f, "  %4d: %016llx  %-8s", i, (unsigned long long)o->raw, uop_name(o));
 			if (o->op == OP_UNSUPPORTED) { unk++; fprintf(f, "  <-- unsupported encoding"); }
 			fprintf(f, "\n");
 		}

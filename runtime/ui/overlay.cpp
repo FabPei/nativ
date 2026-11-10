@@ -47,8 +47,24 @@
 #include "backends/imgui_impl_sdlgpu3.h"
 #include "gpulock.h"   /* the SDL submit below is the locked one, and ImGui's own submits run under the same lock (render_frame): Homebrew SDL 3.4.16's Metal fence race, see that header */
 #include "overlay.h"
+#include "ui_text.h"
+#include "savedlg_ui.h"
+#include "imedlg_ui.h"
+#include "imedlg.h"
 #include "savedlg.h"
 #include "ui_theme.h"
+#include "setting_defaults.h"   /* (U7) the shared defaults for the rows' "default" marks */
+#include "frame_rates.h"        /* the allowed rates the frame-rate rows offer */
+#include "ui_scale.h"
+#include "pad_family.h"   /* (UI-01e) the pad's own button names, shared with the launcher */
+#include "touch_controls.h"   /* (UI-01n) the on-screen buttons' layout, shared with window.c */
+#include "menu_shell.h"   /* (UI-03) the sections as tabs across the top, one pad flow (menu_walk_test) */
+#include "menu_hint.h"   /* (UI-02a) the start hint, per device */
+#include "intro_skip.h"   /* (INTRO-01) the touch card ends by itself */
+#include "device_pick.h"   /* (UI-02b) the chosen controller / camera, "not connected" */
+#include <string>
+#include <vector>
+#include "sysinfo.h"   /* the "Copy system info" text (U5) */
 #define STBI_NO_STDIO
 #include "third_party/stb/stb_image.h"   /* (its implementation: runtime/media/jpeg.c) */
 #include "prompts_png.h"                 /* third_party/kenney-prompts/prompts.png as bytes (runtime/build.py writes it) */
@@ -69,7 +85,7 @@ int net_online(void); const char *net_online_needs(void);
 void display_set_paused(int on);
 /* window.c */
 int window_get_aspect(void); void window_set_aspect(int mode);
-int window_get_fullscreen(void); void window_set_fullscreen(int on);
+int window_get_fullscreen(void); void window_set_fullscreen(int on); void window_set_size(int mult);
 int window_raw_look(void); void window_set_raw_look(int on);
 int window_controls_count(void);
 int window_gyro_present(void);
@@ -97,6 +113,8 @@ int metrics_frame_times(float *ms, int max);       /* the full level's frame-tim
 extern "C" {
 const char *window_present_mode(void);   /* window.c: vsync, mailbox or immediate */
 int display_frame_rate_60(void);         /* display.c: the frame-rate setting */
+int display_frame_rate(void);            /* display.c: the rate the game runs at now (30 | 60 | 120) */
+int display_frame_rates_allowed(void);   /* display.c: the pack's allowed rates, a mask of frame_rates.h FR_* */
 int gfx_gpu_fsr_active(void);            /* gfx_gpu.c: FSR upscales the frame */
 /* settings.c */
 int settings_has(const char *key);
@@ -106,11 +124,80 @@ void settings_set_int(const char *key, int v);
 void settings_set_float(const char *key, double v);
 void settings_set_str(const char *key, const char *v);
 const char *settings_str(const char *key, const char *def, char *buf, int bufsize);
-void settings_save(void);
+int settings_save(void);
+int settings_reset_all(const char *const *keep);
+extern const char *const settings_default_keep[];
 }
+
+/* (UI-02b) a device choice by name: "Automatic" (the first one), each connected device, and the chosen one marked "not
+ * connected" while it isn't (the game then uses the first one) -- key: "pad_device" or "camera_device" */
+static void save_settings(void);   /* (below) */
+static volatile bool g_value_edit;   /* (UI-04: a value is being edited with the pad / the keys -- Esc ends that, not the menu: overlay_modal_open) */
+static void device_choice(const char *id, const char *key, const std::vector<std::string> &names) {
+	char want[128]; settings_str(key, "", want, sizeof want);
+	std::vector<std::string> opts{ui_tr("ctrl.in_auto")}; for (const std::string &n : names) opts.push_back(n);
+	int cur = 0;
+	if (want[0]) {
+		cur = -1;
+		for (size_t i = 0; i < names.size(); i++) if (device_same(names[i].c_str(), want, 1)) cur = (int)i + 1;
+		if (cur < 0) { opts.push_back(std::string(want) + " " + ui_tr("ctrl.not_connected")); cur = (int)opts.size() - 1; }
+	}
+	std::vector<std::string> ls; for (size_t i = 0; i < opts.size(); i++) ls.push_back(opts[i] + "##" + id + std::to_string(i));
+	std::vector<const char *> cs; for (const std::string &l : ls) cs.push_back(l.c_str());
+	int v = cur;
+	if (ui::segmented(cs.data(), (int)cs.size(), &v) && v != cur) {
+		if (v == 0) settings_set_str(key, "");
+		else if (v <= (int)names.size()) settings_set_str(key, names[v - 1].c_str());
+		save_settings();
+	}
+}
+static std::vector<std::string> pad_list(void) {
+	std::vector<std::string> v; int n = 0; SDL_JoystickID *ids = SDL_GetGamepads(&n);
+	for (int i = 0; ids && i < n; i++) { const char *nm = SDL_GetGamepadNameForID(ids[i]); v.push_back(nm ? nm : "Controller"); }
+	SDL_free(ids); return v;
+}
+static std::vector<std::string> camera_list(void) {
+	std::vector<std::string> v;
+	if (!SDL_WasInit(SDL_INIT_CAMERA) && !SDL_InitSubSystem(SDL_INIT_CAMERA)) return v;
+	int n = 0; SDL_CameraID *ids = SDL_GetCameras(&n);
+	for (int i = 0; ids && i < n; i++) { const char *nm = SDL_GetCameraName(ids[i]); v.push_back(nm ? nm : "Camera"); }
+	SDL_free(ids); return v;
+}
+/* (U7) a settings row's mark: "default" while the value equals the shared default (setting_defaults.h), else the
+ * row's timing note -- "next scene" (render scale applies at the game's next scene) or "after restart" (values the
+ * game reads only at start) */
+static const char *note_str(const char *key, const char *cur, const char *when = nullptr) {
+	const char *d = setting_default(key);
+	if (d && cur && !strcmp(d, cur)) return ui_tr("mark.default");
+	return when;
+}
+static const char *note_s(const char *key, const char *when = nullptr) {
+	const char *d = setting_default(key);
+	char b[64]; settings_str(key, d ? d : "", b, sizeof b);
+	return note_str(key, b, when);
+}
+static const char *note_int(const char *key, long long v, const char *when = nullptr) {
+	char b[24]; std::snprintf(b, sizeof b, "%lld", v);
+	return note_str(key, b, when);
+}
+static const char *note_flt(const char *key, double v, const char *when = nullptr) {
+	char b[32]; std::snprintf(b, sizeof b, "%g", v);
+	return note_str(key, b, when);
+}
+/* (U12b) a translated label with its ImGui id suffix ("Off" + "##ar" -> "Aus##ar"), in the caller's buffer */
+static const char *tr_suf(const char *txt, const char *suf, char *buf, size_t n) { std::snprintf(buf, n, "%s%s", txt, suf); return buf; }
+
+/* (U8) the last settings save's result: the foot says "Settings could not be saved" in ui::error until a later save
+ * succeeds */
+static bool g_save_failed;
+static void save_settings(void) { g_save_failed = settings_save() == 0; }
 
 static ImGuiContext *g_ctx;
 static bool g_has_window;      /* overlay_init was given a real SDL_Window: the platform backend is live */
+static SDL_Window *g_window;   /* that window (its display's content scale: render_frame's scale) */
+static ImGuiStyle g_base_style; /* the look at scale 1 (ui::apply(15, 1)): every scale is applied from it, never compounded */
+static char g_sys_locale[16] = "";   /* (U12b) the system locale for menu_lang "auto"; the language row re-applies it live */
+static float g_ui_scale = 1.0f; /* the scale in effect (ui_scale.h) */
 /* written by the window thread, read by the game thread (display.c's pause, window.c's audio): atomic,
  * like every other flag that crosses those threads (rscale_req, osd_level_v). g_paused: Game > Pause
  * in the menu bar -- the game held (display.c, as for the menu) with nothing but a banner on screen */
@@ -136,8 +223,20 @@ int overlay_init(SDL_GPUDevice *device, SDL_Window *window, SDL_GPUTextureFormat
 	ui::load_system_font(io);   /* an explicit face: without one, ImGui 1.92's own automatic choice (vector vs. bitmap)
 		depends on a DPI scale the headless path never sets, and picks a degenerate (zero-size) one */
 	ui::apply(15.0f, 1.0f);     /* the launcher's look (ui_theme.h), a point smaller: the menu sits over a 960x544 game */
-	g_has_window = window != nullptr;
+	/* (U12a) the menu's language: menu_lang, "auto" = the system's preference */
+	char ml[8]; const char *pref = settings_str("menu_lang", "auto", ml, sizeof ml);
+	int nloc = 0; SDL_Locale **locs = SDL_GetPreferredLocales(&nloc);
+	const char *lc = locs && nloc > 0 && locs[0] && locs[0]->language ? locs[0]->language : NULL;   /* (U12b) kept for the language row's live switch */
+	if (lc) snprintf(g_sys_locale, sizeof g_sys_locale, "%s", lc);
+	ui_text_lang_load(pref, g_sys_locale[0] ? g_sys_locale : NULL);
+	g_base_style = ImGui::GetStyle(); g_ui_scale = 1.0f;   /* (scaled per window size in render_frame: ui_scale.h) */
+	g_has_window = window != nullptr; g_window = window;
 	if (g_has_window && !ImGui_ImplSDL3_InitForSDLGPU(window)) { ImGui::DestroyContext(g_ctx); g_ctx = nullptr; return 0; }
+	imedlg_set_ui_ready(g_has_window);   /* (HLE-LIB-05: a window can show the IME card) */
+	/* (U12c) the pad is the host's: window.c routes its events here and savedlg_ui's feed makes them ImGui keys;
+	 * the backend opens no pads of its own (its list went stale for a pad connected after this point, and its
+	 * empty list cleared HasGamepad every frame -- the whole menu and the save dialog lost the controller) */
+	if (g_has_window) ImGui_ImplSDL3_SetGamepadMode(ImGui_ImplSDL3_GamepadMode_Manual, nullptr, 0);
 	ImGui_ImplSDLGPU3_InitInfo info = {};
 	info.Device = device; info.ColorTargetFormat = color_fmt; info.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
 	if (!ImGui_ImplSDLGPU3_Init(&info)) {
@@ -164,9 +263,11 @@ static void apply_pause(void) { display_set_paused(g_open || g_paused); }
 void overlay_open(void) { if (g_ctx) { intro_end(); g_open = true; apply_pause(); } }   /* (F10 over the touch card: it's skipped) */
 static void intro_end(void) {   /* the touch card, done or skipped: never again */
 	if (!g_intro) return;
-	g_intro = false; settings_set_int("touch_intro_shown", 1); settings_save();
+	g_intro = false; settings_set_int("touch_intro_shown", 1); save_settings();
 	g_paused = false; apply_pause();
 }
+int overlay_intro_up(void) { return g_ctx && g_intro; }   /* (INTRO-01) */
+void overlay_intro_skip(void) { if (g_ctx) intro_end(); }
 void overlay_close(void) {   /* closing the menu resumes: a Game > Pause doesn't outlive it */
 	if (g_layout_card) { g_layout_card = false; g_layout_ask = 0; g_layout_answer = 1; }   /* (Escape on the layout card: touch, the default) */
 	intro_end();
@@ -184,18 +285,40 @@ int overlay_quit_confirm(void) {   /* (window.c, on a request to close the windo
 }
 /* quitting a game the launcher started (ATIV_LAUNCHER, hub.cpp) returns to the launcher's library, which comes to the
  * front: the button says so */
-static const char *quit_label(void) { return std::getenv("ATIV_LAUNCHER") ? "Back to the library" : "Quit game"; }
+static const char *quit_label(void) { return std::getenv("ATIV_LAUNCHER") ? ui_tr("foot.quit_launcher") : ui_tr("foot.quit_game"); }
 int overlay_wants_capture(void) { return g_want_capture.exchange(false); }
 
 extern "C" { int window_kb_count(void); const char *window_kb_label(int i); const char *window_kb_key_name(int i);
              void window_kb_bind(int i, SDL_Keycode k); void window_kb_reset(void); int window_kbm_active(void); }
+extern "C" { int window_pad_count(void); const char *window_pad_label(int i); const char *window_pad_button_name(int i);
+             int window_pad_bind(int i, int button); void window_pad_reset(void); }
 static int g_rebind = -1;   /* the Controls page's Rebind: the next key pressed goes to this action */
+static int g_pad_rebind = -1;   /* (U11) the Controller buttons' Change: the next pad button goes to this action */
 void overlay_process_event(const SDL_Event *event) {
 	if (!g_ctx || !g_has_window) return;
 	if (g_rebind >= 0 && event->type == SDL_EVENT_KEY_DOWN && !event->key.repeat) { window_kb_bind(g_rebind, event->key.key); g_rebind = -1; return; }   /* (Escape and F10 close the menu first: window.c) */
+	if (g_pad_rebind >= 0) {   /* (U11) the pad capture: the next pad button becomes the binding and reaches nothing;
+	                            * a nameless button (Guide, the shoulders) is refused and keeps the capture; Escape
+	                            * or B cancels (a gamepad press would be a binding, so cancel is the keyboard's) */
+		if (event->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) { if (window_pad_bind(g_pad_rebind, event->gbutton.button)) g_pad_rebind = -1; return; }
+		if (event->type == SDL_EVENT_GAMEPAD_BUTTON_UP) return;
+		if (event->type == SDL_EVENT_KEY_DOWN && !event->key.repeat && (event->key.key == SDLK_ESCAPE || event->key.key == SDLK_B)) { g_pad_rebind = -1; return; }
+	}
 	ImGui::SetCurrentContext(g_ctx);
+	/* the save dialog's pad (SAVE-DLG-01): the pad events routed here become the dialog's ImGui keys --
+	 * the SDL3 backend's own gamepad list goes stale when a pad connects after the overlay's first frame,
+	 * so the dialog cannot rely on it for key state (savedlg_ui.cpp's header comment) */
+	if (event->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || event->type == SDL_EVENT_GAMEPAD_BUTTON_UP) {
+		savedlg_ui_gamepad_button(event->gbutton.button, event->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN);
+		return;
+	}
+	if (event->type == SDL_EVENT_GAMEPAD_AXIS_MOTION) { savedlg_ui_gamepad_axis(event->gaxis.axis, event->gaxis.value); return; }
 	ImGui_ImplSDL3_ProcessEvent(event);
 }
+/* (U6) g_prefs_epoch: a reset changes settings under the pages' feet, so the once-loaded page values re-read it.
+ * g_modal_open: the reset dialog is up -- window.c must leave Esc to it (the dialog cancels, not the menu). */
+static int g_prefs_epoch;
+static bool g_modal_open;
 
 /* ---- the settings both the full menu's pages and the menu bar's menus edit: read once from settings.c
  * (it has no "changed since" signal, and a slider mid-drag must not snap back to the file's value on the
@@ -216,10 +339,10 @@ static void prefs_load(void) {
 	P.vol = (float)settings_float("volume", 1.0);
 	P.loaded = true;
 }
-static void set_fov(float v) { P.fov = v; settings_set_float("fov", v); settings_save(); }
-static void set_view(float v) { P.view = v; settings_set_float("view_distance", v); settings_save(); }
-static void set_scen(float v) { P.scen = v; settings_set_float("scenery_detail", v); settings_save(); }
-static void set_chr(float v) { P.chr = v; settings_set_float("character_detail", v); settings_save(); }
+static void set_fov(float v) { P.fov = v; settings_set_float("fov", v); save_settings(); }
+static void set_view(float v) { P.view = v; settings_set_float("view_distance", v); save_settings(); }
+static void set_scen(float v) { P.scen = v; settings_set_float("scenery_detail", v); save_settings(); }
+static void set_chr(float v) { P.chr = v; settings_set_float("character_detail", v); save_settings(); }
 /* the per-game options this game's hooks honour, from its conf (RECOMP_GAME_OPTIONS in RUN_ENV, e.g. "fov,view_distance"):
  * a row is shown only where it does something -- Uncharted's view distance and Killzone's scenery detail are different
  * hooks, and Shovel Knight has none */
@@ -230,32 +353,32 @@ static bool game_option(const char *name) {
 		if ((p == e || p[-1] == ',' || p[-1] == ' ') && (p[n] == 0 || p[n] == ',' || p[n] == ' ')) return true;
 	return false;
 }
-static void set_frame_rate(int fr) { P.fr = fr; settings_set_int("frame_rate", fr); settings_save(); }
-static void set_tcs(float v) { P.tcs = v; settings_set_float("touch_cursor_speed", v); settings_save(); }
-static void set_gyro(int on) { P.gyro = on != 0; settings_set_int("gyro", P.gyro); settings_save(); }
-static void set_gyro_pose(int flat) { P.gyro_flat = flat != 0; settings_set_str("gyro_pose", flat ? "flat" : "upright"); settings_save(); }
-static void set_gyro_sens(float v) { P.gyro_sens = v; settings_set_float("gyro_sens", v); settings_save(); }
-static void set_volume(float v) { P.vol = v; settings_set_float("volume", v); settings_save(); }   /* window.c applies it to every output port */
-static void set_osd(int level) { metrics_osd_set(level); settings_set_int("osd", level); settings_save(); }
+static void set_frame_rate(int fr) { P.fr = fr; settings_set_int("frame_rate", fr); save_settings(); }
+static void set_tcs(float v) { P.tcs = v; settings_set_float("touch_cursor_speed", v); save_settings(); }
+static void set_gyro(int on) { P.gyro = on != 0; settings_set_int("gyro", P.gyro); save_settings(); }
+static void set_gyro_pose(int flat) { P.gyro_flat = flat != 0; settings_set_str("gyro_pose", flat ? "flat" : "upright"); save_settings(); }
+static void set_gyro_sens(float v) { P.gyro_sens = v; settings_set_float("gyro_sens", v); save_settings(); }
+static void set_volume(float v) { P.vol = v; settings_set_float("volume", v); save_settings(); }   /* window.c applies it to every output port */
+static void set_osd(int level) { metrics_osd_set(level); settings_set_int("osd", level); save_settings(); }
 
 /* ---- the host's own hotkeys, one table: the Help page's Shortcuts list and the Controls page's second
  * table both draw it (the game's controls are window.c's ctrl_rows; these are the keys window.c binds
  * beside them -- keep in sync with its event loop). The bar's own shortcut texts name the same keys. */
 static const char *const g_shortcuts[][3] = {
-	{"Menu bar", "Move the mouse to the top edge (Esc hides it)", "Tap the tab at the top centre (touch screen)"},
-	{"This menu (pauses the game)", "F10 (Esc closes it)", "Guide, or Back + Start together"},
-	{"On-screen stats: off, FPS, full", "F1", "\u2014"},
-	{"Resolution: 1\u00d7 to 6\u00d7", "F2", "\u2014"},
-	{"The rear camera's lamp", "F7", "\u2014"},
-	{"Capture a frame (to captures/)", "F12", "\u2014"},
-	{"Mark the log (for a bug report: \"that just happened\")", "F5", "\u2014"},
-	{"Recentre the gyro", "\u2014", "R3"},
+	{"sb.bar", "sb.bar_kbd", "sb.bar_pad"},
+	{"sb.menu", "sb.menu_kbd", "sb.menu_pad"},
+	{"sb.osd", "F1", "-"},
+	{"sb.res", "F2", "-"},
+	{"sb.lamp", "F7", "-"},
+	{"sb.capture", "F12", "-"},
+	{"sb.mark", "F5", "-"},
+	{"sb.gyro", "-", "R3"},
 };
 static void volume_slider(void) {   /* (the bar's Game menu) */
 	prefs_load();
 	float pct = P.vol * 100.0f;
 	ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10);
-	if (ImGui::SliderFloat("##vol", &pct, 0.0f, 100.0f, "%.0f%%")) set_volume(pct / 100.0f);
+	if (ui::slider_float("##vol", &pct, 0.0f, 100.0f, "%.0f%%")) set_volume(pct / 100.0f);
 }
 /* render scale labels: "3x  2880 x 1632" (the 960x544 frame's size at n), and the scale that matches the
  * window: the smallest whose frame is at least the window's pixel height (Vita frames are 16:9-ish, so
@@ -267,18 +390,18 @@ static int scale_for_window(void) {
 	int k = (int)((h + 543) / 544); if (k < 1) k = 1; if (k > gfx_gpu_render_scale_max()) k = gfx_gpu_render_scale_max();
 	return k;
 }
-static const char *const g_aspect_names[3] = {"Fit", "Stretch", "Fill"};
+static const char *const g_aspect_names[3] = {"aspect.fit", "aspect.stretch", "aspect.fill"};   /* (U12b: catalog ids -- the call sites run ui_tr) */
 
 /* ---- the full menu's pages: settings rows (ui_theme.h) -- what a setting is, a line on what it does, its
  * control on the right. Each reads its live value from its owner every frame (gfx_gpu.c, window.c,
  * metrics.c, settings.c, or P above) and calls that owner's setter the moment the control changes. */
 static void slider_row(const char *id, float *v, float lo, float hi, const char *fmt, ImGuiSliderFlags fl = 0) {
 	ImGui::SetNextItemWidth(-FLT_MIN);
-	ImGui::SliderFloat(id, v, lo, hi, fmt, fl);
+	ui::slider_float(id, v, lo, hi, fmt, fl);
 }
 static void page_display(void) {
 	if (!ui::rows_begin("display")) return;
-	ui::row("Resolution", "The game drawn at a multiple of the Vita's 960 × 544. Higher is sharper; 4× and up want a fast GPU.");
+	ui::row(ui_tr("display.resolution"), ui_tr("display.resolution_help"), note_int("render_scale", gfx_gpu_render_scale_wanted(), ui_tr("mark.next_scene")));
 	{	int rs = gfx_gpu_render_scale_wanted(), mx = gfx_gpu_render_scale_max(), v = rs - 1;   /* (a pick shows at once: it applies at the game's next scene) */
 		static char names[8][16]; const char *labels[8];
 		for (int n = 1; n <= mx && n <= 8; n++) { std::snprintf(names[n - 1], sizeof names[0], "%d×##rs", n); labels[n - 1] = names[n - 1]; }
@@ -286,147 +409,196 @@ static void page_display(void) {
 		char b[48]; scale_label(b, sizeof b, rs);
 		ImGui::TextDisabled("%s", b + 5);
 		int mw = scale_for_window();
-		if (mw && mw != rs) { ImGui::SameLine(); char l[40]; std::snprintf(l, sizeof l, "Match the window (%d×)", mw); if (ImGui::TextLink(l)) gfx_gpu_render_scale_request(mw); }
+		if (mw && mw != rs) { ImGui::SameLine(); char l[64]; std::snprintf(l, sizeof l, ui_tr("display.match_window"), mw); if (ImGui::TextLink(l)) gfx_gpu_render_scale_request(mw); }
 	}
-	ui::row("Picture fit", "How the picture fills the window.");
-	{ int am = window_get_aspect(); if (ui::segmented(g_aspect_names, 3, &am)) window_set_aspect(am); }
-	ui::row("Widescreen", window_aspect_supported() ? "Shows more of the game at the sides." : "This game has no widescreen support yet.");
-	{	static const char *const ids[4] = {"native", "21:9", "32:9", "window"}, *const names[4] = {"Off##ar", "21:9##ar", "32:9##ar", "Window##ar"};
+	ui::row(ui_tr("display.fit"), ui_tr("display.fit_help"), note_s("aspect"));
+	{	int am = window_get_aspect();
+		const char *names[3] = {ui_tr("aspect.fit"), ui_tr("aspect.stretch"), ui_tr("aspect.fill")};
+		if (ui::segmented(names, 3, &am)) window_set_aspect(am);
+	}
+	ui::row(ui_tr("display.widescreen"), ui_tr(window_aspect_supported() ? "display.widescreen_help" : "display.widescreen_none"), note_s("aspect_ratio"));
+	{	static const char *const ids[6] = {"native", "16:10", "3:2", "21:9", "32:9", "window"};
 		char cur[16]; settings_str("aspect_ratio", "native", cur, sizeof cur);
-		int v = 0; for (int i = 0; i < 4; i++) if (!strcmp(cur, ids[i])) v = i;
+		int v = 0; for (int i = 0; i < 6; i++) if (!strcmp(cur, ids[i])) v = i;
+		char t0[48], t1[48], t2[48], t3[48], t4[48], t5[48];
+		const char *names[6] = {tr_suf(ui_tr("common.off"), "##ar", t0, sizeof t0), tr_suf("16:10", "##ar", t1, sizeof t1),
+		                        tr_suf("3:2", "##ar", t2, sizeof t2), tr_suf("21:9", "##ar", t3, sizeof t3),
+		                        tr_suf("32:9", "##ar", t4, sizeof t4), tr_suf(ui_tr("display.ar_window"), "##ar", t5, sizeof t5)};
 		ImGui::BeginDisabled(!window_aspect_supported());
-		if (ui::segmented(names, 4, &v)) { settings_set_str("aspect_ratio", ids[v]); settings_save(); }
+		if (ui::segmented(names, 6, &v)) { settings_set_str("aspect_ratio", ids[v]); save_settings(); }
 		ImGui::EndDisabled();
 	}
 	if (gfx_gpu_hud_supported()) {
-		ui::row("HUD", "With widescreen on: the HUD at its own shape, at the screen's edges or in a 16:9 frame in the middle; or stretched to the width.");
-		static const char *const ids[3] = {"edges", "16:9", "stretch"}, *const names[3] = {"Edges##hud", "16:9##hud", "Stretched##hud"};
-		char cur[16]; settings_str("hud_layout", "edges", cur, sizeof cur);
+		ui::row(ui_tr("display.hud"), ui_tr("display.hud_help"), note_s("hud_layout"));
+		static const char *const ids[3] = {"edges", "16:9", "stretch"};
+		const char *hud_def = getenv("RECOMP_HUD_LAYOUT");   /* the game's default (RUN_ENV), as gfx_gpu.c hud_note_present */
+		char cur[16]; settings_str("hud_layout", hud_def && *hud_def ? hud_def : "edges", cur, sizeof cur);
 		int v = 0; for (int i = 0; i < 3; i++) if (!strcmp(cur, ids[i])) v = i;
+		if (!strcmp(cur, "frame")) v = 1;   /* the pack default "frame" (all centred) shown as its nearest choice, 16:9 */
+		char t0[48], t1[48], t2[48];
+		const char *names[3] = {tr_suf(ui_tr("display.hud_edges"), "##hud", t0, sizeof t0), tr_suf("16:9", "##hud", t1, sizeof t1),
+		                        tr_suf(ui_tr("display.hud_stretched"), "##hud", t2, sizeof t2)};
 		ImGui::BeginDisabled(!window_aspect_supported() || window_aspect_widen() < 1.01f);
-		if (ui::segmented(names, 3, &v)) { settings_set_str("hud_layout", ids[v]); settings_save(); }
+		if (ui::segmented(names, 3, &v)) { settings_set_str("hud_layout", ids[v]); save_settings(); }
 		ImGui::EndDisabled();
 	}
 	if (gfx_gpu_target_scale_supported()) {
-		ui::row("Full-resolution world", "The game draws its 3D world below the screen's resolution; on, at the full resolution. Sharper, at a GPU cost.");
-		{ bool on = settings_int("full_res_world", 1) != 0; if (ui::toggle("frw", &on)) { settings_set_int("full_res_world", on ? 1 : 0); settings_save(); } }
+		ui::row(ui_tr("display.full_res"), ui_tr("display.full_res_help"), note_int("full_res_world", settings_int("full_res_world", 1)));
+		{ bool on = settings_int("full_res_world", 1) != 0; if (ui::toggle("frw", &on)) { settings_set_int("full_res_world", on ? 1 : 0); save_settings(); } }
 	}
 	if (gfx_gpu_ssao_supported()) {
-		ui::row("Ambient occlusion", "Soft shadows where surfaces meet: corners, crevices, under objects.");
-		{ bool on = settings_int("ssao", 1) != 0; if (ui::toggle("ssao", &on)) { settings_set_int("ssao", on ? 1 : 0); settings_save(); } }
-		ui::row("Occlusion strength");
+		ui::row(ui_tr("display.ssao"), ui_tr("display.ssao_help"), note_int("ssao", settings_int("ssao", 1)));
+		{ bool on = settings_int("ssao", 1) != 0; if (ui::toggle("ssao", &on)) { settings_set_int("ssao", on ? 1 : 0); save_settings(); } }
+		ui::row(ui_tr("display.ssao_strength"), nullptr, note_flt("ssao_strength", settings_float("ssao_strength", 1.0)));
 		{	float st = (float)settings_float("ssao_strength", 1.0) * 100.0f;
 			ImGui::BeginDisabled(settings_int("ssao", 1) == 0);
 			ImGui::SetNextItemWidth(-FLT_MIN);
-			if (ImGui::SliderFloat("##ssaost", &st, 0.0f, 200.0f, "%.0f%%")) { settings_set_float("ssao_strength", st / 100.0f); settings_save(); }
+			if (ui::slider_float("##ssaost", &st, 0.0f, 200.0f, "%.0f%%")) { settings_set_float("ssao_strength", st / 100.0f); save_settings(); }
 			ImGui::EndDisabled();
 		}
 	}
-	ui::row("Fullscreen");
+	ui::row(ui_tr("display.fullscreen"), nullptr, note_int("fullscreen", window_get_fullscreen()));
 	{ bool fs = window_get_fullscreen() != 0; if (ui::toggle("fs", &fs)) window_set_fullscreen(fs ? 1 : 0); }
-	if (gfx_gpu_fsr_supported()) {   /* (this game's FSR is verified: the anti-aliasing is a choice) */
-		ui::row("Anti-aliasing", "Smooths jagged edges. FXAA: a light pass on the finished frame. FSR 3.1 (experimental): AMD's temporal anti-aliasing on the 3D world, steadier and cleaner, at a GPU cost; some surfaces may still shimmer (F4 compares it live).");
-		static const char *const names[3] = {"Off##aam", "FXAA##aam", "FSR 3.1 (experimental)##aam"};
-		int v = settings_int("fsr", 0) ? 2 : settings_int("post_aa", 1) ? 1 : 0;
-		if (ui::segmented(names, 3, &v)) { settings_set_int("fsr", v == 2); settings_set_int("post_aa", v == 1); settings_save(); }
-	} else {
-		ui::row("Anti-aliasing", "Smooths jagged edges (FXAA).");
-		{ bool aa = settings_int("post_aa", 1) != 0; if (ui::toggle("aa", &aa)) { settings_set_int("post_aa", aa ? 1 : 0); settings_save(); } }
+	ui::row(ui_tr("display.presentation"), ui_tr("display.presentation_help"), ui_tr("mark.after_restart"));
+	{	static const char *const ids[3] = {"vsync", "mailbox", "immediate"};
+		char cur[16]; settings_str("present_mode", "", cur, sizeof cur);
+		int v = !strcmp(cur, "mailbox") ? 1 : !strcmp(cur, "immediate") ? 2 : 0;
+		char t0[48], t1[48], t2[48];
+		const char *names[3] = {tr_suf("Vsync", "##pm", t0, sizeof t0), tr_suf("Mailbox", "##pm", t1, sizeof t1),
+		                        tr_suf(ui_tr("display.pm_immediate"), "##pm", t2, sizeof t2)};
+		if (ui::segmented(names, 3, &v)) { settings_set_str("present_mode", ids[v]); save_settings(); }
 	}
-	ui::row("Sharpening", "Brings back detail lost to scaling and anti-aliasing.");
+	if (!window_get_fullscreen()) {
+		ui::row(ui_tr("display.window_size"), ui_tr("display.window_size_help"));
+		for (int n = 1; n <= 4; n++) {
+			char l[10]; std::snprintf(l, sizeof l, "%d×##ws", n);
+			if (n > 1) ImGui::SameLine();
+			if (ImGui::Button(l)) window_set_size(n);
+		}
+	}
+	if (gfx_gpu_fsr_supported()) {   /* (this game's FSR is verified: the anti-aliasing is a choice) */
+		ui::row(ui_tr("display.aa"), ui_tr("display.aa_fsr_help"),
+			note_str("post_aa", (settings_int("fsr", 0) || !settings_int("post_aa", 1)) ? "0" : "1"));
+		int v = settings_int("fsr", 0) ? 2 : settings_int("post_aa", 1) ? 1 : 0;
+		char t0[48], t1[48], t2[64];
+		const char *names[3] = {tr_suf(ui_tr("common.off"), "##aam", t0, sizeof t0), tr_suf("FXAA", "##aam", t1, sizeof t1),
+		                        tr_suf(ui_tr("display.aa_fsr"), "##aam", t2, sizeof t2)};
+		if (ui::segmented(names, 3, &v)) { settings_set_int("fsr", v == 2); settings_set_int("post_aa", v == 1); save_settings(); }
+	} else {
+		ui::row(ui_tr("display.aa"), ui_tr("display.aa_help"), note_int("post_aa", settings_int("post_aa", 1)));
+		{ bool aa = settings_int("post_aa", 1) != 0; if (ui::toggle("aa", &aa)) { settings_set_int("post_aa", aa ? 1 : 0); save_settings(); } }
+	}
+	ui::row(ui_tr("display.sharpening"), ui_tr("display.sharpening_help"), note_flt("sharpen", settings_float("sharpen", 0.35)));
 	{	float sh = (float)settings_float("sharpen", 0.35) * 100.0f;
 		ImGui::SetNextItemWidth(-FLT_MIN);
-		if (ImGui::SliderFloat("##sharp", &sh, 0.0f, 100.0f, sh <= 0.0f ? "Off" : "%.0f%%")) { settings_set_float("sharpen", sh / 100.0f); settings_save(); }
+		if (ui::slider_float("##sharp", &sh, 0.0f, 100.0f, sh <= 0.0f ? ui_tr("common.off") : "%.0f%%")) { settings_set_float("sharpen", sh / 100.0f); save_settings(); }
 	}
-	ui::row("Texture filtering", "Keeps textures crisp when seen at an angle.");
-	{	static const int an[5] = {1, 2, 4, 8, 16}; static const char *const names[5] = {"Off##af", "2×##af", "4×##af", "8×##af", "16×##af"};
+	ui::row(ui_tr("display.aniso"), ui_tr("display.aniso_help"), note_int("anisotropy", settings_int("anisotropy", 16)));
+	{	static const int an[5] = {1, 2, 4, 8, 16};
+		char t0[48], t1[48], t2[48], t3[48], t4[48];
+		const char *names[5] = {tr_suf(ui_tr("common.off"), "##af", t0, sizeof t0), tr_suf("2×", "##af", t1, sizeof t1),
+		                        tr_suf("4×", "##af", t2, sizeof t2), tr_suf("8×", "##af", t3, sizeof t3), tr_suf("16×", "##af", t4, sizeof t4)};
 		int cur = settings_int("anisotropy", 16), v = 4; for (int i = 0; i < 5; i++) if (an[i] == cur) v = i;
-		if (ui::segmented(names, 5, &v)) { settings_set_int("anisotropy", an[v]); settings_save(); }
+		if (ui::segmented(names, 5, &v)) { settings_set_int("anisotropy", an[v]); save_settings(); }
 	}
-	ui::row("Shadow edges", "How soft the edges of shadows are.");
-	{	static const char *const names[3] = {"Original##sf", "Soft##sf", "Softer##sf"}; int v = settings_int("shadow_filter", 1);
-		if (ui::segmented(names, 3, &v)) { settings_set_int("shadow_filter", v); settings_save(); }
+	ui::row(ui_tr("display.shadow"), ui_tr("display.shadow_help"), note_int("shadow_filter", settings_int("shadow_filter", 1)));
+	{	char t0[48], t1[48], t2[48];
+		const char *names[3] = {tr_suf(ui_tr("display.sf_original"), "##sf", t0, sizeof t0), tr_suf(ui_tr("display.sf_soft"), "##sf", t1, sizeof t1),
+		                        tr_suf(ui_tr("display.sf_softer"), "##sf", t2, sizeof t2)};
+		int v = settings_int("shadow_filter", 1);
+		if (ui::segmented(names, 3, &v)) { settings_set_int("shadow_filter", v); save_settings(); }
 	}
 	ui::rows_end();
 }
 static void page_performance(void) {
 	if (!ui::rows_begin("perf")) return;
-	ui::row("On-screen stats", "Frame rate and timings drawn over the game. F1 cycles them.");
-	{ static const char *const names[3] = {"Off##osd", "FPS##osd", "Full##osd"}; int lvl = metrics_osd_level(); if (ui::segmented(names, 3, &lvl)) set_osd(lvl); }
-	ui::row("Frame rate now");
+	ui::row(ui_tr("perf.osd"), ui_tr("perf.osd_help"), note_int("osd", metrics_osd_level()));
+	{	char t0[48], t1[48], t2[48];
+		const char *names[3] = {tr_suf(ui_tr("common.off"), "##osd", t0, sizeof t0), tr_suf("FPS", "##osd", t1, sizeof t1),
+		                        tr_suf(ui_tr("perf.osd_full"), "##osd", t2, sizeof t2)};
+		int lvl = metrics_osd_level(); if (ui::segmented(names, 3, &lvl)) set_osd(lvl); }
+	ui::row(ui_tr("perf.fps_now"));
 	{ char b[32]; std::snprintf(b, sizeof b, "%.0f fps", metrics_fps()); ImGui::PushFont(nullptr, ImGui::GetFontSize() * 1.6f); ImGui::TextUnformatted(b); ImGui::PopFont(); }
 	ui::rows_end();
 }
 static void page_game(void) {
 	prefs_load();
 	if (!ui::rows_begin("game")) return;
-	ui::row("Frame rate", "60 is experimental: parts of a game timed in fixed 1/30 s steps can run fast.");
-	{ static const char *const names[2] = {"30##fr", "60##fr"}; int v = P.fr >= 60; if (ui::segmented(names, 2, &v)) set_frame_rate(v ? 60 : 30); }
+	ui::row(ui_tr("game.fps"), ui_tr("game.fps_help"), note_flt("frame_rate", P.fr));
+	{	/* only the rates this game's pack allows (RECOMP_FRAME_RATES; frame_rates.h), the one it runs at selected */
+		static const char *const all[3] = {"30##fr", "60##fr", "120##fr"};
+		int l[3], n = fr_list(display_frame_rates_allowed(), l), cur = fr_effective(P.fr, display_frame_rates_allowed()), v = 0;
+		const char *names[3]; for (int i = 0; i < n; i++) { names[i] = all[l[i] >= 120 ? 2 : l[i] >= 60 ? 1 : 0]; if (l[i] == cur) v = i; }
+		if (ui::segmented(names, n, &v)) set_frame_rate(l[v]); }
 	if (game_option("fov")) {
-		ui::row("Field of view", "A wider view. 1.00× is the game's own.");
-		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##fov", &P.fov, 0.75f, 1.5f, "%.2f×")) set_fov(P.fov);
+		ui::row(ui_tr("game.fov"), ui_tr("game.fov_help"));
+		ImGui::SetNextItemWidth(-FLT_MIN); if (ui::slider_float("##fov", &P.fov, 0.75f, 1.5f, "%.2f×")) set_fov(P.fov);
 	}
 	if (game_option("view_distance")) {
-		ui::row("View distance", "How far fading scenery reaches. 1.00× is the game's own.");
-		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##view", &P.view, 1.0f, 3.0f, "%.2f×")) set_view(P.view);
+		ui::row(ui_tr("game.view"), ui_tr("game.view_help"));
+		ImGui::SetNextItemWidth(-FLT_MIN); if (ui::slider_float("##view", &P.view, 1.0f, 3.0f, "%.2f×")) set_view(P.view);
 	}
 	if (game_option("scenery_detail")) {
-		ui::row("Scenery detail", "How far small scenery details stay visible. 1.00× is the game's own; walls and buildings keep the game's own detail switching.");
-		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##scen", &P.scen, 1.0f, 8.0f, "%.1f×")) set_scen(P.scen);
+		ui::row(ui_tr("game.scen"), ui_tr("game.scen_help"));
+		ImGui::SetNextItemWidth(-FLT_MIN); if (ui::slider_float("##scen", &P.scen, 1.0f, 8.0f, "%.1f×")) set_scen(P.scen);
 	}
 	if (game_option("character_detail")) {
-		ui::row("Character detail", "How far characters and props keep their full detail. 1.00× is the game's own.");
-		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##chr", &P.chr, 1.0f, 8.0f, "%.1f×")) set_chr(P.chr);
+		ui::row(ui_tr("game.chr"), ui_tr("game.chr_help"));
+		ImGui::SetNextItemWidth(-FLT_MIN); if (ui::slider_float("##chr", &P.chr, 1.0f, 8.0f, "%.1f×")) set_chr(P.chr);
 	}
 	if (display_pstv_looked()) {   /* (display.c's PS TV mode: a game with a PS TV layout of its own) */
-		ui::row("Controller layout", "How the touch screen's actions are done, chosen as the game starts and kept until you quit. Standard: the game as on a handheld, with keyboard, mouse or a controller (its touch cursor). PS TV: the game's own PS TV layout, every action on buttons and sticks, a controller only. Ask: a choice at each start while a controller is connected, Standard otherwise. Applies the next time the game starts.");
-		static const char *const names[3] = {"Ask at start##cl", "Standard##cl", "PS TV##cl"};
-		int v = settings_int("controller_layout", 0); if (v < 0 || v > 2) v = 0;   /* (the setting's values: 0 ask, 1 standard (touch), 2 PS TV) */
-		if (ui::segmented(names, 3, &v)) { settings_set_int("controller_layout", v); settings_save(); }
+		ui::row(ui_tr("game.layout"), ui_tr("game.layout_help"), note_int("controller_layout", settings_int("controller_layout", 0), ui_tr("mark.after_restart")));
+		{	char t0[48], t1[48], t2[48];
+			const char *names[3] = {tr_suf(ui_tr("game.layout_ask"), "##cl", t0, sizeof t0), tr_suf(ui_tr("common.std"), "##cl", t1, sizeof t1),
+			                        tr_suf("PS TV", "##cl", t2, sizeof t2)};
+			int v = settings_int("controller_layout", 0); if (v < 0 || v > 2) v = 0;   /* (the setting's values: 0 ask, 1 standard (touch), 2 PS TV) */
+			if (ui::segmented(names, 3, &v)) { settings_set_int("controller_layout", v); save_settings(); } }
 	}
 	if (game_option("online")) {
-		ui::row("Play online", "The game's online modes with other Project Nativ players, on your network and over the internet. They see your online name and your computer's IP address, as in any peer-to-peer game. Applies the next time the game starts.");
-		if (net_online_needs()) { char t[128]; snprintf(t, sizeof t, "Needs update %s: this copy is another version, and rooms only match their own. Add the update in the launcher.", net_online_needs()); ImGui::TextWrapped("%s", t); }
-		else { bool on = settings_int("online", 1) != 0; if (ui::toggle("online", &on)) { settings_set_int("online", on ? 1 : 0); settings_save(); } }
+		ui::row(ui_tr("game.online"), ui_tr("game.online_help"), note_int("online", settings_int("online", 1), ui_tr("mark.after_restart")));
+		if (net_online_needs()) { char t[160]; snprintf(t, sizeof t, ui_tr("game.needs_update"), net_online_needs()); ImGui::TextWrapped("%s", t); }
+		else { bool on = settings_int("online", 1) != 0; if (ui::toggle("online", &on)) { settings_set_int("online", on ? 1 : 0); save_settings(); } }
 		if (net_online()) {   /* how it stands (status.c), every half second */
 			static OnlineStatus st; static double at = -1; const double now = ImGui::GetTime();
 			if (at < 0 || now - at > 0.5) { online_status(&st); at = now; }
 			char a[160], b[160], c2[160];
-			if (!st.started) { snprintf(a, sizeof a, "Starts when the game goes online"); b[0] = c2[0] = 0; }
+			if (!st.started) { snprintf(a, sizeof a, "%s", ui_tr("game.status_starting")); b[0] = c2[0] = 0; }
 			else {
-				if (st.linked) snprintf(a, sizeof a, "Linked with %d other %s", st.linked, st.linked == 1 ? "copy" : "copies"); else snprintf(a, sizeof a, "Looking for other players");
-				snprintf(b, sizeof b, "%d %s open%s", st.rooms_heard + st.rooms_mine, st.rooms_heard + st.rooms_mine == 1 ? "room" : "rooms", st.rooms_mine ? " (yours among them)" : "");
-				if (!st.port) snprintf(c2, sizeof c2, "Your network only (online_overlay is off)");
-				else if (st.pub[0]) snprintf(c2, sizeof c2, "On the internet as %s (%d DHT nodes)", st.pub, st.dht_nodes);
-				else snprintf(c2, sizeof c2, st.dht_nodes ? "Reaching the internet (%d DHT nodes)" : "Reaching the internet", st.dht_nodes);
+				if (st.linked) snprintf(a, sizeof a, ui_tr(st.linked == 1 ? "game.status_linked_1" : "game.status_linked_n"), st.linked);
+				else snprintf(a, sizeof a, "%s", ui_tr("game.status_looking"));
+				{	const int n = st.rooms_heard + st.rooms_mine;
+					snprintf(b, sizeof b, ui_tr(n == 1 ? "game.rooms_1" : "game.rooms_n"), n, st.rooms_mine ? ui_tr("game.rooms_yours") : ""); }
+				if (!st.port) snprintf(c2, sizeof c2, "%s", ui_tr("game.status_port_none"));
+				else if (st.pub[0]) snprintf(c2, sizeof c2, ui_tr("game.status_internet"), st.pub, st.dht_nodes);
+				else snprintf(c2, sizeof c2, st.dht_nodes ? ui_tr("game.status_reaching") : ui_tr("game.status_reaching0"), st.dht_nodes);
 			}
-			ui::row("Online now", st.clash ? "Another player in this game has your online name: you get two digits after it from the next start." : nullptr);
+			ui::row(ui_tr("game.online_now"), st.clash ? ui_tr("game.clash") : nullptr);
 			ImGui::TextUnformatted(a); if (b[0]) { ImGui::PushStyleColor(ImGuiCol_Text, ui::muted); ImGui::TextUnformatted(b); ImGui::TextUnformatted(c2); ImGui::PopStyleColor(); }
 		}
-		static char oid[32], srv[128]; static int loaded;
-		if (!loaded) { loaded = 1; settings_str("online_id", "", oid, sizeof oid); for (const char *tag : {"ntv_", "nativ_", "ativ_"}) if (!strncasecmp(oid, tag, strlen(tag))) { memmove(oid, oid + strlen(tag), strlen(oid) - strlen(tag) + 1); break; } oid[10] = 0; settings_str("private_server", "", srv, sizeof srv); }
-		ui::row("Online name", "Others see ntv_ and your name: up to 10 letters, digits, '-' or '_'. Empty: a tag of your own. Applies the next time the game starts.");
+		static char oid[32], srv[128]; static int loaded, epoch;
+		if (!loaded || epoch != g_prefs_epoch) { loaded = 1; epoch = g_prefs_epoch; settings_str("online_id", "", oid, sizeof oid); for (const char *tag : {"ntv_", "nativ_", "ativ_"}) if (!strncasecmp(oid, tag, strlen(tag))) { memmove(oid, oid + strlen(tag), strlen(oid) - strlen(tag) + 1); break; } oid[10] = 0; settings_str("private_server", "", srv, sizeof srv); }
+		ui::row(ui_tr("game.online_name"), ui_tr("game.online_name_help"), note_s("online_id", ui_tr("mark.after_restart")));
 		{	ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("ntv_"); ImGui::SameLine(0, 0);
 			ImGui::SetNextItemWidth(-FLT_MIN); ImGui::InputText("##oid", oid, 11);
 			int ok = 1, n = (int)strlen(oid);
 			for (int i = 0; i < n; i++) if (!isalnum((unsigned char)oid[i]) && oid[i] != '-' && oid[i] != '_') ok = 0;
-			if (ImGui::IsItemDeactivatedAfterEdit() && ok) { settings_set_str("online_id", oid); settings_save(); }
-			if (!ok) { ImGui::PushStyleColor(ImGuiCol_Text, ui::muted); ImGui::TextUnformatted("Not saved: letters, digits, '-' or '_' only"); ImGui::PopStyleColor(); }
+			if (ImGui::IsItemDeactivatedAfterEdit() && ok) { settings_set_str("online_id", oid); save_settings(); }
+			if (!ok) { ImGui::PushStyleColor(ImGuiCol_Text, ui::muted); ImGui::TextUnformatted(ui_tr("game.name_invalid")); ImGui::PopStyleColor(); }
 		}
 		if (game_option("private_server")) {   /* (a game whose online needs its makers' servers) */
-			ui::row("Private server", "The community server that stands in for the game's own (host, or host:port). Empty: the game's own, long offline.");
-			ImGui::SetNextItemWidth(-FLT_MIN); ImGui::InputText("##srv", srv, sizeof srv); if (ImGui::IsItemDeactivatedAfterEdit()) { settings_set_str("private_server", srv); settings_save(); }
+			ui::row(ui_tr("game.private_server"), ui_tr("game.private_server_help"));
+			ImGui::SetNextItemWidth(-FLT_MIN); ImGui::InputText("##srv", srv, sizeof srv); if (ImGui::IsItemDeactivatedAfterEdit()) { settings_set_str("private_server", srv); save_settings(); }
 		}
 	}
-	ui::row("Volume");
-	{ float pct = P.vol * 100.0f; ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##vol", &pct, 0.0f, 100.0f, "%.0f%%")) set_volume(pct / 100.0f); }
+	ui::row(ui_tr("game.volume"), nullptr, note_flt("volume", P.vol));
+	{ float pct = P.vol * 100.0f; ImGui::SetNextItemWidth(-FLT_MIN); if (ui::slider_float("##vol", &pct, 0.0f, 100.0f, "%.0f%%")) set_volume(pct / 100.0f); }
 	ui::rows_end();
 }
 extern "C" int camera_light(void); extern "C" void camera_light_set(int on);
 static void section_label(const char *s) { ImGui::Dummy(ImVec2(0, ImGui::GetFontSize() * 0.4f)); ImGui::PushStyleColor(ImGuiCol_Text, ui::accent); ImGui::TextUnformatted(s); ImGui::PopStyleColor(); }
 static void reference_table(const char *id, int (*count)(void), void (*row)(int, const char **, const char **, const char **)) {
 	if (!ImGui::BeginTable(id, 3, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) return;
-	ImGui::TableSetupColumn("Action"); ImGui::TableSetupColumn("Keyboard and mouse"); ImGui::TableSetupColumn("Controller");
+	ImGui::TableSetupColumn(ui_tr("ctrl.action")); ImGui::TableSetupColumn(ui_tr("ctrl.kbm")); ImGui::TableSetupColumn(ui_tr("common.controller"));
 	ImGui::PushStyleColor(ImGuiCol_Text, ui::muted); ImGui::TableHeadersRow(); ImGui::PopStyleColor();
 	for (int i = 0, n = count(); i < n; i++) {
 		const char *a, *k, *p; row(i, &a, &k, &p);
@@ -438,95 +610,222 @@ static void reference_table(const char *id, int (*count)(void), void (*row)(int,
 	ImGui::EndTable();
 }
 static int shortcuts_count(void) { return (int)(sizeof g_shortcuts / sizeof g_shortcuts[0]); }
-static void shortcuts_row(int i, const char **a, const char **k, const char **p) { *a = g_shortcuts[i][0]; *k = g_shortcuts[i][1]; *p = g_shortcuts[i][2]; }
+static void shortcuts_row(int i, const char **a, const char **k, const char **p) { *a = ui_tr(g_shortcuts[i][0]); *k = ui_tr(g_shortcuts[i][1]); *p = ui_tr(g_shortcuts[i][2]); }   /* (U12b) key names fall through ui_tr */
 static void page_controls(void) {
 	prefs_load();
-	section_label("Input");
+	section_label(ui_tr("ctrl.input"));
 	if (ui::rows_begin("input")) {
-		ui::row("Play with", window_kbm_active() ? "Keyboard and mouse in use. Hold Alt (Option) to free the cursor -- it is then the touch screen."
-		                                          : "Controller in use. Automatic follows the last device you touch.");
-		{	static const char *const ids[3] = {"auto", "pad", "kbm"}, *const names[3] = {"Automatic##in", "Controller##in", "Keyboard & mouse##in"};
+		ui::row(ui_tr("ctrl.play_with"), window_kbm_active() ? ui_tr("ctrl.play_with_kbm") : ui_tr("ctrl.play_with_pad"), note_s("input_mode"));
+		{	static const char *const ids[3] = {"auto", "pad", "kbm"}; char t0[48], t1[48], t2[48];
+			const char *names[3] = {tr_suf(ui_tr("ctrl.in_auto"), "##in", t0, sizeof t0), tr_suf(ui_tr("common.controller"), "##in", t1, sizeof t1),
+			                        tr_suf(ui_tr("ctrl.in_kbm"), "##in", t2, sizeof t2)};
 			char cur[8]; settings_str("input_mode", "auto", cur, sizeof cur);
 			int v = 0; for (int i = 0; i < 3; i++) if (!strcmp(cur, ids[i])) v = i;
-			if (ui::segmented(names, 3, &v)) { settings_set_str("input_mode", ids[v]); settings_save(); }
+			if (ui::segmented(names, 3, &v)) { settings_set_str("input_mode", ids[v]); save_settings(); }
 		}
-		ui::row("Mouse look", "The mouse turns the camera and aims; left button R, right button L.");
-		{ bool look = settings_int("mouse_look", 1) != 0; if (ui::toggle("ml", &look)) { settings_set_int("mouse_look", look ? 1 : 0); settings_save(); } }
-		ui::row("Mouse aim", "Direct: the game turns exactly as far as the mouse moves (games with direct aim; the others use Stick by themselves). Stick: the mouse moves the right stick. F8 switches.");
-		{ static const char *const names[2] = {"Direct##ma", "Stick##ma"}; int v = window_raw_look() ? 0 : 1; if (ui::segmented(names, 2, &v)) window_set_raw_look(v == 0); }
-		ui::row("Mouse sensitivity");
-		{ static float sens = -1; if (sens < 0) sens = (float)settings_float("mouse_sens", 1.0); ImGui::SetNextItemWidth(-FLT_MIN);
-		  if (ImGui::SliderFloat("##ms", &sens, 0.1f, 5.0f, "%.2f×", ImGuiSliderFlags_Logarithmic)) { settings_set_float("mouse_sens", sens); settings_save(); } }
-		ui::row("Invert vertical look");
-		{ bool inv = settings_int("mouse_invert", 0) != 0; if (ui::toggle("mi", &inv)) { settings_set_int("mouse_invert", inv ? 1 : 0); settings_save(); } }
-		ui::row("L and R buttons", "The shoulder pair that is the game's L and R (aim and fire in a shooter). The other pair holds the touch cursor, or is L2 and R2 in a PS TV layout.");
-		{ static const char *const names[2] = {"Triggers (L2 / R2)##sb", "Bumpers (L1 / R1)##sb"}; char cur[16]; int v = !strcmp(settings_str("shoulder_buttons", "triggers", cur, sizeof cur), "bumpers");
-		  if (ui::segmented(names, 2, &v)) { settings_set_str("shoulder_buttons", v ? "bumpers" : "triggers"); settings_save(); } }
-		ui::row("Touch cursor speed", "Hold the shoulder pair that isn't L and R, and move a stick: the cursor is a finger on the touch screen (Cross, L or R presses). Move both sticks for two fingers.");
-		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##tcs", &P.tcs, 0.25f, 3.0f, "%.2f×")) set_tcs(P.tcs);
+		ui::row(ui_tr("ctrl.pad_device"), ui_tr("ctrl.pad_device_help"), note_s("pad_device"));   /* (UI-02b: the game switches as the menu closes) */
+		device_choice("pd", "pad_device", pad_list());
+		ui::row(ui_tr("ctrl.mouse_look"), ui_tr("ctrl.mouse_look_help"), note_int("mouse_look", settings_int("mouse_look", 1)));
+		{ bool look = settings_int("mouse_look", 1) != 0; if (ui::toggle("ml", &look)) { settings_set_int("mouse_look", look ? 1 : 0); save_settings(); } }
+		ui::row(ui_tr("ctrl.mouse_aim"), ui_tr("ctrl.mouse_aim_help"), note_int("raw_look", window_raw_look()));
+		{ char t0[48], t1[48];
+			const char *names[2] = {tr_suf(ui_tr("ctrl.aim_direct"), "##ma", t0, sizeof t0), tr_suf(ui_tr("ctrl.aim_stick"), "##ma", t1, sizeof t1)};
+			int v = window_raw_look() ? 0 : 1; if (ui::segmented(names, 2, &v)) window_set_raw_look(v == 0); }
+		ui::row(ui_tr("ctrl.mouse_sens"), nullptr, note_flt("mouse_sens", settings_float("mouse_sens", 1.0)));
+		{ static float sens = -1; static int epoch; if (sens < 0 || epoch != g_prefs_epoch) { sens = (float)settings_float("mouse_sens", 1.0); epoch = g_prefs_epoch; } ImGui::SetNextItemWidth(-FLT_MIN);
+		  if (ui::slider_float("##ms", &sens, 0.1f, 5.0f, "%.2f×", ImGuiSliderFlags_Logarithmic)) { settings_set_float("mouse_sens", sens); save_settings(); } }
+		ui::row(ui_tr("ctrl.mouse_invert"), nullptr, note_int("mouse_invert", settings_int("mouse_invert", 0)));
+		{ bool inv = settings_int("mouse_invert", 0) != 0; if (ui::toggle("mi", &inv)) { settings_set_int("mouse_invert", inv ? 1 : 0); save_settings(); } }
+		ui::row(ui_tr("ctrl.shoulder"), ui_tr("ctrl.shoulder_help"), note_s("shoulder_buttons"));
+		{ char t0[48], t1[48];
+			const char *names[2] = {tr_suf(ui_tr("ctrl.shoulder_trig"), "##sb", t0, sizeof t0), tr_suf(ui_tr("ctrl.shoulder_bump"), "##sb", t1, sizeof t1)};
+			char cur[16]; int v = !strcmp(settings_str("shoulder_buttons", "triggers", cur, sizeof cur), "bumpers");
+			if (ui::segmented(names, 2, &v)) { settings_set_str("shoulder_buttons", v ? "bumpers" : "triggers"); save_settings(); } }
+		ui::row(ui_tr("ctrl.touch_speed"), ui_tr("ctrl.touch_speed_help"), note_flt("touch_cursor_speed", settings_float("touch_cursor_speed", 1.0)));
+		ImGui::SetNextItemWidth(-FLT_MIN); if (ui::slider_float("##tcs", &P.tcs, 0.25f, 3.0f, "%.2f×")) set_tcs(P.tcs);
+		ui::row(ui_tr("ctrl.osb"), ui_tr("ctrl.osb_help"), note_s("osb"));   /* (UI-01n) */
+		{ char t0[48], t1[48], t2[48];
+			const char *names[3] = {tr_suf(ui_tr("ctrl.osb_auto"), "##osb", t0, sizeof t0), tr_suf(ui_tr("ctrl.osb_on"), "##osb", t1, sizeof t1), tr_suf(ui_tr("ctrl.osb_off"), "##osb", t2, sizeof t2)};
+			char cur[8]; settings_str("osb", "auto", cur, sizeof cur); int v = !strcmp(cur, "on") ? 1 : !strcmp(cur, "off") ? 2 : 0;
+			if (ui::segmented(names, 3, &v)) { settings_set_str("osb", v == 1 ? "on" : v == 2 ? "off" : "auto"); save_settings(); } }
+		ui::row(ui_tr("ctrl.osb_size"), nullptr, note_flt("osb_size", settings_float("osb_size", 1.0)));
+		{ static float sz = -1; static int epoch; if (sz < 0 || epoch != g_prefs_epoch) { sz = (float)settings_float("osb_size", 1.0); epoch = g_prefs_epoch; } ImGui::SetNextItemWidth(-FLT_MIN);
+		  if (ui::slider_float("##osbs", &sz, 0.75f, 1.5f, "%.2f×")) { settings_set_float("osb_size", sz); save_settings(); } }
 		ui::rows_end();
 	}
-	section_label("Motion");
+	section_label(ui_tr("ctrl.sticks"));   /* (UI-04b: each stick's sensitivity and dead zone -- window.c reads them as the menu closes) */
+	if (ui::rows_begin("sticks")) {
+		static const char *const keys[4] = {"stick_l_sens", "stick_l_dead", "stick_r_sens", "stick_r_dead"};
+		static const char *const names[4] = {"ctrl.stick_l_sens", "ctrl.stick_l_dead", "ctrl.stick_r_sens", "ctrl.stick_r_dead"};
+		static float val[4]; static int epoch = -1;
+		if (epoch != g_prefs_epoch) { for (int i = 0; i < 4; i++) val[i] = (float)settings_float(keys[i], i & 1 ? 0.0 : 1.0) * (i & 1 ? 100.0f : 1.0f); epoch = g_prefs_epoch; }
+		for (int i = 0; i < 4; i++) {
+			const bool dead = i & 1;
+			ui::row(ui_tr(names[i]), ui_tr(dead ? "ctrl.stick_dead_help" : "ctrl.stick_sens_help"), note_flt(keys[i], settings_float(keys[i], dead ? 0.0 : 1.0)));
+			char id[16]; std::snprintf(id, sizeof id, "##stk%d", i);
+			ImGui::SetNextItemWidth(-FLT_MIN);
+			if (dead ? ui::slider_float(id, &val[i], 0.0f, 30.0f, "%.0f%%") : ui::slider_float(id, &val[i], 0.5f, 2.0f, "%.2f×")) {
+				settings_set_float(keys[i], dead ? val[i] / 100.0f : val[i]); save_settings();
+			}
+		}
+		ui::rows_end();
+	}
+	section_label(ui_tr("ctrl.motion"));
 	if (ui::rows_begin("motion")) {
-		ui::row("Gyro", window_gyro_present() ? "This controller has one: it stands in for the Vita's motion sensor." : "This controller has no gyro. Tilt sections use the keys or the left stick.");
+		ui::row(ui_tr("ctrl.gyro"), window_gyro_present() ? ui_tr("ctrl.gyro_present") : ui_tr("ctrl.gyro_absent"), note_int("gyro", P.gyro));
 		{ bool on = P.gyro != 0; if (ui::toggle("gy", &on)) set_gyro(on); }
-		ui::row("A level controller is a Vita held", "Upright, as in your hands, or flat on a table.");
-		{ static const char *const names[2] = {"Upright##gp", "Flat##gp"}; int v = P.gyro_flat ? 1 : 0; if (ui::segmented(names, 2, &v)) set_gyro_pose(v); }
-		ui::row("Gyro sensitivity");
-		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##gs", &P.gyro_sens, 0.25f, 3.0f, "%.2f×")) set_gyro_sens(P.gyro_sens);
-		ui::row("Recentre", "Makes the way the controller points now the centre. R3 does the same.");
-		if (ImGui::Button("Recentre the gyro")) motion_recenter();
-		ui::row("Rear camera", "What the Vita's camera sees -- Uncharted's parchment puzzles want a light. F7 switches the lamp.");
-		{	static const char *const ids[3] = {"light", "webcam", "dark"}, *const names[3] = {"A lamp##cam", "This computer's camera##cam", "Darkness##cam"};
+		ui::row(ui_tr("ctrl.gyro_pose"), ui_tr("ctrl.gyro_pose_help"), note_s("gyro_pose"));
+		{ char t0[48], t1[48];
+			const char *names[2] = {tr_suf(ui_tr("ctrl.gyro_upright"), "##gp", t0, sizeof t0), tr_suf(ui_tr("ctrl.gyro_flat"), "##gp", t1, sizeof t1)};
+			int v = P.gyro_flat ? 1 : 0; if (ui::segmented(names, 2, &v)) set_gyro_pose(v); }
+		ui::row(ui_tr("ctrl.gyro_sens"), nullptr, note_flt("gyro_sens", settings_float("gyro_sens", 1.0)));
+		ImGui::SetNextItemWidth(-FLT_MIN); if (ui::slider_float("##gs", &P.gyro_sens, 0.25f, 3.0f, "%.2f×")) set_gyro_sens(P.gyro_sens);
+		ui::row(ui_tr("ctrl.recentre"), ui_tr("ctrl.recentre_help"));
+		if (ImGui::Button(ui_tr("ctrl.recentre_btn"))) motion_recenter();
+		ui::row(ui_tr("ctrl.camera"), ui_tr("ctrl.camera_help"), note_s("camera"));
+		{	static const char *const ids[3] = {"light", "webcam", "dark"}; char t0[48], t1[48], t2[48];
+			const char *names[3] = {tr_suf(ui_tr("ctrl.cam_lamp"), "##cam", t0, sizeof t0), tr_suf(ui_tr("ctrl.cam_webcam"), "##cam", t1, sizeof t1),
+			                        tr_suf(ui_tr("ctrl.cam_dark"), "##cam", t2, sizeof t2)};
 			char cur[16]; settings_str("camera", "light", cur, sizeof cur);
 			int v = 0; for (int i = 0; i < 3; i++) if (!strcmp(cur, ids[i])) v = i;
-			if (ui::segmented(names, 3, &v)) { settings_set_str("camera", ids[v]); settings_save(); }
-			if (v == 0) { bool lit = camera_light() != 0; ImGui::SameLine(); ImGui::TextDisabled("lamp"); ImGui::SameLine(); if (ui::toggle("lamp", &lit)) camera_light_set(lit ? 1 : 0); }
+			if (ui::segmented(names, 3, &v)) { settings_set_str("camera", ids[v]); save_settings(); }
+			if (v == 0) { bool lit = camera_light() != 0; ImGui::SameLine(); ImGui::TextDisabled("%s", ui_tr("ctrl.cam_lamp_lbl")); ImGui::SameLine(); if (ui::toggle("lamp", &lit)) camera_light_set(lit ? 1 : 0); }
+			if (v == 1) { ImGui::TextDisabled("%s", ui_tr("ctrl.cam_device")); device_choice("cd", "camera_device", camera_list()); }   /* (UI-02b) */
 		}
 		ui::rows_end();
 	}
-	section_label("Keys");
+	section_label(ui_tr("ctrl.keys"));
 	if (ImGui::BeginTable("kbbinds", 3, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
-		ImGui::TableSetupColumn("Action"); ImGui::TableSetupColumn("Key"); ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
+		ImGui::TableSetupColumn(ui_tr("ctrl.action")); ImGui::TableSetupColumn(ui_tr("ctrl.key")); ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
 		ImGui::PushStyleColor(ImGuiCol_Text, ui::muted); ImGui::TableHeadersRow(); ImGui::PopStyleColor();
 		for (int i = 0, n = window_kb_count(); i < n; i++) {
 			ImGui::TableNextRow();
 			ImGui::TableNextColumn(); ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted(window_kb_label(i));
 			ImGui::TableNextColumn(); ImGui::AlignTextToFramePadding();
 			const char *k = window_kb_key_name(i);
-			if (g_rebind == i) ImGui::TextColored(ui::accent, "Press a key…"); else ui::chip(k && *k ? k : "none", ui::text);
-			ImGui::TableNextColumn(); ImGui::PushID(i); if (ImGui::Button("Change")) g_rebind = i; ImGui::PopID();
+			if (g_rebind == i) ImGui::TextColored(ui::accent, "%s", ui_tr("ctrl.press_key")); else ui::chip(k && *k ? k : ui_tr("ctrl.none"), ui::text);
+			ImGui::TableNextColumn(); ImGui::PushID(i); if (ImGui::Button(ui_tr("ctrl.change"))) g_rebind = i; ImGui::PopID();
 		}
 		ImGui::EndTable();
 	}
-	if (ImGui::Button("Reset keys to the defaults")) { window_kb_reset(); g_rebind = -1; }
-	section_label("The game's controls");
+	if (ImGui::Button(ui_tr("ctrl.reset_keys"))) { window_kb_reset(); g_rebind = -1; }
+	section_label(ui_tr("ctrl.pad"));   /* (U11) the pad -> Vita bindings, a Change/Reset like the keys */
+	if (ImGui::BeginTable("padbinds", 3, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+		ImGui::TableSetupColumn(ui_tr("ctrl.action")); ImGui::TableSetupColumn(ui_tr("ctrl.button")); ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
+		ImGui::PushStyleColor(ImGuiCol_Text, ui::muted); ImGui::TableHeadersRow(); ImGui::PopStyleColor();
+		for (int i = 0, n = window_pad_count(); i < n; i++) {
+			ImGui::TableNextRow();
+			ImGui::TableNextColumn(); ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted(window_pad_label(i));
+			ImGui::TableNextColumn(); ImGui::AlignTextToFramePadding();
+			const char *k = window_pad_button_name(i);
+			if (g_pad_rebind == i) ImGui::TextColored(ui::accent, "%s", ui_tr("ctrl.press_pad")); else ui::chip(k && *k ? k : ui_tr("ctrl.none"), ui::text);
+			ImGui::TableNextColumn(); ImGui::PushID(1000 + i); if (ImGui::Button(ui_tr("ctrl.change"))) g_pad_rebind = i; ImGui::PopID();
+		}
+		ImGui::EndTable();
+	}
+	if (ImGui::Button(ui_tr("ctrl.reset_pad"))) { window_pad_reset(); g_pad_rebind = -1; }
+	section_label(ui_tr("ctrl.game_controls"));
 	reference_table("controls", window_controls_count, window_controls_row);
-	section_label("Shortcuts");
+	section_label(ui_tr("ctrl.shortcuts"));
 	reference_table("shortcuts", shortcuts_count, shortcuts_row);
 }
+/* the version line the menu's header and About draw: "Nativ <tools version> · <title id> <game version>" with every
+ * empty part skipped (missing env -> nothing, never "unknown") */
+static void version_line(char *out, size_t n) {
+	const char *tv = std::getenv("RECOMP_TOOLS_VERSION"), *tid = std::getenv("RECOMP_TITLE"), *gv = std::getenv("RECOMP_GAME_VERSION");
+	char right[96] = "";
+	if (tid && *tid) snprintf(right, sizeof right, "%s", tid);
+	if (gv && *gv) snprintf(right + strlen(right), sizeof right - strlen(right), "%s%s", right[0] ? " " : "", gv);
+	out[0] = 0;
+	if (tv && *tv) snprintf(out, n, "Nativ %s", tv);
+	if (right[0]) snprintf(out + strlen(out), n - strlen(out), "%s%s", out[0] ? " · " : "", right);
+}
 static void page_help(void) {
-	section_label("Shortcuts");
+	if (ui::rows_begin("lang")) {   /* (U12b) the language row: menu_lang, applied live (flag icons would need glyphs the font range excludes) */
+		ui::row(ui_tr("set.lang"), nullptr, note_s("menu_lang", ui_tr("mark.default")));
+		{	char t0[48], cur[8]; static const char *const ids[3] = {"auto", "en", "de"};
+			const char *names[3] = {tr_suf(ui_tr("set.lang_auto"), "##lang", t0, sizeof t0), "English##lang", "Deutsch##lang"};
+			settings_str("menu_lang", "auto", cur, sizeof cur);
+			int v = 0; for (int i = 0; i < 3; i++) if (!strcmp(cur, ids[i])) v = i;
+			if (ui::segmented(names, 3, &v)) { settings_set_str("menu_lang", ids[v]); save_settings(); ui_text_lang_load(ids[v], g_sys_locale[0] ? g_sys_locale : NULL); }
+		}
+		ui::rows_end();
+	}
+	section_label(ui_tr("ctrl.shortcuts"));
 	reference_table("shortcuts", shortcuts_count, shortcuts_row);
-	section_label("About");
+	section_label(ui_tr("help.about"));
 	{	ImGui::Dummy(ImVec2(0, ImGui::GetFontSize() * 0.2f));
 		ImVec2 p = ImGui::GetCursorScreenPos(); const float h = ImGui::GetFontSize() * 1.5f;
 		ImGui::Dummy(ImVec2(ui::wordmark(ImGui::GetWindowDrawList(), p, h), h));
 	}
-	ImGui::TextWrapped("Project Nativ: this PS Vita game, statically recompiled to native code, running on this computer's own CPU and GPU.");
+	ImGui::TextWrapped("%s", ui_tr("help.about.body"));
 	const char *title = std::getenv("RECOMP_TITLE");
 	int v = SDL_GetVersion();
-	ImGui::TextDisabled("%s  ·  Dear ImGui %s  ·  SDL %d.%d.%d", title && *title ? title : "unknown title", IMGUI_VERSION, SDL_VERSIONNUM_MAJOR(v), SDL_VERSIONNUM_MINOR(v), SDL_VERSIONNUM_MICRO(v));
+	ImGui::TextDisabled("%s  ·  Dear ImGui %s  ·  SDL %d.%d.%d", title && *title ? title : ui_tr("help.unknown_title"), IMGUI_VERSION, SDL_VERSIONNUM_MAJOR(v), SDL_VERSIONNUM_MINOR(v), SDL_VERSIONNUM_MICRO(v));
+	{	char line[192]; version_line(line, sizeof line); if (*line) ImGui::TextDisabled("%s", line); }   /* (U4) */
 	ImGui::Dummy(ImVec2(0, ImGui::GetFontSize() * 0.3f));
-	ui::muted_wrapped("The menu bar: move the mouse to the top edge of the window (or tap the tab there). This menu: F10, or the PS button; the game pauses while it's up.");
+	ui::muted_wrapped(ui_tr("help.bar_hint"));
+	{	static double copied_until;   /* "Copied" shows for 2 s next to the button (U5) */
+		if (ImGui::Button(ui_tr("help.copy_sysinfo"))) {
+			MetricsSnapshot m; metrics_snapshot(&m);
+			char ver[192], sdl[32], cwd[1024];
+			version_line(ver, sizeof ver);
+			int sv = SDL_GetVersion(); snprintf(sdl, sizeof sdl, "%d.%d.%d", SDL_VERSIONNUM_MAJOR(sv), SDL_VERSIONNUM_MINOR(sv), SDL_VERSIONNUM_MICRO(sv));
+			uint32_t w = 0, h = 0; window_pixel_size(&w, &h);
+			SysInfo si; memset(&si, 0, sizeof si);
+			si.versions = ver; si.platform = SDL_GetPlatform(); si.sdl_version = sdl;
+			si.cpu = m.cpu_name; si.gpu = m.gpu_name;
+			si.win_w = (int)w; si.win_h = (int)h;
+			si.render_scale = settings_int("render_scale", 1);
+			si.present_mode = window_present_mode();
+			si.frame_rate = settings_int("frame_rate", 30);
+			cwd[0] = 0; if (char *d = SDL_GetCurrentDirectory()) { snprintf(cwd, sizeof cwd, "%s", d); SDL_free(d); }
+			si.log_dir = cwd;
+			si.home = getenv("USERPROFILE"); if (!si.home || !*si.home) si.home = getenv("HOME");   /* cmd_report's ~ rule */
+			char text[2048];
+			sysinfo_text(text, sizeof text, &si);
+			SDL_SetClipboardText(text);
+			copied_until = ImGui::GetTime() + 2.0;
+		}
+		if (copied_until > ImGui::GetTime()) { ImGui::SameLine(); ImGui::TextDisabled("%s", ui_tr("help.copied")); }
+		ImGui::SameLine();
+		if (ImGui::Button(ui_tr("help.open_log"))) {   /* hub.cpp's open_folder pattern */
+			char d[1024], url[1200];
+			d[0] = 0; if (char *c = SDL_GetCurrentDirectory()) { snprintf(d, sizeof d, "%s", c); SDL_free(c); }
+			for (char *p = d; *p; p++) if (*p == '\\') *p = '/';
+#ifdef _WIN32
+			snprintf(url, sizeof url, "file:///%s", d);
+#else
+			snprintf(url, sizeof url, "file://%s", d);
+#endif
+			SDL_OpenURL(url);
+		}
+	}
+	ui::muted_wrapped(ui_tr("help.bug_hint"));
+	if (ImGui::Button(ui_tr("help.reset_all"))) ImGui::OpenPopup(ui_tr("help.reset_all"));   /* (U6: confirmed below) */
+	if ((g_modal_open = ImGui::BeginPopupModal(ui_tr("help.reset_all"), nullptr, ImGuiWindowFlags_AlwaysAutoResize))) {
+		ImGui::TextWrapped("%s", ui_tr("help.reset_all_help"));
+		if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();   /* Cancel is the focused button first */
+		if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight)) ImGui::CloseCurrentPopup();   /* B/Esc = Cancel (window.c leaves Esc to a modal) */
+		if (ImGui::Button(ui_tr("common.cancel"))) ImGui::CloseCurrentPopup();
+		ImGui::SameLine();
+		if (ImGui::Button(ui_tr("help.reset_btn"))) {
+			if (!settings_reset_all(settings_default_keep)) overlay_toast(ui_tr("help.not_saved"), 3.0);   /* the one keep list (settings.c): saves and the server know the player by these */
+			g_prefs_epoch++; P.loaded = false; prefs_load();   /* the pages re-read the way the menu does on open */
+			ImGui::CloseCurrentPopup();
+		}
+		ImGui::EndPopup();
+	}
 }
 
 /* ---- the full menu (build_ui): a panel over the paused, dimmed game -- the game's name and a Paused chip, the
  * sections down the side, the page, and Resume / Capture / Quit at the foot */
 enum { TAB_DISPLAY, TAB_PERF, TAB_GAME, TAB_CONTROLS, TAB_HELP, TAB_N };
-static const char *const g_tab_names[TAB_N] = {"Display", "Performance", "Game", "Controls", "Help"};
+static const char *const g_tab_names[TAB_N] = {"Display", "Performance", "Game", "Controls", "Help"};   /* (U12b: English names -- the dump's page selector matches them (:1656); the UI shows the catalog) */
+static const char *const g_tab_ids[TAB_N] = {"nav.display", "nav.performance", "nav.game", "nav.controls", "nav.help"};
 static const char *const g_tab_blurbs[TAB_N] = {"Resolution, picture and image quality", "Frame rate and on-screen stats",
 	"Frame rate, view and detail options, volume", "Keyboard, mouse, controller, gyro and camera", "Shortcuts and about"};
+static const char *const g_tab_blurb_ids[TAB_N] = {"blurb.display", "blurb.performance", "blurb.game", "blurb.controls", "blurb.help"};
 static int g_select_tab = -1;   /* the bar asked for this page (open_page): selected on the menu's next frame, then -1 */
 static int g_section = TAB_DISPLAY;
 static void open_page(int tab) { g_select_tab = tab; overlay_open(); }
@@ -535,7 +834,13 @@ static void build_ui(void) {
 	const float em = ImGui::GetFontSize();
 	if (g_select_tab >= 0) { g_section = g_select_tab; g_select_tab = -1; }
 	ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), io.DisplaySize, ui::u32(ui::bg, 0.62f));   /* the paused game, dimmed behind */
-	const float W = io.DisplaySize.x - 2 * em < 58 * em ? io.DisplaySize.x - 2 * em : 58 * em;
+	/* (U10) a window at least 70 em wide -- the U2 scale makes that per-aspect, not per-resolution (16:9 is 85 em
+	 * at every size, 960x544 is 64 em) -- gets the two-pane page: rows left, the hovered row's help right, in a
+	 * wider menu that holds both; below it the rows keep their one-line help */
+	const bool two_pane = io.DisplaySize.x >= 70 * em;
+	ui::two_pane = two_pane;
+	const float wcap = (two_pane ? 76 : 58) * em;
+	const float W = io.DisplaySize.x - 2 * em < wcap ? io.DisplaySize.x - 2 * em : wcap;
 	const float H = io.DisplaySize.y - 2 * em < 38 * em ? io.DisplaySize.y - 2 * em : 38 * em;
 	ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
 	ImGui::SetNextWindowSize(ImVec2(W, H), ImGuiCond_Always);
@@ -545,59 +850,104 @@ static void build_ui(void) {
 	/* header: the game, Paused, Resume */
 	{	const char *name = std::getenv("RECOMP_GAME_NAME"); if (!name || !*name) name = std::getenv("RECOMP_TITLE"); if (!name || !*name) name = "Project Nativ";
 		ui::heading(name, em * 1.35f);
-		ImGui::SameLine(0, em * 0.7f); ImGui::SetCursorPosY(ImGui::GetCursorPosY() + em * 0.18f); ui::chip("Paused", ui::accent);
-		float rw = ImGui::CalcTextSize("Resume").x + ImGui::GetStyle().FramePadding.x * 2;
+		ImGui::SameLine(0, em * 0.7f); ImGui::SetCursorPosY(ImGui::GetCursorPosY() + em * 0.18f); ui::chip(ui_tr("header.paused"), ui::accent);
+		const char *resume = ui_tr("header.resume");
+		float rw = ImGui::CalcTextSize(resume).x + ImGui::GetStyle().FramePadding.x * 2;
 		ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - rw);
-		if (ui::primary_button("Resume")) overlay_close();
+		if (ui::primary_button(resume)) overlay_close();
+	}
+	{	char line[192]; version_line(line, sizeof line);   /* (U4: right-aligned under the header row) */
+		if (*line) { float lw = ImGui::CalcTextSize(line).x; ImGui::SetCursorPosX(ImMax(0.0f, ImGui::GetWindowContentRegionMax().x - lw)); ImGui::TextDisabled("%s", line); }
 	}
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
 	const float foot = ImGui::GetFrameHeightWithSpacing() + em * 0.9f;
-	/* the sections; a controller's L1 / R1 (or Ctrl+Tab, Ctrl+Shift+Tab) step them in the sidebar's order -- the sidebar and
-	 * the page are separate panels the D-pad doesn't cross -- and the new page's first row takes the focus */
+	/* the sections: tabs across the top (UI-03, menu_shell.h); a controller's L1 / R1 (or Ctrl+Tab, Ctrl+Shift+Tab) step them
+	 * and the new page's first row takes the focus; left / right on the tabs pick one; D-pad down from the tabs enters
+	 * the rows, up from the first row comes back */
 	static const int order[TAB_N] = {TAB_DISPLAY, TAB_GAME, TAB_CONTROLS, TAB_PERF, TAB_HELP};
 	static bool focus_page;
-	if (!ImGui::IsAnyItemActive()) {
+	/* (U12c) Circle goes up one level -- a row: to its tab; the tabs: resumes the game, as Esc does (UI-03) -- unless it had
+	 * something to cancel: an edited slider, a combo or the reset dialog in the frame before (ImGui's nav took this
+	 * frame's cancel before we look) */
+	static bool busy_before;
+	ImGuiWindow *menu_win = ImGui::GetCurrentWindow();
+	static int open_frames;
+	if (ImGui::IsWindowAppearing()) open_frames = 0;
+	if (!ImGui::IsAnyItemActive() && !g_modal_open) {   /* (U6) no page step under the reset dialog */
 		const bool ctrl = io.KeyCtrl, shift = io.KeyShift; int step = 0;
 		if (ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || (ctrl && shift && ImGui::IsKeyPressed(ImGuiKey_Tab, false))) step = -1;
 		if (ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) || (ctrl && !shift && ImGui::IsKeyPressed(ImGuiKey_Tab, false))) step = 1;
 		if (step) { int k = 0; while (k < TAB_N - 1 && order[k] != g_section) k++; g_section = order[(k + step + TAB_N) % TAB_N]; focus_page = true; }
 	}
-	ImGui::BeginChild("nav", ImVec2(em * 11.5f, -foot), 0);
-	for (int k = 0; k < TAB_N; k++) {
-		int i = order[k]; bool on = g_section == i;
-		ImVec2 p = ImGui::GetCursorScreenPos(); float h = ImGui::GetFrameHeight() * 1.15f, w = ImGui::GetContentRegionAvail().x;
-		ImGui::PushID(i);
-		if (ImGui::InvisibleButton("sec", ImVec2(w, h))) g_section = i;
-		bool hov = ImGui::IsItemHovered() || ImGui::IsItemFocused();
-		ImDrawList *dl = ImGui::GetWindowDrawList();
-		if (on || hov) dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), ui::u32(on ? ui::card_hi : ui::card), ImGui::GetStyle().FrameRounding);
-		if (on) dl->AddRectFilled(ImVec2(p.x, p.y + h * 0.22f), ImVec2(p.x + 3, p.y + h * 0.78f), ui::u32(ui::accent), 2);
-		dl->AddText(ImVec2(p.x + em * 0.9f, p.y + (h - ImGui::GetTextLineHeight()) * 0.5f), ui::u32(on ? ui::text : ui::muted), g_tab_names[i]);
-		ImGui::PopID();
-	}
-	ImGui::EndChild();
-	ImGui::SameLine(0, em * 0.8f);
-	/* the page */
+	ImGuiID tab_ids[MENU_TABS_MAX];
+	{	const char *labels[TAB_N]; for (int i = 0; i < TAB_N; i++) labels[i] = ui_tr(g_tab_ids[i]);
+		menu_tabs(&g_section, order, TAB_N, labels, tab_ids); }
+	const ImGuiID tab_now = tab_ids[menu_tab_place(g_section, order, TAB_N)];
+	if (open_frames < 2) { ImGui::SetFocusID(tab_now, menu_win); ImGui::SetNavCursorVisible(true); open_frames++; }   /* (the menu opens on the tab in use: ImGui puts the focus on a new window's first item after its first frame) */
+	ImGui::Dummy(ImVec2(0, em * 0.15f));
+	/* the page: under the tabs, the window's full width (NavFlattened: the D-pad crosses between the tabs and the rows) */
 	ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::bg);
-	ImGui::BeginChild("page", ImVec2(0, -foot), ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding);
+	ImGui::BeginChild("page", ImVec2(0, -foot), ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding | ImGuiChildFlags_NavFlattened);
 	ImGui::PopStyleColor();
-	ui::heading(g_tab_names[g_section], em * 1.25f);
-	ImGui::TextDisabled("%s", g_tab_blurbs[g_section]);
-	if (focus_page) { ImGui::SetKeyboardFocusHere(); focus_page = false; }   /* (the page's first control) */
+	ImGuiWindow *page_win = ImGui::GetCurrentWindow();
+	static bool tabs_had_focus;
+	ui::tabs_down_enters(tabs_had_focus);   /* (UI-03: down from the tabs: the page's first control) */
+	ui::heading(ui_tr(g_tab_ids[g_section]), em * 1.25f);
+	ImGui::TextDisabled("%s", ui_tr(g_tab_blurb_ids[g_section]));
+	if (focus_page) { ui::focus_next_item(); focus_page = false; }   /* (the page's first control -- not taken: UI-03) */
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
 	static void (*const pages[TAB_N])(void) = {page_display, page_performance, page_game, page_controls, page_help};
+	static int shown_section = -1;
+	if (shown_section != g_section) { shown_section = g_section; ui::help_label = nullptr; }   /* (U10) a new page: the pane starts at its first row */
+	/* (U12c, owner: "why so much space for the explanation?") the help pane takes 26 % of the page, 12-16 em
+	 * (was a fixed 23 em) -- its texts are a sentence or two; the rows get the rest */
+	const float help_w = ImClamp(ImGui::GetContentRegionAvail().x * 0.26f, em * 12, em * 16);
+	if (two_pane) ImGui::BeginChild("rows-l", ImVec2(-(help_w + em * 0.8f), 0), ImGuiChildFlags_NavFlattened);
 	pages[g_section]();
+	if (two_pane) {
+		ImGui::EndChild();
+		ImGui::SameLine(0, em * 0.8f);
+		ImGui::BeginChild("help-r", ImVec2(0, 0), ImGuiChildFlags_Borders);
+		ui::help_pane();
+		ImGui::EndChild();
+	}
+	ui::nav_keep_visible();   /* (UI-03) */
 	ImGui::EndChild();
+	if (!busy_before && !g_modal_open && g_rebind < 0 && g_pad_rebind < 0 && menu_back(page_win, menu_win, tab_now)) overlay_close();   /* (UI-03) */
+	tabs_had_focus = menu_tab_focused(tab_ids, TAB_N);
 	/* the foot */
 	ImGui::Dummy(ImVec2(0, em * 0.15f));
-	if (ImGui::Button("Capture frame (F12)")) g_want_capture = true;
-	ImGui::SameLine(); ImGui::TextDisabled(SDL_HasGamepad() ? "L1 / R1: sections   Esc, F10 or the PS button closes this menu" : "Esc, F10 or the PS button closes this menu");
+	if (ImGui::Button(ui_tr("foot.capture"))) g_want_capture = true;
+	if (SDL_HasGamepad()) {   /* (UI-01e) the buttons as printed on the pad in use: LB / RB and B on an Xbox pad or the Deck's A/B, Circle on a PlayStation pad */
+		int n = 0; SDL_JoystickID *ids = SDL_GetGamepads(&n);
+		const int type = ids && n > 0 ? (int)SDL_GetGamepadTypeForID(ids[0]) : -1;
+		SDL_free(ids);
+		const char *deck = std::getenv("SteamDeck");
+		const PadNames *pn = pad_names_of(pad_family(type, deck && !strcmp(deck, "1")));
+		const bool keys = GImGui->NavInputSource == ImGuiInputSource_Keyboard;
+		char hint[200];
+		if (ui::editing()) { if (keys) snprintf(hint, sizeof hint, "%s", ui_tr("foot.edit_key")); else snprintf(hint, sizeof hint, ui_tr("foot.edit_pad"), pn->select, pn->back); }   /* (UI-04) */
+		else if (ui::value_focused() && ui::nav_by_pad()) { if (keys) snprintf(hint, sizeof hint, "%s", ui_tr("foot.change_key")); else snprintf(hint, sizeof hint, ui_tr("foot.change_pad"), pn->select, pn->l, pn->r, pn->back); }
+		else snprintf(hint, sizeof hint, ui_tr("foot.hint_pad"), pn->l, pn->r, pn->back, pn->menu, pn->menu, pn->view);
+		ImGui::SameLine(); ImGui::TextDisabled("%s", hint);
+	} else {   /* (no pad: the keys' words) */
+		const char *h = ui::editing() ? ui_tr("foot.edit_key") : ui::value_focused() && ui::nav_by_pad() ? ui_tr("foot.change_key") : ui_tr("foot.hint");
+		ImGui::SameLine(); ImGui::TextDisabled("%s", h);
+	}
+	if (g_save_failed) {   /* (U8: until a later save succeeds) */
+		ImGui::SameLine();
+		ImGui::PushStyleColor(ImGuiCol_Text, ui::error);
+		ImGui::TextUnformatted(ui_tr("foot.save_failed"));
+		ImGui::PopStyleColor();
+	}
 	const char *quit = quit_label();
 	float qw = ImGui::CalcTextSize(quit).x + ImGui::GetStyle().FramePadding.x * 2;
 	ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - qw);
 	ImGui::PushStyleColor(ImGuiCol_Text, ui::error);
 	if (ImGui::Button(quit)) g_want_quit = true;
 	ImGui::PopStyleColor();
+	busy_before = ImGui::IsAnyItemActive() || ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) || g_modal_open || g_rebind >= 0 || g_pad_rebind >= 0;
+	g_value_edit = ui::editing();
 	ImGui::End();
 }
 
@@ -633,73 +983,73 @@ void overlay_bar_dismiss(void) { if (!g_ctx) return; if (g_intro) intro_end(); e
 int overlay_mouse_captured(void) { return g_ctx && g_has_window && g_mouse_captured; }
 
 static void menu_game(void) {
-	if (ImGui::MenuItem(g_paused ? "Resume" : "Pause")) overlay_set_paused(!g_paused);
-	ImGui::TextUnformatted("Volume"); ImGui::SameLine(); volume_slider();
-	if (ImGui::MenuItem("Capture frame", "F12")) g_want_capture = true;
-	if (ImGui::MenuItem("Full menu…", "F10")) overlay_open();
+	if (ImGui::MenuItem(g_paused ? ui_tr("header.resume") : ui_tr("header.pause"))) overlay_set_paused(!g_paused);
+	ImGui::TextUnformatted("%s", ui_tr("game.volume")); ImGui::SameLine(); volume_slider();
+	if (ImGui::MenuItem(ui_tr("bar.capture"), "F12")) g_want_capture = true;
+	if (ImGui::MenuItem(ui_tr("bar.full_menu"), "F10")) overlay_open();
 	ImGui::Separator();
 	if (ImGui::MenuItem(quit_label())) g_want_quit = true;
 }
 static void menu_view(void) {
-	if (ImGui::BeginMenu("Resolution")) {
+	if (ImGui::BeginMenu(ui_tr("display.resolution"))) {
 		int rs = gfx_gpu_render_scale_wanted();
 		for (int n = 1; n <= gfx_gpu_render_scale_max(); n++) { char l[48]; scale_label(l, sizeof l, n); if (ImGui::MenuItem(l, nullptr, rs == n)) gfx_gpu_render_scale_request(n); }
 		ImGui::Separator();
 		int mw = scale_for_window();
-		if (mw) { char l[48]; std::snprintf(l, sizeof l, "Match window (%dx)", mw); if (ImGui::MenuItem(l)) gfx_gpu_render_scale_request(mw); }
-		if (ImGui::MenuItem("Cycle", "F2")) gfx_gpu_render_scale_cycle();
+		if (mw) { char l[48]; std::snprintf(l, sizeof l, ui_tr("bar.match_window"), mw); if (ImGui::MenuItem(l)) gfx_gpu_render_scale_request(mw); }
+		if (ImGui::MenuItem(ui_tr("bar.cycle"), "F2")) gfx_gpu_render_scale_cycle();
 		ImGui::EndMenu();
 	}
-	if (ImGui::BeginMenu("Picture fit")) {
+	if (ImGui::BeginMenu(ui_tr("display.fit"))) {
 		int am = window_get_aspect();
-		for (int i = 0; i < 3; i++) if (ImGui::MenuItem(g_aspect_names[i], nullptr, am == i)) window_set_aspect(i);
+		for (int i = 0; i < 3; i++) if (ImGui::MenuItem(ui_tr(g_aspect_names[i]), nullptr, am == i)) window_set_aspect(i);
 		ImGui::EndMenu();
 	}
 	bool fs = window_get_fullscreen() != 0;
-	if (ImGui::MenuItem("Fullscreen", nullptr, &fs)) window_set_fullscreen(fs ? 1 : 0);
+	if (ImGui::MenuItem(ui_tr("display.fullscreen"), nullptr, &fs)) window_set_fullscreen(fs ? 1 : 0);
 	ImGui::Separator();
 	prefs_load();
-	if (game_option("fov")) { ImGui::TextDisabled("Field of view"); ImGui::SetNextItemWidth(170); if (ImGui::SliderFloat("##fov", &P.fov, 0.75f, 1.5f, "%.2fx")) set_fov(P.fov); }
-	if (game_option("view_distance")) { ImGui::TextDisabled("View distance"); ImGui::SetNextItemWidth(170); if (ImGui::SliderFloat("##view", &P.view, 1.0f, 3.0f, "%.2fx")) set_view(P.view); }
-	if (game_option("scenery_detail")) { ImGui::TextDisabled("Scenery detail"); ImGui::SetNextItemWidth(170); if (ImGui::SliderFloat("##scen", &P.scen, 1.0f, 8.0f, "%.1fx")) set_scen(P.scen); }
-	if (game_option("character_detail")) { ImGui::TextDisabled("Character detail"); ImGui::SetNextItemWidth(170); if (ImGui::SliderFloat("##chr", &P.chr, 1.0f, 8.0f, "%.1fx")) set_chr(P.chr); }
-	if (ImGui::BeginMenu("Frame rate")) {
-		if (ImGui::MenuItem("30", nullptr, P.fr < 60)) set_frame_rate(30);
-		if (ImGui::MenuItem("60 (experimental)", nullptr, P.fr >= 60)) set_frame_rate(60);
+	if (game_option("fov")) { ImGui::TextDisabled("%s", ui_tr("game.fov")); ImGui::SetNextItemWidth(170 * g_ui_scale); if (ui::slider_float("##fov", &P.fov, 0.75f, 1.5f, "%.2fx")) set_fov(P.fov); }
+	if (game_option("view_distance")) { ImGui::TextDisabled("%s", ui_tr("game.view")); ImGui::SetNextItemWidth(170 * g_ui_scale); if (ui::slider_float("##view", &P.view, 1.0f, 3.0f, "%.2fx")) set_view(P.view); }
+	if (game_option("scenery_detail")) { ImGui::TextDisabled("%s", ui_tr("game.scen")); ImGui::SetNextItemWidth(170 * g_ui_scale); if (ui::slider_float("##scen", &P.scen, 1.0f, 8.0f, "%.1fx")) set_scen(P.scen); }
+	if (game_option("character_detail")) { ImGui::TextDisabled("%s", ui_tr("game.chr")); ImGui::SetNextItemWidth(170 * g_ui_scale); if (ui::slider_float("##chr", &P.chr, 1.0f, 8.0f, "%.1fx")) set_chr(P.chr); }
+	if (ImGui::BeginMenu(ui_tr("game.fps"))) {
+		int l[3], n = fr_list(display_frame_rates_allowed(), l), cur = fr_effective(P.fr, display_frame_rates_allowed());
+		for (int i = 0; i < n; i++) if (ImGui::MenuItem(l[i] >= 120 ? ui_tr("bar.fps120") : l[i] >= 60 ? ui_tr("bar.fps60") : "30", nullptr, cur == l[i])) set_frame_rate(l[i]);
 		ImGui::EndMenu();
 	}
-	if (ImGui::BeginMenu("On-screen stats")) {
-		static const char *const names[3] = {"Off", "FPS", "Full"};
+	if (ImGui::BeginMenu(ui_tr("perf.osd"))) {
+		const char *const names[3] = {ui_tr("common.off"), "FPS", ui_tr("perf.osd_full")};
 		int lvl = metrics_osd_level();
 		for (int i = 0; i < 3; i++) if (ImGui::MenuItem(names[i], nullptr, lvl == i)) set_osd(i);
 		ImGui::Separator();
-		if (ImGui::MenuItem("Cycle", "F1")) metrics_osd_cycle();
+		if (ImGui::MenuItem(ui_tr("bar.cycle"), "F1")) metrics_osd_cycle();
 		ImGui::EndMenu();
 	}
 }
 static void menu_controls(void) {
 	prefs_load();
-	ImGui::TextDisabled("Touch cursor speed (hold L1/R1, either stick)");
-	ImGui::SetNextItemWidth(170);
-	if (ImGui::SliderFloat("##tcs", &P.tcs, 0.25f, 3.0f, "%.2fx")) set_tcs(P.tcs);
+	ImGui::TextDisabled("%s", ui_tr("bar.touch_speed"));
+	ImGui::SetNextItemWidth(170 * g_ui_scale);
+	if (ui::slider_float("##tcs", &P.tcs, 0.25f, 3.0f, "%.2fx")) set_tcs(P.tcs);
 	ImGui::Separator();
 	bool gy = P.gyro != 0;
-	if (ImGui::MenuItem("Gyro as the Vita's motion sensor", nullptr, &gy)) set_gyro(gy);
-	if (ImGui::BeginMenu("A level pad is a Vita held")) {
-		if (ImGui::MenuItem("upright", nullptr, !P.gyro_flat)) set_gyro_pose(0);
-		if (ImGui::MenuItem("flat", nullptr, P.gyro_flat != 0)) set_gyro_pose(1);
+	if (ImGui::MenuItem(ui_tr("bar.gyro_toggle"), nullptr, &gy)) set_gyro(gy);
+	if (ImGui::BeginMenu(ui_tr("bar.gyro_pose"))) {
+		if (ImGui::MenuItem(ui_tr("bar.upright"), nullptr, !P.gyro_flat)) set_gyro_pose(0);
+		if (ImGui::MenuItem(ui_tr("bar.flat"), nullptr, P.gyro_flat != 0)) set_gyro_pose(1);
 		ImGui::EndMenu();
 	}
-	ImGui::TextDisabled("Gyro sensitivity");
-	ImGui::SetNextItemWidth(170);
-	if (ImGui::SliderFloat("##gs", &P.gyro_sens, 0.25f, 3.0f, "%.2fx")) set_gyro_sens(P.gyro_sens);
-	if (ImGui::MenuItem("Recentre the gyro", "R3")) motion_recenter();
+	ImGui::TextDisabled("%s", ui_tr("ctrl.gyro_sens"));
+	ImGui::SetNextItemWidth(170 * g_ui_scale);
+	if (ui::slider_float("##gs", &P.gyro_sens, 0.25f, 3.0f, "%.2fx")) set_gyro_sens(P.gyro_sens);
+	if (ImGui::MenuItem(ui_tr("ctrl.recentre_btn"), "R3")) motion_recenter();
 	ImGui::Separator();
-	if (ImGui::MenuItem("Controls reference…")) open_page(TAB_CONTROLS);   /* (the full menu: pauses) */
+	if (ImGui::MenuItem(ui_tr("bar.controls_ref"))) open_page(TAB_CONTROLS);   /* (the full menu: pauses) */
 }
 static void menu_help(void) {
-	if (ImGui::MenuItem("Shortcuts…")) open_page(TAB_HELP);
-	if (ImGui::MenuItem("About…")) open_page(TAB_HELP);
+	if (ImGui::MenuItem(ui_tr("bar.shortcuts"))) open_page(TAB_HELP);
+	if (ImGui::MenuItem(ui_tr("bar.about"))) open_page(TAB_HELP);
 }
 /* the bar: a window the width of the display, exactly one menu-bar high, parked above the top edge by
  * (1 - vis) of its height -- the slide. Its menus are ImGui popups below it. */
@@ -725,11 +1075,18 @@ static void build_bar(float w) {
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(em * 0.7f, em * 0.55f));
 		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(em * 0.6f, em * 0.45f));
 		/* (headless dump: a menu forced open -- OpenPopup here shares BeginMenu's ID scope, so the ids match) */
-		if (g_force_menu) { ImGui::OpenPopup(g_force_menu); g_force_menu = nullptr; }
-		if (ImGui::BeginMenu("Game")) { menu_game(); ImGui::EndMenu(); }
-		if (ImGui::BeginMenu("View")) { menu_view(); ImGui::EndMenu(); }
-		if (ImGui::BeginMenu("Controls")) { menu_controls(); ImGui::EndMenu(); }
-		if (ImGui::BeginMenu("Help")) { menu_help(); ImGui::EndMenu(); }
+		if (g_force_menu) {   /* (U12b) the dump's selector key -> the translated menu label, in this frame's language */
+			const char *k = g_force_menu; g_force_menu = nullptr;
+			if (!strcmp(k, "Game")) ImGui::OpenPopup(ui_tr("nav.game"));
+			else if (!strcmp(k, "View")) ImGui::OpenPopup(ui_tr("bar.view"));
+			else if (!strcmp(k, "Controls")) ImGui::OpenPopup(ui_tr("nav.controls"));
+			else if (!strcmp(k, "Help")) ImGui::OpenPopup(ui_tr("nav.help"));
+			else ImGui::OpenPopup(k);
+		}
+		if (ImGui::BeginMenu(ui_tr("nav.game"))) { menu_game(); ImGui::EndMenu(); }
+		if (ImGui::BeginMenu(ui_tr("bar.view"))) { menu_view(); ImGui::EndMenu(); }
+		if (ImGui::BeginMenu(ui_tr("nav.controls"))) { menu_controls(); ImGui::EndMenu(); }
+		if (ImGui::BeginMenu(ui_tr("nav.help"))) { menu_help(); ImGui::EndMenu(); }
 		ImGui::PopStyleVar(2);
 		ImGui::EndMenuBar();
 	}
@@ -811,6 +1168,7 @@ static int toast_tokens(const char *body, ImFont *font, float fs, float cap_pad,
 }
 static void build_toasts(float w, float hgt, double t) {
 	(void)hgt;
+	/* (GetFontSize carries the window's scale, ui_scale.h: a toast keeps the share of the window it has at 1280x720) */
 	ImFont *font = ImGui::GetFont(); const float fs = ImGui::GetFontSize() * (w >= 1000 ? 2.0f : 1.0f);   /* (the bitmap font: integer multiples stay crisp) */
 	const float pad = fs * 0.75f, edge = fs * 0.3f, cap_pad = fs * 0.3f, space = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, " ").x, lh = fs * 1.35f;
 	const float maxw = fmaxf(w / 3.0f, fs * 18.0f);
@@ -852,7 +1210,7 @@ static void build_toasts(float w, float hgt, double t) {
 /* Game > Pause (not the menu): the picture stays, with this over it */
 static void build_pause_banner(float w, float hgt) {
 	ImFont *font = ImGui::GetFont(); const float fs = ImGui::GetFontSize() * 2.0f;
-	static const char l1[] = "PAUSED", l2[] = "Game > Resume in the menu bar (mouse to the top), or F10";
+	const char *const l1 = ui_tr("bar.paused"), *const l2 = ui_tr("bar.paused_hint");
 	const ImVec2 s1 = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, l1), s2 = font->CalcTextSizeA(fs * 0.5f, FLT_MAX, 0.0f, l2);
 	const float pad = 12, bw = fmaxf(s1.x, s2.x) + 2 * pad, bh = s1.y + s2.y + 3 * pad;
 	const ImVec2 p0(w * 0.5f - bw * 0.5f, hgt * 0.5f - bh * 0.5f), p1(p0.x + bw, p0.y + bh);
@@ -903,23 +1261,23 @@ static void build_perf_full(ImDrawList *dl) {
 	/* the renderer's and the picture's rows: a label and one value at the right edge */
 	char rv[8][48]; const char *rl[8]; ImU32 rc[8]; int nr = 0;
 	auto row2 = [&](const char *l, ImU32 c) -> char * { rl[nr] = l; rc[nr] = c; return rv[nr++]; };
-	perf_fmt(row2("Render (CPU) per frame", c_ren), 48, m.render_ms, "%.2f ms");
-	std::snprintf(row2("GPU busy per frame", c_ren), 48, "-");   /* (SDL's GPU API has no timestamp queries) */
-	if (m.builds >= 0) std::snprintf(row2("Shader + pipeline builds", c_ren), 48, "%.1f (%.2f ms)", m.builds, m.build_ms); else std::snprintf(row2("Shader + pipeline builds", c_ren), 48, "-");
-	perf_fmt(row2("Waits (downloads, readbacks)", c_ren), 48, m.waits_ms, "%.2f ms");
-	perf_fmt(row2("Texture uploads", c_ren), 48, m.tex_uploads, "%.1f per frame");
-	perf_fmt(row2("Draws waiting for a build", c_ren), 48, m.skipped, "%.1f per frame");
-	std::snprintf(row2("Scenes / draws", c_ren), 48, m.fallback ? "%u / %u (%u software)" : "%u / %u", m.scenes, m.draws, m.fallback);
-	std::snprintf(row2("Audio queued", c_ren), 48, m.audio_underruns ? "%u ms, %u underruns" : "%u ms", m.audio_ms, m.audio_underruns);
+	perf_fmt(row2(ui_tr("sys.render"), c_ren), 48, m.render_ms, "%.2f ms");
+	std::snprintf(row2(ui_tr("sys.gpu_busy"), c_ren), 48, "-");   /* (SDL's GPU API has no timestamp queries) */
+	if (m.builds >= 0) std::snprintf(row2(ui_tr("sys.builds"), c_ren), 48, "%.1f (%.2f ms)", m.builds, m.build_ms); else std::snprintf(row2(ui_tr("sys.builds"), c_ren), 48, "-");
+	perf_fmt(row2(ui_tr("sys.waits"), c_ren), 48, m.waits_ms, "%.2f ms");
+	perf_fmt(row2(ui_tr("sys.uploads"), c_ren), 48, m.tex_uploads, "%.1f per frame");
+	perf_fmt(row2(ui_tr("sys.draws_waiting"), c_ren), 48, m.skipped, "%.1f per frame");
+	std::snprintf(row2(ui_tr("sys.scenes"), c_ren), 48, m.fallback ? "%u / %u (%u software)" : "%u / %u", m.scenes, m.draws, m.fallback);
+	std::snprintf(row2(ui_tr("sys.audio"), c_ren), 48, m.audio_underruns ? "%u ms, %u underruns" : "%u ms", m.audio_ms, m.audio_underruns);
 	char dv[6][64]; const char *dl_[6]; int nd = 0;
 	uint32_t ww = 0, wh = 0; window_pixel_size(&ww, &wh);
 	const int rs = m.render_scale > 0 ? m.render_scale : 1;
-	dl_[nd] = "Window"; if (ww && wh) std::snprintf(dv[nd++], 64, "%ux%u", ww, wh); else std::snprintf(dv[nd++], 64, "-");
-	dl_[nd] = "Game image"; std::snprintf(dv[nd++], 64, "%dx%d (%dx)", 960 * rs, 544 * rs, rs);
-	dl_[nd] = "Upscaling"; std::snprintf(dv[nd++], 64, "%s", gfx_gpu_fsr_active() ? "FSR" : "bilinear");
-	dl_[nd] = "Frame limit"; std::snprintf(dv[nd++], 64, "%d FPS", display_frame_rate_60() ? 60 : 30);
-	dl_[nd] = "Presentation"; std::snprintf(dv[nd++], 64, "%s", window_present_mode());
-	dl_[nd] = "Renderer"; std::snprintf(dv[nd++], 64, "%s", m.gpu_backend ? "GPU" : "software");
+	dl_[nd] = ui_tr("sys.window"); if (ww && wh) std::snprintf(dv[nd++], 64, "%ux%u", ww, wh); else std::snprintf(dv[nd++], 64, "-");
+	dl_[nd] = ui_tr("sys.game_image"); std::snprintf(dv[nd++], 64, "%dx%d (%dx)", 960 * rs, 544 * rs, rs);
+	dl_[nd] = ui_tr("sys.upscaling"); std::snprintf(dv[nd++], 64, "%s", gfx_gpu_fsr_active() ? "FSR" : "bilinear");
+	dl_[nd] = ui_tr("sys.frame_limit"); std::snprintf(dv[nd++], 64, "%d FPS", display_frame_rate());
+	dl_[nd] = ui_tr("sys.presentation"); std::snprintf(dv[nd++], 64, "%s", window_present_mode());
+	dl_[nd] = ui_tr("sys.renderer"); std::snprintf(dv[nd++], 64, "%s", m.gpu_backend ? "GPU" : "software");
 
 	const char *title = std::getenv("RECOMP_GAME_NAME"); if (!title || !*title) title = std::getenv("RECOMP_TITLE"); if (!title || !*title) title = "Project Nativ";
 	const float gh = fs * 2.6f;
@@ -954,6 +1312,125 @@ static void build_perf_full(ImDrawList *dl) {
 	dl->AddText(font, fs, ImVec2(xl, y), c_mut, m.gpu_name[0] ? m.gpu_name : "GPU: -"); y += lh;
 	dl->AddText(font, fs, ImVec2(xl, y), c_mut, m.cpu_name[0] ? m.cpu_name : "CPU: -");
 }
+/* (UI-01n) the on-screen buttons (touch_controls.h, the layout window.c presses by): translucent, a held one lit; the
+ * face buttons as the Vita's shapes, the D-pad's arms lit by direction, a stick's knob under its finger */
+extern "C" int window_osb_state(float *size, unsigned *held, unsigned *bits, float knob[4]);
+static bool g_force_osb;   /* RECOMP_OVERLAY_DUMP_UI=osb: shown, nothing held */
+static void build_osb(ImDrawList *dl) {
+	float size = 1.0f, knob[4] = {0, 0, 0, 0}; unsigned held = 0, bits = 0;
+	bool shown = window_osb_state(&size, &held, &bits, knob) != 0;
+	if (g_force_osb) { shown = true; held = bits = 0; size = (float)settings_float("osb_size", 1.0); }
+	if (!shown || g_intro) return;
+	const ImVec2 ds = ImGui::GetIO().DisplaySize;
+	OsbLayout L; osb_layout(&L, ds.x, ds.y, size);
+	const float u = L.unit, lw = u * 0.045f > 1.5f ? u * 0.045f : 1.5f;
+	const ImU32 fill = IM_COL32(16, 18, 24, 96), lit = IM_COL32(255, 255, 255, 120), edge = IM_COL32(255, 255, 255, 150), ink = IM_COL32(255, 255, 255, 215);
+	ImFont *font = ImGui::GetFont(); const float fs = u * 0.38f;
+	auto label = [&](const OsbCtrl &c) {
+		const ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, c.label);
+		dl->AddText(font, fs, ImVec2(c.x + (c.w - ts.x) * 0.5f, c.y + (c.h - ts.y) * 0.5f), ink, c.label);
+	};
+	for (int i = 0; i < OSB_N; i++) {
+		const OsbCtrl &c = L.c[i]; const bool on = (held >> i) & 1u;
+		const ImVec2 mid(c.x + c.w * 0.5f, c.y + c.h * 0.5f);
+		if (i == OSB_DPAD) {   /* a plus of four arms, each lit by its direction */
+			const float a = u * 0.5f;
+			const struct { float x0, y0, x1, y1; unsigned bit; } arm[4] = {
+				{mid.x - a, c.y, mid.x + a, mid.y - a, OSB_BIT_UP}, {mid.x - a, mid.y + a, mid.x + a, c.y + c.h, OSB_BIT_DOWN},
+				{c.x, mid.y - a, mid.x - a, mid.y + a, OSB_BIT_LEFT}, {mid.x + a, mid.y - a, c.x + c.w, mid.y + a, OSB_BIT_RIGHT}};
+			dl->AddRectFilled(ImVec2(mid.x - a, mid.y - a), ImVec2(mid.x + a, mid.y + a), fill);
+			for (const auto &r : arm) {
+				dl->AddRectFilled(ImVec2(r.x0, r.y0), ImVec2(r.x1, r.y1), (bits & r.bit) ? lit : fill, u * 0.12f);
+				dl->AddRect(ImVec2(r.x0, r.y0), ImVec2(r.x1, r.y1), edge, u * 0.12f, 0, lw);
+				const ImVec2 cm((r.x0 + r.x1) * 0.5f, (r.y0 + r.y1) * 0.5f); const float s = u * 0.16f;   /* the arrow */
+				if (r.bit == OSB_BIT_UP) dl->AddTriangleFilled(ImVec2(cm.x, cm.y - s), ImVec2(cm.x - s, cm.y + s * 0.6f), ImVec2(cm.x + s, cm.y + s * 0.6f), ink);
+				if (r.bit == OSB_BIT_DOWN) dl->AddTriangleFilled(ImVec2(cm.x, cm.y + s), ImVec2(cm.x + s, cm.y - s * 0.6f), ImVec2(cm.x - s, cm.y - s * 0.6f), ink);
+				if (r.bit == OSB_BIT_LEFT) dl->AddTriangleFilled(ImVec2(cm.x - s, cm.y), ImVec2(cm.x + s * 0.6f, cm.y + s), ImVec2(cm.x + s * 0.6f, cm.y - s), ink);
+				if (r.bit == OSB_BIT_RIGHT) dl->AddTriangleFilled(ImVec2(cm.x + s, cm.y), ImVec2(cm.x - s * 0.6f, cm.y - s), ImVec2(cm.x - s * 0.6f, cm.y + s), ink);
+			}
+		} else if (i == OSB_LSTICK || i == OSB_RSTICK) {   /* the ring, and the knob where the finger is (clamped to the ring) */
+			const float r = c.w * 0.5f; const int k = i == OSB_RSTICK;
+			dl->AddCircleFilled(mid, r, fill, 48); dl->AddCircle(mid, r, edge, 48, lw);
+			ImVec2 kp = mid;
+			if (on) { float dx = knob[2 * k] - mid.x, dy = knob[2 * k + 1] - mid.y; const float d = std::sqrt(dx * dx + dy * dy), lim = r - u * 0.55f; if (d > lim && d > 0) { dx *= lim / d; dy *= lim / d; } kp = ImVec2(mid.x + dx, mid.y + dy); }
+			dl->AddCircleFilled(kp, u * 0.55f, on ? lit : IM_COL32(255, 255, 255, 60), 32); dl->AddCircle(kp, u * 0.55f, edge, 32, lw);
+		} else if (c.round) {   /* a face button: a circle with its shape */
+			const float r = c.w * 0.5f, s = u * 0.2f;
+			dl->AddCircleFilled(mid, r, on ? lit : fill, 32); dl->AddCircle(mid, r, edge, 32, lw);
+			if (i == OSB_TRIANGLE) dl->AddTriangle(ImVec2(mid.x, mid.y - s * 1.1f), ImVec2(mid.x - s * 1.1f, mid.y + s * 0.8f), ImVec2(mid.x + s * 1.1f, mid.y + s * 0.8f), ink, lw * 1.4f);
+			if (i == OSB_CIRCLE) dl->AddCircle(mid, s, ink, 24, lw * 1.4f);
+			if (i == OSB_CROSS) { dl->AddLine(ImVec2(mid.x - s, mid.y - s), ImVec2(mid.x + s, mid.y + s), ink, lw * 1.4f); dl->AddLine(ImVec2(mid.x + s, mid.y - s), ImVec2(mid.x - s, mid.y + s), ink, lw * 1.4f); }
+			if (i == OSB_SQUARE) dl->AddRect(ImVec2(mid.x - s * 0.9f, mid.y - s * 0.9f), ImVec2(mid.x + s * 0.9f, mid.y + s * 0.9f), ink, 0.0f, 0, lw * 1.4f);
+		} else {   /* L, R, Select, Start: a rounded box with its name */
+			dl->AddRectFilled(ImVec2(c.x, c.y), ImVec2(c.x + c.w, c.y + c.h), on ? lit : fill, c.h * 0.45f);
+			dl->AddRect(ImVec2(c.x, c.y), ImVec2(c.x + c.w, c.y + c.h), edge, c.h * 0.45f, 0, lw);
+			label(c);
+		}
+	}
+}
+/* (UI-02a) the player's controller: its SDL type (-1: none), for the names in a hint */
+static int player_pad_type(void) {
+	int n = 0; SDL_JoystickID *ids = SDL_GetGamepads(&n);
+	const int type = ids && n > 0 ? (int)SDL_GetGamepadTypeForID(ids[0]) : -1;
+	SDL_free(ids);
+	return type;
+}
+static bool steam_deck(void) { const char *d = std::getenv("SteamDeck"); return d && !strcmp(d, "1"); }
+/* a touch screen is there (SDL's direct touch devices; RECOMP_OVERLAY_DUMP_TOUCH=1: as if, for a dump) */
+static bool touch_screen_present(void) {
+	if (std::getenv("RECOMP_OVERLAY_DUMP_TOUCH") && atoi(std::getenv("RECOMP_OVERLAY_DUMP_TOUCH"))) return true;
+	int n = 0; bool any = false; SDL_TouchID *t = SDL_GetTouchDevices(&n);
+	for (int i = 0; t && i < n; i++) any |= SDL_GetTouchDeviceType(t[i]) == SDL_TOUCH_DEVICE_DIRECT;
+	SDL_free(t);
+	return any;
+}
+extern "C" int window_osb_mode(void);   /* (UI-02e: the hint names the off switch while they can show) */
+/* (UI-02a, HINT-01) the game's first hint: every way to open the menu, this player's first (menu_hint.h) */
+static void menu_hint_body(char *body, size_t n) {
+	const bool dump = !g_has_window;   /* (a dump: as a desktop with a keyboard and a mouse) */
+	const char *dp = std::getenv("RECOMP_OVERLAY_DUMP_NOPAD");   /* (a dump as on a PC without a controller) */
+	const bool pad = SDL_HasGamepad() && !(dp && *dp == '1'), touch = touch_screen_present();
+	menu_hint_text(body, n, dump || SDL_HasKeyboard(), dump || SDL_HasMouse(), pad ? player_pad_type() : -1, steam_deck(), touch, touch && !pad && window_osb_mode() != OSB_OFF);
+}
+static void menu_hint_toast(void) {
+	char body[224]; menu_hint_body(body, sizeof body);
+	overlay_toast_titled("Menu", body, TOAST_S);
+}
+/* (HINT-01) a controller connected while the game runs: a short note with its own buttons for the menu (window.c's
+ * SDL_EVENT_GAMEPAD_ADDED; the pads already there at the start are announced in the first seconds too -- not those) */
+static std::atomic<int> g_pad_hint_req;
+static double g_pad_hint_from = -1;   /* (the first windowed frame's time + 3 s) */
+extern "C" void overlay_pad_added(void) { g_pad_hint_req = 1; }
+static void pad_hint_maybe(double t) {
+	if (g_pad_hint_from < 0) g_pad_hint_from = t + 3.0;
+	if (!g_pad_hint_req.exchange(0) || t < g_pad_hint_from || g_intro) return;
+	char line[96]; menu_hint_pad_line(line, sizeof line, player_pad_type(), steam_deck());
+	char body[128]; snprintf(body, sizeof body, "%s opens the menu", line);
+	overlay_toast_titled("Controller connected", body, 4.0);
+}
+/* (UI-02d) while the controller drives the touch screen (the shoulder pair that isn't L and R held: window.c's touch
+ * cursor), a badge at the top centre says which panel it is -- the Vita's front touch screen or its rear touch pad --
+ * and how to touch; it goes when the pair is let go. RECOMP_OVERLAY_DUMP_UI=touch:front|touch:rear shows it in a dump. */
+extern "C" int window_touch_emulation(void);
+static int g_force_touch_badge;
+static void build_touch_badge(ImDrawList *dl) {
+	const int m = g_force_touch_badge ? g_force_touch_badge : g_has_window ? window_touch_emulation() : 0;
+	if (m != 1 && m != 2) return;
+	const ImVec2 ds = ImGui::GetIO().DisplaySize;
+	ImFont *font = ImGui::GetFont(); const float fs = ImGui::GetFontSize() * (ds.x >= 1000 ? 2.0f : 1.0f);
+	const PadNames *pn = pad_names_of(pad_family(SDL_HasGamepad() ? player_pad_type() : -1, steam_deck()));
+	const char *title = ui_tr(m == 2 ? "touch.badge_rear" : "touch.badge_front");
+	char hint[96]; snprintf(hint, sizeof hint, ui_tr("touch.badge_hint"), pn->select);
+	const float pad = fs * 0.55f, gap = fs * 0.2f;
+	const ImVec2 t1 = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, title), t2 = font->CalcTextSizeA(fs * 0.75f, FLT_MAX, 0.0f, hint);
+	const float bw = (t1.x > t2.x ? t1.x : t2.x) + 2 * pad, bh = t1.y + gap + t2.y + 2 * pad;
+	const float x = (ds.x - bw) * 0.5f, y = 8 + g_bar_h * g_bar_vis;
+	const ImU32 col = m == 2 ? IM_COL32(255, 170, 60, 255) : IM_COL32(80, 200, 255, 255);   /* (the markers' colours: rear orange, front blue) */
+	dl->AddRectFilled(ImVec2(x, y), ImVec2(x + bw, y + bh), IM_COL32(16, 18, 24, 200), fs * 0.5f);
+	dl->AddRect(ImVec2(x, y), ImVec2(x + bw, y + bh), col, fs * 0.5f, 0, fs * 0.08f > 1.5f ? fs * 0.08f : 1.5f);
+	dl->AddText(font, fs, ImVec2(x + (bw - t1.x) * 0.5f, y + pad), col, title);
+	dl->AddText(font, fs * 0.75f, ImVec2(x + (bw - t2.x) * 0.5f, y + pad + t1.y + gap), IM_COL32(235, 235, 240, 230), hint);
+}
 static void build_marks(void) {
 	ImDrawList *dl = g_intro ? ImGui::GetForegroundDrawList() : ImGui::GetBackgroundDrawList();   /* over the game's frame (LOAD), under the bar and its menus; over the touch card */
 	if (g_full) build_perf_full(dl);
@@ -979,6 +1456,8 @@ static void build_marks(void) {
 			dl->AddPolyline(pts, g_nft, IM_COL32(120, 230, 120, 255), ImDrawFlags_None, 1.5f);
 		}
 	}
+	build_osb(dl);   /* (under the touch markers) */
+	build_touch_badge(dl);
 	if (g_rear[2] > 0) dl->AddRect(ImVec2(g_rear[0], g_rear[1]), ImVec2(g_rear[0] + g_rear[2], g_rear[1] + g_rear[3]), IM_COL32(255, 170, 60, 140), 0.0f, 2.0f);   /* (rounding 0, thickness 2: ImGui 1.92.8+ argument order -- the old (0, 0, 2.0f) put 2 in `flags`, an ImGui user-error assert) */
 	for (int i = 0; i < g_nmarks; i++) {
 		const OverlayMark &m = g_marks[i];
@@ -989,100 +1468,25 @@ static void build_marks(void) {
 		if (m.cursor) { dl->AddLine(ImVec2(m.x - r - 4, m.y), ImVec2(m.x + r + 4, m.y), col, 1.5f); dl->AddLine(ImVec2(m.x, m.y - r - 4), ImVec2(m.x, m.y + r + 4), col, 1.5f); }
 	}
 }
-/* the save-data dialog (apputil.c through savedlg.h): the game's save / load / delete list, a yes/no question,
- * or a card the game closes itself (Saving..., a progress bar) -- over the picture while the game waits on it,
- * the game running underneath (it polls the dialog every frame; nothing pauses). The pad: up/down (left/right
- * on a question), Cross to choose, Circle to go back; the keyboard: arrows, Enter or Space, Escape or
- * Backspace; the mouse: hover and click. window.c hands this the keys and the pad while overlay_dialog_active
- * (ImGui's SDL backend polls the pad itself, so its buttons arrive whatever the routing). */
-static int g_sd_seq = -1, g_sd_sel; static bool g_sd_armed;
+/* overlay_modal_open: one of our modal dialogs is up (the menu's "Reset all settings…") -- window.c leaves Esc to
+ * it so the dialog cancels instead of the whole menu closing (U6) */
+int overlay_modal_open(void) {
+	return g_modal_open || g_value_edit;
+}
+/* overlay_dialog_active: the save-data dialog is waiting on the player (the dialog itself is drawn
+ * and answered by savedlg_ui.cpp) */
+void overlay_input_lost(void) {
+	if (!g_ctx) return;
+	ImGuiContext *prev = ImGui::GetCurrentContext();
+	ImGui::SetCurrentContext(g_ctx);
+	savedlg_ui_input_lost();
+	ImGui::SetCurrentContext(prev);
+}
 int overlay_dialog_active(void) {
 	if (!g_ctx || !g_has_window) return 0;
 	SaveDlgView v; const int k = savedlg_view(&v); savedlg_release();
-	return k == SAVEDLG_LIST || k == SAVEDLG_YESNO;
-}
-static const ImGuiKey K_UP[] = {ImGuiKey_UpArrow, ImGuiKey_W, ImGuiKey_GamepadDpadUp, ImGuiKey_GamepadLStickUp};
-static const ImGuiKey K_DOWN[] = {ImGuiKey_DownArrow, ImGuiKey_S, ImGuiKey_GamepadDpadDown, ImGuiKey_GamepadLStickDown};
-static const ImGuiKey K_SIDE[] = {ImGuiKey_LeftArrow, ImGuiKey_RightArrow, ImGuiKey_A, ImGuiKey_D, ImGuiKey_GamepadDpadLeft, ImGuiKey_GamepadDpadRight, ImGuiKey_GamepadLStickLeft, ImGuiKey_GamepadLStickRight};
-static const ImGuiKey K_OK[] = {ImGuiKey_Enter, ImGuiKey_KeypadEnter, ImGuiKey_Space, ImGuiKey_GamepadFaceDown};
-static const ImGuiKey K_BACK[] = {ImGuiKey_Escape, ImGuiKey_Backspace, ImGuiKey_GamepadFaceRight};
-template <size_t N> static bool keys_pressed(const ImGuiKey (&k)[N]) { for (ImGuiKey x : k) if (ImGui::IsKeyPressed(x, true)) return true; return false; }
-template <size_t N> static bool keys_down(const ImGuiKey (&k)[N]) { for (ImGuiKey x : k) if (ImGui::IsKeyDown(x)) return true; return false; }
-static void build_save_dialog(float w, float hgt) {
-	SaveDlgView v; const int kind = savedlg_view(&v);
-	if (kind == SAVEDLG_NONE) { savedlg_release(); g_sd_seq = -1; return; }
-	if (v.seq != g_sd_seq) { g_sd_seq = v.seq; g_sd_sel = kind == SAVEDLG_LIST ? v.focus : 0; g_sd_armed = false; }
-	/* a key already down as the step appeared (the press that asked the game to save) answers nothing */
-	if (!g_sd_armed && !keys_down(K_OK) && !keys_down(K_BACK)) g_sd_armed = true;
-	const bool ok = g_sd_armed && keys_pressed(K_OK), back = g_sd_armed && keys_pressed(K_BACK);
-	int answer = 0; bool answered = false, moved = false;
-	const float s = w >= 1400 ? 2.0f : 1.0f;   /* (the bitmap font: integer multiples stay crisp) */
-	ImGui::SetNextWindowPos(ImVec2(w * 0.5f, hgt * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-	ImGui::SetNextWindowSize(ImVec2(fminf(w - 32, 520 * s), 0), ImGuiCond_Always);   /* (height 0: fitted every frame) */
-	ImGui::SetNextWindowBgAlpha(0.95f);
-	ImGui::Begin("##savedlg", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing);
-	ImGui::SetWindowFontScale(s);
-	const ImU32 dim = ImGui::GetColorU32(ImGuiCol_TextDisabled), txt = ImGui::GetColorU32(ImGuiCol_Text);
-	if (kind == SAVEDLG_LIST) {
-		ImGui::TextUnformatted(v.title[0] ? v.title : "Saved data");
-		ImGui::Separator();
-		if (g_sd_armed && v.nrows) {
-			if (keys_pressed(K_UP) && g_sd_sel > 0) { g_sd_sel--; moved = true; }
-			if (keys_pressed(K_DOWN) && g_sd_sel < v.nrows - 1) { g_sd_sel++; moved = true; }
-		}
-		if (g_sd_sel >= v.nrows) g_sd_sel = v.nrows ? v.nrows - 1 : 0;
-		if (!v.nrows) ImGui::TextDisabled("There is no saved data.");
-		else {
-			const float lh = ImGui::GetTextLineHeight(), rowh = 3 * lh + 12 * s;
-			ImGui::BeginChild("rows", ImVec2(0, (rowh + ImGui::GetStyle().ItemSpacing.y) * (float)(v.nrows < 5 ? v.nrows : 5)));
-			ImFont *font = ImGui::GetFont(); const float fs = ImGui::GetFontSize();
-			for (int i = 0; i < v.nrows; i++) {
-				const SaveDlgRow &r = v.rows[i];
-				ImGui::PushID(i);
-				const ImVec2 p = ImGui::GetCursorScreenPos(); const float rw = ImGui::GetContentRegionAvail().x;
-				if (ImGui::Selectable("##row", i == g_sd_sel, 0, ImVec2(0, rowh))) { answer = i; answered = true; }
-				if (ImGui::IsItemHovered() && (ImGui::GetIO().MouseDelta.x || ImGui::GetIO().MouseDelta.y)) g_sd_sel = i;
-				if (moved && i == g_sd_sel) ImGui::SetScrollHereY(0.5f);
-				ImDrawList *dl = ImGui::GetWindowDrawList();
-				dl->AddText(font, fs, ImVec2(p.x + 6 * s, p.y + 4 * s), txt, r.title);
-				if (r.exists) {
-					const float dw = font->CalcTextSizeA(fs, FLT_MAX, 0, r.date).x;
-					dl->AddText(font, fs, ImVec2(p.x + rw - dw - 6 * s, p.y + 4 * s), dim, r.date);
-					if (r.sub[0]) dl->AddText(font, fs, ImVec2(p.x + 6 * s, p.y + 6 * s + lh), txt, r.sub);
-					if (r.detail[0]) dl->AddText(font, fs, ImVec2(p.x + 6 * s, p.y + 8 * s + 2 * lh), dim, r.detail);
-				} else dl->AddText(font, fs, ImVec2(p.x + 6 * s, p.y + 6 * s + lh), dim, "(empty)");
-				ImGui::PopID();
-			}
-			ImGui::EndChild();
-		}
-		if (ok && v.nrows) { answer = g_sd_sel; answered = true; }
-		ImGui::Separator();
-		if (ImGui::Button("Back") || back) { answer = SAVEDLG_CANCEL; answered = true; }
-		ImGui::SameLine(); ImGui::TextDisabled("  Cross / Enter: choose    Circle / Esc: back");
-	} else if (kind == SAVEDLG_YESNO) {
-		ImGui::PushTextWrapPos(0); ImGui::TextUnformatted(v.msg[0] ? v.msg : "Continue?"); ImGui::PopTextWrapPos();
-		ImGui::Spacing();
-		if (g_sd_armed && (keys_pressed(K_SIDE) || keys_pressed(K_UP) || keys_pressed(K_DOWN))) g_sd_sel ^= 1;
-		static const char *const names[2] = {"Yes", "No"};
-		for (int b = 0; b < 2; b++) {
-			if (b) ImGui::SameLine();
-			const bool sel = g_sd_sel == b;
-			if (sel) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-			if (ImGui::Button(names[b], ImVec2(90 * s, 0))) { answer = b ? SAVEDLG_NO : SAVEDLG_YES; answered = true; }
-			if (sel) ImGui::PopStyleColor();
-			if (ImGui::IsItemHovered() && (ImGui::GetIO().MouseDelta.x || ImGui::GetIO().MouseDelta.y)) g_sd_sel = b;
-		}
-		if (ok) { answer = g_sd_sel ? SAVEDLG_NO : SAVEDLG_YES; answered = true; }
-		if (back) { answer = SAVEDLG_CANCEL; answered = true; }
-		ImGui::SameLine(); ImGui::TextDisabled("  Cross / Enter    Circle / Esc: back");
-	} else {   /* SAVEDLG_WAIT: the game closes it */
-		ImGui::PushTextWrapPos(0); ImGui::TextUnformatted(v.msg[0] ? v.msg : "Please wait..."); ImGui::PopTextWrapPos();
-		if (v.percent >= 0) ImGui::ProgressBar(v.percent / 100.0f, ImVec2(-1, 0));
-	}
-	ImGui::End();
-	const int seq = v.seq;
-	savedlg_release();   /* (before answering: savedlg_answer takes the same lock) */
-	if (answered) savedlg_answer(seq, answer);
+	if (k == SAVEDLG_LIST || k == SAVEDLG_YESNO) return 1;
+	char t[8], x[8]; uint32_t m; int s; return imedlg_view(t, sizeof t, x, sizeof x, &m, &s);   /* (HLE-LIB-05: the IME card) */
 }
 /* everything the closed state shows, and the bar's state machine (see the file's header comment) */
 static void build_closed(void) {
@@ -1097,11 +1501,12 @@ static void build_closed(void) {
 		g_bar_want = false; g_bar_pin_until = -1e9; g_bar_active_t = -1e9; g_hot_since = -1; g_hot_block = true;
 	}
 	if (g_has_window) {
+		pad_hint_maybe(t);   /* (HINT-01) */
 		if (!g_toast_checked) {   /* the hint, once per game, on this overlay's first windowed frame */
 			g_toast_checked = true;
 			if (!settings_has("touch_intro_shown")) {   /* the player's first game: the touch card first (it says where the menu is too) */
-				g_intro = true; settings_set_int("menu_hint_shown", 1); settings_save(); g_paused = true; apply_pause();
-			} else if (!settings_has("menu_hint_shown")) { g_toast_until = t + TOAST_S; overlay_toast_titled("Menu", "Move the mouse to the top, or press [F10] or the PS button", TOAST_S); settings_set_int("menu_hint_shown", 1); settings_save(); }
+				g_intro = true; g_paused = true; apply_pause();   /* (HINT-01: the start hint still comes once, at the next start -- it was marked shown here, and never came) */
+			} else if (!settings_has("menu_hint_shown")) { g_toast_until = t + TOAST_S; menu_hint_toast(); settings_set_int("menu_hint_shown", 1); save_settings(); }
 		}
 		const ImVec2 m = io.MousePos;
 		const bool inside = ImGui::IsMousePosValid(&m) && m.x >= 0 && m.x < w && m.y >= 0 && m.y < hgt;   /* (focused but outside the window, e.g. on the title bar: the backend reports a position there too) */
@@ -1125,7 +1530,7 @@ static void build_closed(void) {
 		if (g_touch_cursor && g_bar_vis <= 0 && !popup_open && !io.WantCaptureMouse) ImGui::SetMouseCursor(ImGuiMouseCursor_None);   /* (the touch mark stands in for it) */
 	} else {   /* headless (the dump): no pointer; RECOMP_OVERLAY_DUMP_UI says what to show */
 		if (g_force_bar) { g_bar_vis = 1; g_bar_want = true; }
-		if (g_force_toast) { g_toast_until = t + TOAST_S; g_tab_a = 1; g_force_toast = false; overlay_toast_titled("Menu", "Move the mouse to the top, or press [F10] or the PS button", TOAST_S); overlay_toast_titled("Balance", "[A] [D] tilt left / right", TOAST_S); }
+		if (g_force_toast) { g_toast_until = t + TOAST_S; g_tab_a = 1; g_force_toast = false; menu_hint_toast(); overlay_toast_titled("Balance", "[A] [D] tilt left / right", TOAST_S); }
 	}
 	{	/* the slide, at a fixed rate either way */
 		const float target = g_bar_want ? 1.0f : 0.0f, step = dt > 0.1f ? 1.0f : dt / SLIDE_S;
@@ -1142,7 +1547,8 @@ static void build_closed(void) {
 	if (g_tab_a > 0) build_tab(w, t);
 	if (g_intro) build_intro();   /* (the touch card in place of the pause banner; the markers drawn over it) */
 	build_marks();
-	if (g_has_window) build_save_dialog(w, hgt);
+	if (g_has_window) savedlg_ui_build(w, hgt);
+	if (g_has_window) imedlg_ui_build(w, hgt);   /* (HLE-LIB-05) */
 	if (g_paused && !g_intro) build_pause_banner(w, hgt);
 	toasts_take(t);
 	if (g_ntoasts) build_toasts(w, hgt, t);
@@ -1165,10 +1571,21 @@ static void render_frame(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *target, uint
 	ImGui_ImplSDLGPU3_NewFrame();
 	if (have_window) {
 		ImGui_ImplSDL3_NewFrame();
+		savedlg_ui_gamepad_frame(SDL_HasGamepad());   /* (U12c) after the backend cleared the flag: a pad keeps it */
 	} else {
 		io.DisplaySize = ImVec2((float)w, (float)h);
 		io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
 		io.DeltaTime = dt_s > 0 ? (float)dt_s : 1.0f / 60.0f;
+	}
+	{	/* the scale for this window (ui_scale.h): from the base style each time it changes, before NewFrame lays out
+		 * anything; sizes in the code are in em (GetFontSize), so they follow the font */
+		const float dpi = have_window && g_window ? SDL_GetDisplayContentScale(SDL_GetDisplayForWindow(g_window)) : 1.0f;
+		const float k = overlay_ui_scale(io.DisplaySize.y, dpi);
+		if (std::fabs(k - g_ui_scale) > 0.005f) {
+			ImGuiStyle &st = ImGui::GetStyle();
+			st = g_base_style; st.ScaleAllSizes(k); st.FontSizeBase = g_base_style.FontSizeBase * k;   /* (not FontScaleDpi: PushFont(nullptr, em * x) passes sizes already in em, which FontScaleDpi would scale a second time) */
+			g_ui_scale = k;
+		}
 	}
 	ImGui::NewFrame();
 	g_mouse_captured = io.WantCaptureMouse;   /* (computed by NewFrame from where the pointer was: the bar, a menu, the tab) */
@@ -1215,6 +1632,7 @@ static void render_frame(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *target, uint
 /* ---- the touch card (this file's header): the three ways to touch, the device last used highlighted */
 enum { DEV_KBM, DEV_PAD, DEV_TOUCH };
 static int g_intro_dev = -1; static double g_intro_done = -1;   /* the device highlighted (-1: not yet chosen); when the touch was made */
+static double g_intro_since = -1;   /* (INTRO-01) when the card first showed: it ends by itself after INTRO_SKIP_S */
 static double g_intro_at = -1;   /* headless (RECOMP_OVERLAY_DUMP_UI=intro@<seconds>): the moment of the loops drawn */
 extern "C" int window_touch_contacts(int port, int *keys, int *xs, int *ys, int max);
 /* the card's input icons: Kenney's Input Prompts (CC0), third_party/kenney-prompts/make.py's ICONS in this order, white
@@ -1334,6 +1752,11 @@ static void build_intro(void) {
 			if (n > 0) { const int k = keys[0]; g_intro_dev = k == 1 ? DEV_KBM : k >= 20 ? DEV_TOUCH : (k >= 4 && k <= 6) ? (window_kbm_active() ? DEV_KBM : DEV_PAD) : DEV_PAD; g_intro_done = t; }
 		}
 	} else if (g_has_window && g_intro_done >= 0 && t - g_intro_done > 1.2) intro_end();   /* (a moment to see it worked, then the game) */
+	if (g_has_window && g_intro_at < 0) {   /* (INTRO-01) untouched: it ends by itself */
+		if (g_intro_since < 0) g_intro_since = t;
+		if (g_intro_done < 0 && intro_timed_out(g_intro_since, t)) { intro_end(); return; }
+	}
+	const double left = g_intro_since >= 0 ? INTRO_SKIP_S - (t - g_intro_since) : INTRO_SKIP_S;
 	const char *pl, *pr, *pa; bool tp; int fam; pad_names(&pl, &pr, &pa, &tp, &fam);
 #ifdef __APPLE__
 	const char *alt = "Option";
@@ -1343,7 +1766,7 @@ static void build_intro(void) {
 	char kbm[200], padb[240];
 	snprintf(kbm, sizeof kbm, "Hold %s and click to touch the screen. Right-click instead to touch the rear pad.", alt);
 	snprintf(padb, sizeof padb, "Hold %s and steer the cursor with a stick, then press %s to touch. %s does the same on the rear pad.%s", pl, pa, pr, tp ? " The touchpad works too." : "");
-	const struct { const char *name, *how; } devs[3] = {{"Keyboard and mouse", kbm}, {"Controller", padb}, {"Touch screen", "Touch the picture, as you would the Vita's own screen."}};
+	const struct { const char *name, *how; } devs[3] = {{"With keyboard and mouse", kbm}, {"With a controller", padb}, {"On a touch screen", "Touch the picture, as you would the Vita's own screen."}};   /* (INTRO-01: "With ..." -- three ways to touch, not a choice of what to play with) */
 	const ImGuiViewport *vp = ImGui::GetMainViewport(); const float em = ImGui::GetFontSize();
 	ImGui::GetBackgroundDrawList()->AddRectFilled(vp->Pos, ImVec2(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y), ui::u32(ui::bg, 0.55f));   /* (the paused game, dimmed behind it) */
 	const float cw = fminf(vp->Size.x - 2 * em, 38 * em);
@@ -1351,7 +1774,7 @@ static void build_intro(void) {
 	ImGui::SetNextWindowSizeConstraints(ImVec2(cw, 0), ImVec2(cw, vp->Size.y - 2 * em));
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(em * 1.4f, em * 1.2f));
 	ImGui::Begin("##touchcard", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs);   /* (a click anywhere, the card too, is a touch) */
-	ui::heading(g_intro_done < 0 ? "Touching the screen" : "That's it", em * 1.35f);
+	ui::heading(g_intro_done < 0 ? "How to touch the screen" : "That's it", em * 1.35f);
 	ui::muted_wrapped("Vita games are played with the touch screen as well as buttons. Here's how to touch it:");
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
 	const float dh = em * 3.8f, dw = dh * 3.3f;   /* each row's demonstration strip (intro_demo), at its right */
@@ -1375,9 +1798,22 @@ static void build_intro(void) {
 		ImGui::PopStyleVar(); ImGui::PopStyleColor(2);
 	}
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
-	if (g_intro_done < 0) { ImGui::PushStyleColor(ImGuiCol_Text, ui::accent); ImGui::TextUnformatted("Try it now to continue."); ImGui::PopStyleColor(); }
-	else ImGui::TextUnformatted("Back to the game.");
-	ui::muted_wrapped("F10 opens the menu, with every control. Esc skips this.");
+	if (g_intro_done < 0) {
+		char go[96]; snprintf(go, sizeof go, "Try a touch now, or press any key or button to start playing (by itself in %d s).", (int)ceil(left > 0 ? left : 0));
+		ImGui::PushStyleColor(ImGuiCol_Text, ui::accent); ImGui::TextWrapped("%s", go); ImGui::PopStyleColor();
+	} else ImGui::TextUnformatted("Back to the game.");
+	ui::muted_wrapped("You don't choose anything here: every way works whenever you like.");
+	{	/* (HINT-01) every way to open the menu, as the start hint says it -- the ways this player has now first */
+		char body[224]; menu_hint_body(body, sizeof body);
+		ImGui::Dummy(ImVec2(0, em * 0.15f));
+		ImGui::TextUnformatted("The menu, with every control:");
+		for (char *l = body; l && *l;) {
+			char *nl = strchr(l, '\n'); if (nl) *nl = 0;
+			std::string plain; for (const char *c = l; *c; c++) if (*c != '[' && *c != ']') plain += *c;   /* (no key caps here) */
+			ImGui::Bullet(); ui::muted_wrapped(plain.c_str());
+			l = nl ? nl + 1 : nullptr;
+		}
+	}
 	ImGui::End();
 	ImGui::PopStyleVar();
 }
@@ -1441,7 +1877,7 @@ static void build_prep(void) {
  * buttons and sticks, a controller only) or a handheld (touch, with keyboard, mouse or a controller's touch cursor), and
  * keeps it. Touch is the default; the PS TV layout is the player's choice, offered before the title */
 static void layout_choose(int v) {
-	if (g_layout_remember) { settings_set_int("controller_layout", v); settings_save(); }
+	if (g_layout_remember) { settings_set_int("controller_layout", v); save_settings(); }
 	g_layout_card = false; g_layout_ask = 0; g_layout_answer = v;
 	g_open = false; g_paused = false; apply_pause();
 }
@@ -1553,6 +1989,11 @@ void overlay_render_forced(SDL_GPUDevice *device, SDL_GPUTexture *target, uint32
 		for (int i = 0; i < 3; i++) forced_frame(device, target, w, h, i == 2, build_ui);
 		return;
 	}
+	if (!strcmp(ui, "ime")) {   /* (HLE-LIB-05) the IME card with an example dialog */
+		imedlg_set_ui_ready(1); imedlg_open("Enter your name", "Player", 16);
+		for (int i = 0; i < 3; i++) forced_frame(device, target, w, h, i == 2, [] { ImGuiIO &io = ImGui::GetIO(); imedlg_ui_build(io.DisplaySize.x, io.DisplaySize.y); });
+		imedlg_close(); imedlg_set_ui_ready(g_has_window); return;
+	}
 	if (!strcmp(ui, "quit")) { for (int i = 0; i < 3; i++) forced_frame(device, target, w, h, i == 2, build_quit); return; }   /* (the quit card) */
 	if (!strcmp(ui, "layout")) { for (int i = 0; i < 3; i++) forced_frame(device, target, w, h, i == 2, build_layout); return; }   /* (the layout card: RECOMP_GAME_NAME names the game) */
 	if (!strcmp(ui, "prep")) { g_prep_demo[0] = 1240; g_prep_demo[1] = 5837; g_prep_demo[2] = 372; for (int i = 0; i < 3; i++) forced_frame(device, target, w, h, i == 2, build_prep); g_prep_demo[0] = -1; return; }   /* (the shader prep card, example numbers) */
@@ -1563,8 +2004,13 @@ void overlay_render_forced(SDL_GPUDevice *device, SDL_GPUTexture *target, uint32
 		g_intro_dev = -1; g_intro_at = -1;
 		return;
 	}
+	if (!strncmp(ui, "touch:", 6)) { g_force_touch_badge = !strcmp(ui + 6, "rear") ? 2 : 1; for (int i = 0; i < 3; i++) forced_frame(device, target, w, h, i == 2, build_closed); g_force_touch_badge = 0; return; }   /* (UI-02d) the touch badge */
+	if (!strcmp(ui, "osb")) { g_force_osb = true; for (int i = 0; i < 3; i++) forced_frame(device, target, w, h, i == 2, build_closed); g_force_osb = false; return; }   /* (UI-01n) the on-screen buttons */
 	if (!strcmp(ui, "toast")) g_force_toast = true;
-	else { g_force_bar = true; if (strcmp(ui, "bar")) g_force_menu = ui; }
+	else { g_force_bar = true; if (strcmp(ui, "bar")) {
+		const char *colon = strrchr(ui, ':');   /* (U12b fix) "bar:Game" (ui_shots' page names) or bare "Game" (window.c's list): the menu key is the part after the last ':' */
+		g_force_menu = colon ? colon + 1 : ui;
+	} }
 	g_nosd = metrics_osd_lines(g_osd, 6);   /* the HUD too (RECOMP_OSD), in the same frame as the bar so it layers as it does live: under it */
 	g_nft = g_nosd > 1 ? metrics_frame_times(g_ft, 240) : 0;
 	g_full = metrics_osd_level() == 2; if (g_full) metrics_snapshot(&g_snap);

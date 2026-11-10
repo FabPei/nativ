@@ -51,12 +51,45 @@ size_t plat_page_size(void) { static size_t ps; if (!ps) { SYSTEM_INFO si; GetSy
 #define MAX_HOOKS 4
 static PlatFaultHook hooks[MAX_HOOKS]; static int nhooks;
 static PlatCrashFn crash_fn;
+/* RECOMP_LOG_EXCEPTIONS=1: every exception other than an access violation (which lazy commits and the hooks raise all the
+ * time) and every access violation they do not resolve, the first time its code is seen from an address: code, host address, parameters, the guest thread and the last
+ * guest pc (profile builds). An exception that ends the process before any filter runs -- a guard-page violation
+ * (0x80000001) on a stack whose bounds the dispatcher distrusts -- leaves no report otherwise: LBP's host just exited
+ * with that code (AUTO-01). Logged here, the vectored handler being the first code to see it. */
+static void log_exception(const EXCEPTION_RECORD *r) {
+	static int on = -1; if (on < 0) on = getenv("RECOMP_LOG_EXCEPTIONS") != 0;
+	if (!on) return;
+	static struct { DWORD code; void *at; } seen[64]; static volatile LONG nseen;
+	for (LONG i = 0; i < nseen && i < 64; i++) if (seen[i].code == r->ExceptionCode && seen[i].at == r->ExceptionAddress) return;
+	LONG k = InterlockedIncrement(&nseen) - 1; if (k < 64) { seen[k].code = r->ExceptionCode; seen[k].at = r->ExceptionAddress; }
+	extern uint32_t kernel_current_tid(void) __attribute__((weak)); extern uint32_t recomp_last_pc_now(void) __attribute__((weak));   /* (a function: a weak TLS variable does not link where it is absent -- SECREL) */
+	char line[320]; int n = snprintf(line, sizeof line, "    exception %#lx at host %p (params", (unsigned long)r->ExceptionCode, r->ExceptionAddress);
+	for (DWORD i = 0; i < r->NumberParameters && i < 4 && n < (int)sizeof line - 24; i++) n += snprintf(line + n, sizeof line - (size_t)n, " %#llx", (unsigned long long)r->ExceptionInformation[i]);
+	n += snprintf(line + n, sizeof line - (size_t)n, ") guest thread %#x last pc %#x host thread %lu\n", kernel_current_tid ? kernel_current_tid() : 0,
+	              recomp_last_pc_now ? recomp_last_pc_now() : 0, (unsigned long)GetCurrentThreadId());
+	DWORD w; WriteFile(GetStdHandle(STD_ERROR_HANDLE), line, (DWORD)n, &w, 0);   /* (no stdio: this may run on a nearly full stack) */
+	if (r->ExceptionCode == EXCEPTION_STACK_OVERFLOW) {
+		/* (AUTO-01 LBP-10) a stack overflow: the frames as module+offset (llvm-symbolizer on the .exe names them; a
+		 * recompiled guest function is fn_<addr>) -- the recursion is the repeating run. On the thread's reserve
+		 * (plat_thread_guard): no stdio, a small buffer */
+		void *bt[40]; USHORT nb = CaptureStackBackTrace(0, 40, bt, 0);
+		for (USHORT i = 0; i < nb; i++) {
+			HMODULE m = 0; char nm[MAX_PATH] = "?"; char l2[MAX_PATH + 48];
+			if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)bt[i], &m) && m) GetModuleFileNameA(m, nm, sizeof nm);
+			const char *b = strrchr(nm, '\\');
+			int k = snprintf(l2, sizeof l2, "      overflow frame %2u %s+%#llx\n", i, b ? b + 1 : nm, (unsigned long long)(m ? (uint8_t *)bt[i] - (uint8_t *)m : (uintptr_t)bt[i]));
+			WriteFile(GetStdHandle(STD_ERROR_HANDLE), l2, (DWORD)k, &w, 0);
+		}
+	}
+}
 static LONG CALLBACK on_vectored(EXCEPTION_POINTERS *ep) {
+	if (ep->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION) log_exception(ep->ExceptionRecord);
 	if (ep->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || ep->ExceptionRecord->NumberParameters < 2) return EXCEPTION_CONTINUE_SEARCH;
 	void *addr = (void *)ep->ExceptionRecord->ExceptionInformation[1];
 	DWORD saved = GetLastError();
 	for (int i = nhooks - 1; i >= 0; i--) if (hooks[i](addr)) { SetLastError(saved); return EXCEPTION_CONTINUE_EXECUTION; }
 	if (lazy_commit(addr)) { SetLastError(saved); return EXCEPTION_CONTINUE_EXECUTION; }
+	log_exception(ep->ExceptionRecord);   /* (RECOMP_LOG_EXCEPTIONS: an access violation neither a hook nor the lazy commit took -- params: 0 read / 1 write / 8 execute, the address) */
 	SetLastError(saved);
 	return EXCEPTION_CONTINUE_SEARCH;
 }
@@ -81,6 +114,10 @@ static void install(void) {
 	                                     PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION, 0};
 	SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &pt, sizeof pt);
 }
+/* (AUTO-01 LBP-9) a guest thread's host thread keeps 64 KB for the vectored handler when its stack overflows: without it
+ * the handler of the first STATUS_STACK_OVERFLOW faulted again (its own frame on the last few KB) and the process ended
+ * with a bare 0xc0000005 -- no handler, no report (LittleBigPlanet, three runs). The main thread's is set in install() */
+void plat_thread_guard(void) { ULONG guarantee = 1 << 16; SetThreadStackGuarantee(&guarantee); }
 void plat_add_fault_hook(PlatFaultHook hook) { install(); if (nhooks < MAX_HOOKS) hooks[nhooks++] = hook; }
 void plat_set_crash_handler(PlatCrashFn fn) { crash_fn = fn; install(); }
 void plat_backtrace(FILE *f) {   /* addresses as module+offset: llvm-addr2line / llvm-symbolizer on the .exe (built with -g) names them */

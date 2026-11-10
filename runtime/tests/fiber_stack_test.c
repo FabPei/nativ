@@ -1,9 +1,9 @@
-/* fiber_stack_test.c -- fixture: the LIFO stack-strand exclusivity a game's ULT relies on.
+/* fiber_stack_test.c -- P0c-3 fixture: the LIFO stack-strand exclusivity the game's ULT relies on.
  *
- * The measured producer: two fiber strands whose
+ * The measured P0c-1 producer (batch/p0c1fu1/run-3 seq 15372-15448): two fiber strands whose
  * stacks were carved 568 bytes apart ran CONCURRENTLY (host thread per fiber); the upper strand's
  * deep call chain grew down into the lower strand's live frames and overwrote its saved r4 -- the
- * a phantom parent-set and the game's own asserts followed.
+ * phantom parent-set and the 0x8c009380/0x8c009060 assert family followed.
  *
  * Case (the fail-before / pass-after case): strand A runs with a canary in its frames; strand B is
  * resumed from another thread with its stack carved 568 bytes above A's (the measured geometry)
@@ -82,7 +82,7 @@ static void fentry_a(Cpu *c) {
 	usleep(300000);                        /* B is started meanwhile: it must NOT touch A's frames */
 	a_check_result = RD32(c->r[13] - 0x58);
 }                                          /* returns from the entry: the strand ends */
-/* strand B: carved 568 bytes above A's top; a 0x400-byte chain (like a deep guest walk) */
+/* strand B: carved 568 bytes above A's top; a 0x400-byte chain (like fn_8c00bd28's walk) */
 static void fentry_b(Cpu *c) {
 	for (uint32_t p = 0x400; p >= 8; p -= 8) WR32(c->r[13] - p, 0xB0B0B0B0u);
 	b_wrote = 1;

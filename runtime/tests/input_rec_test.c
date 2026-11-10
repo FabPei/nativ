@@ -1,4 +1,4 @@
-/* input_rec_test.c -- the `# nativ-input v2` format (runtime/gfx/input_rec.c) against the
+/* input_rec_test.c -- N02g-5: the `# nativ-input v2` format (runtime/gfx/input_rec.c) against the
  * fixture list in the task: encode/decode round trip, neutral spans, quick taps, held buttons,
  * frame gaps, malformed traces, replay EOF, mask edges and record/replay exclusivity. Pure logic,
  * no runtime, no SDL -- see runtime/tests/README.md for how to run it. */
@@ -262,7 +262,7 @@ static void test_flags_and_masks(void)
 	CK(r.buttons == 0 && r.st[0] == 255 && r.st[2] == 0);
 }
 
-/* --- checkpoint fingerprint: repeatable state matches, a changed stable field is
+/* --- checkpoint fingerprint (N02g-7): repeatable state matches, a changed stable field is
  * detected, an unreached checkpoint reports unknown rather than a mismatch ------------------ */
 static void test_fingerprint(void)
 {

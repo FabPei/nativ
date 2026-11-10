@@ -24,7 +24,7 @@ set -euo pipefail
 H=$(cd "$(dirname "$0")" && pwd); ROOT=$(dirname "$H")
 [[ -f $ROOT/dev/local.env ]] && { set -a; source "$ROOT/dev/local.env"; set +a; }   # (exported: the install scripts and vitarecomp dist read them)
 TAG=${1:?usage: release.sh <tag> [mac|windows|linux]...}; shift
-[[ $TAG =~ ^v[0-9]+\.[0-9]+(\.[0-9]+)?(-fp[0-9]+)?$ ]] || { echo "release.sh: a tag like v0.1.0 (a fork's: v0.1.0-fp1)"; exit 1; }
+[[ $TAG =~ ^v[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || { echo "release.sh: a tag like v0.1.0"; exit 1; }
 if (( $# )); then
   [[ "$(git -C "$ROOT" describe --tags --exact-match 2>/dev/null)" == "$TAG" ]] || { echo "release.sh: check out $TAG first (git tag $TAG; git checkout $TAG)"; exit 1; }
   [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=no)" ]] || { echo "release.sh: uncommitted changes: a release is built from the tag alone"; exit 1; }

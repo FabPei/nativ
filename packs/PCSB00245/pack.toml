@@ -1,0 +1,20 @@
+# Persona 4 GOLDEN (PCSB00245, EU). Only facts about the game (the format: pipeline/packconf.py).
+NAME = "Persona 4 GOLDEN"
+# REGION: the release this pack plays (its content id: EP1063..., Europe)
+REGION = "EU"
+SPLIT = 12                # recompiled C split into this many part files (the eboot is 4.9 MB)
+ELF = "eboot.bin.elf"     # the main module (the decrypted eboot)
+# The game's own sce_module (libc: C runtime; libfios2: Sony's FIOS scheduler/dearchiver; libult: Sony's ULT
+# task scheduler) and the firmware's GXM + GPU services (GXM runs as Sony's code) plus the font and movie
+# modules the game loads (libpvf, libSceFt2, libscemp4, libsceavplayer). Import coverage checked at import.
+MODULES = "libc libgxm_es4 libgpu_es4 libfios2 libult libSceFt2 libpvf libscemp4 libsceavplayer"
+RUN_ENV = "RECOMP_ASPECT_HOOK=1 RECOMP_HUD_DRAWS=2d RECOMP_HUD_LAYOUT=frame RECOMP_FRAME_RATES=30"   # FEAT-ALL-01 (local, menu only): wider aspect ratios (IHOOKS aspect) with the 2D layer as one centred native-width frame; 30 fps only -- the game counts frames (experiment P4G-1: with its vcount wait fixed it still ran its boot ~2x fast at 60)
+IHOOKS = "0x812fcd50:aspect 0x812ff088:aspect"   # FEAT-ALL-01 (local): the two movt of the 960/544 screen aspect (0x3fe1e1e2), widened for wider aspect ratios (runtime/core/hooks.c aspect)
+TEST_FRAMES = 20000     # a boot probe: prompt -> title (reached) -> opening movie (plays!) -> toward the first mission
+# The boot probe's taps: a v2 recording (increasing poll+ms rows) replayed by RECOMP_INPUT_REPLAY --
+# NOT TEST_INPUT (that feeds RECOMP_INPUT, the legacy script path, which never reads .rec rows).
+# The path is relative to the test run dir (recomp/test_win).
+TEST_ENV = "RECOMP_INPUT_REPLAY=../rec/boot-probe.rec"
+
+[versions."1.00"]
+sha256 = "3010b6cd5abb043e9937fec2a5e307f50419d0f1b8fc3a2c810702d80fb0b3d0"   # app0/eboot.bin.elf, measured 2026-11-06

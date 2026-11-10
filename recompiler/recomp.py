@@ -22,6 +22,7 @@ has none) -- for a constant a function builds mid-body (a pack's IHOOKS).
 barriers (lock-free code) gets ordered loads (rt.h RD32A...); see SYNC_MN.
 """
 import bisect, json, os, re, struct, sys
+from array import array
 from capstone import Cs, CS_ARCH_ARM, CS_MODE_THUMB, CS_MODE_ARM
 from capstone.arm import (ARM_OP_REG, ARM_OP_IMM, ARM_OP_MEM, ARM_OP_FP, ARM_SFT_INVALID)
 
@@ -31,6 +32,7 @@ md_arm = Cs(CS_ARCH_ARM, CS_MODE_ARM)   # ARM-mode functions (hand-written libra
 md_arm.detail = True
 COND = ("eq", "ne", "hs", "lo", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt", "le", "cs", "cc")
 GPR = {f"r{i}": i for i in range(13)} | {"sb": 9, "sl": 10, "fp": 11, "ip": 12, "sp": 13, "lr": 14, "pc": 15}
+CODE = [None]   # main()'s code(lo, hi): the module's bytes, for a tbb/tbh table (Fn.table_targets)
 HOOKS = {}   # --hooks: {entry addr: host hook name}; empty unless a game's conf asks for one (see usage above)
 IHOOKS = {}  # --insn-hooks: {instruction addr: host hook name}, called after that instruction
 # lock-free code: a function with any of these gets ordered loads (each one before every later load, rt.h RD32A). ARMv7
@@ -50,18 +52,87 @@ class Unsupported(Exception):
     pass
 
 
+class Lite:
+    """an instruction from Capstone's light decode (no operand details): address, size, mnemonic, op_str"""
+    __slots__ = ("address", "size", "mnemonic", "op_str")
+
+    def __init__(self, t):
+        self.address, self.size, self.mnemonic, self.op_str = t
+
+
+def decode(spans, arm_mode, detail=False, limit=None):
+    """linear decode of a function's spans; undecodable bytes (literal pools) are skipped. detail=False: Lite
+    instructions (the light decode, ~40 bytes each); detail=True: Capstone's full instructions with operands (~1.5 KB
+    each: a 17 MB game kept all of them, 11-12 GB, BUILD-02) -- Fn.build decodes them for one function at a time.
+    Both decodes stop and skip at the same bytes (what decodes does not depend on the details)"""
+    dis, step = (md_arm, 4) if arm_mode else (md, 2)
+    insns = []
+    for lo, hi in spans:
+        c = CODE[0](lo, hi + 1)
+        pos = 0
+        while c and pos < len(c):
+            got = list(dis.disasm(c[pos:], lo + pos)) if detail else [Lite(t) for t in dis.disasm_lite(c[pos:], lo + pos)]
+            insns += got
+            pos = (got[-1].address + got[-1].size - lo) if got else pos
+            if pos < len(c) and (not got or got[-1].address + got[-1].size - lo == pos):
+                pos += step
+    return insns if limit is None else insns[:limit]
+
+
+def lite_imm(i):
+    """the immediate target of a light-decoded branch ("#0x8100abcd"), or None for a register operand"""
+    return int(i.op_str[1:], 0) & 0xffffffff if i.op_str.startswith("#") else None
+
+
 class Fn:
-    def __init__(self, entry, insns, entries, arm=False):
-        self.entry, self.insns, self.entries, self.arm = entry, insns, entries, arm
+    """a guest function: its code is (spans, ARM mode, instruction limit), decoded again in full only in build()
+    (BUILD-02: the full instructions of all functions at once took 11-12 GB). Until then it holds what main()'s passes
+    need from the light decode: its instruction addresses, its bl / blx immediate targets, whether it is lock-free code"""
+    def __init__(self, entry, src, entries, arm=False, lite=None, share=None):
+        self.entry, self.src, self.entries, self.arm = entry, src, entries, arm
         self.pc_off = 8 if arm else 4     # a PC read sees the instruction's address + 8 (ARM) or + 4 (Thumb)
         self.tbit = 0 if arm else 1       # what a call's return address carries
-        self.addrs = {i.address for i in insns}
         self.lines, self.unimpl = [], []
-        self.ordered = ORDERED_LOADS[0] and any(i.mnemonic in SYNC_MN for i in insns)
+        if share is not None:   # another entry into share's code: the same instructions
+            self.iaddrs, self.calls, self.ordered = share.iaddrs, share.calls, share.ordered
+            return
+        if lite is None:
+            lite = decode(*src)
+        self.iaddrs = array("I", (i.address for i in lite))
+        self.calls = [(i.mnemonic, t) for i in lite if i.mnemonic in ("bl", "blx") and (t := lite_imm(i)) is not None]
+        self.ordered = ORDERED_LOADS[0] and any(i.mnemonic in SYNC_MN for i in lite)
 
     def reg(self, rid):
         n = md.reg_name(rid)
         return n
+
+    def table_targets(self, tab, size):
+        """a tbb/tbh table's targets: entries read from the code at tab until the lowest target so far (the code
+        right after an inline table is its first case), each tab + 2 * entry -- or until an instruction of this
+        function starts (a table never overlaps code: the code right after it can be another path's, with the cases
+        further on). None when the bytes are not there or a target is not an instruction of this function: the
+        caller keeps the computed JUMP"""
+        targets, end, k = [], None, 0
+        if not hasattr(self, "_bt"):   # direct branch targets: (branch address, target) -- b / b.cond / cbz / cbnz
+            self._bt = [(i.address, i.operands[-1].imm & 0xffffffff) for i in self.insns
+                        if (lambda m: m in ("b", "cbz", "cbnz") or (m[:1] == "b" and m[1:] in COND))(i.mnemonic.split(".")[0])
+                        and i.operands and i.operands[-1].type == ARM_OP_IMM]
+        while end is None or tab + (k + 1) * size <= end:
+            pos = tab + k * size
+            if targets and any(t == pos and not tab <= a < end for a, t in self._bt):
+                break   # the table ended: a branch of the function (not one decoded from the table's bytes) lands here
+            b = CODE[0](tab + k * size, tab + (k + 1) * size) if CODE[0] else None
+            if b is None or k >= 4096:
+                return None
+            t = tab + 2 * int.from_bytes(b, "little")
+            if t < tab + (k + 1) * size and size == 1 and tab + (k + 1) * size == end and targets:
+                break   # a byte table's alignment pad before the first case
+            if t not in self.addrs or t < tab + (k + 1) * size:
+                return None
+            targets.append(t)
+            end = t if end is None else min(end, t)
+            k += 1
+        return targets or None
 
     def r(self, rid, insn):
         """a GPR operand's value (pc reads as the instruction's address + 4)"""
@@ -137,7 +208,7 @@ class Fn:
         if mn == "mov" and ops[0].type == ARM_OP_REG and md.reg_name(ops[0].reg) == "pc":
             # a computed jump (a jump table's target) inside the function, or a tail call
             t = self.r(ops[1].reg, i)
-            return guard([f"{{ uint32_t t = {t} & ~1u; GuestFn f = recomp_lookup(t); if (f) {{ f(c); return; }} JUMP(t); }}"])
+            return guard([f"{{ uint32_t t = {t} & ~1u; GuestFn f = recomp_lookup_here(t); if (f) {{ f(c); return; }} JUMP(t); }}"])
         if mn in ("mov", "movs", "mvn", "mvns"):
             v = self.operand(ops[1], i, setc=S)
             if mn.startswith("mvn"):
@@ -165,7 +236,7 @@ class Fn:
                     return guard([f"JUMP(0x{A + 8:x}u + {self.operand(ops[2], i)});"])
                 if mn == "add" and not self.arm and len(ops) == 2 and ops[1].type == ARM_OP_REG and md.reg_name(ops[1].reg) != "pc":
                     # Thumb's "add pc, rN": a computed jump to (the address + 4) + rN, bit 0 dropped, as mov pc
-                    return guard([f"{{ uint32_t t = (0x{A + 4:x}u + {self.r(ops[1].reg, i)}) & ~1u; GuestFn f = recomp_lookup(t); if (f) {{ f(c); return; }} JUMP(t); }}"])
+                    return guard([f"{{ uint32_t t = (0x{A + 4:x}u + {self.r(ops[1].reg, i)}) & ~1u; GuestFn f = recomp_lookup_here(t); if (f) {{ f(c); return; }} JUMP(t); }}"])
                 raise Unsupported("alu to pc")
             if len(ops) == 2:
                 a, b = self.r(ops[0].reg, i), self.operand(ops[1], i)
@@ -239,6 +310,13 @@ class Fn:
             y = f"(int32_t)(int16_t)({self.r(ops[2].reg, i)}{' >> 16' if hy == 't' else ''})"
             acc = f" + {self.r(ops[3].reg, i)}" if mn.startswith("smla") else ""
             out = [f"{self.dst(ops[0].reg)} = (uint32_t)({x} * {y}){acc};"]
+        elif re.fullmatch(r"smm(ul|la|ls)r?", mn):
+            # most-significant-word multiplies (ARM ARM A8.8.205-207): bits 63:32 of the signed 64-bit product, with
+            # Ra<<32 added (smmla) or the product subtracted from it (smmls); R rounds (+0x80000000 before the shift).
+            # In uint64_t so a wrap is the hardware's 64-bit wrap, not C's signed overflow
+            p = f"(uint64_t)((int64_t)(int32_t){self.r(ops[1].reg, i)} * (int64_t)(int32_t){self.r(ops[2].reg, i)})"
+            e = p if mn.startswith("smmul") else f"((uint64_t){self.r(ops[3].reg, i)} << 32) {'+' if mn[3:5] == 'la' else '-'} {p}"
+            out = [f"{self.dst(ops[0].reg)} = (uint32_t)(({e}{' + 0x80000000u' if mn.endswith('r') else ''}) >> 32);"]
         elif mn in ("udiv", "sdiv"):
             a, b = self.r(ops[1].reg, i), self.r(ops[2].reg, i)
             e = (f"({b} ? {a} / {b} : 0)" if mn == "udiv"
@@ -367,7 +445,7 @@ class Fn:
         lo, hi = min(x.address for x in self.insns), max(x.address for x in self.insns)   # this function's own code
         # a function's entry is a tail call; anything else is a case label of this function's own
         # switch (ARM's "ldrls pc, [pc, rN, lsl #2]" table): jump there, as mov pc does
-        return [f"{{ uint32_t t = RD32({self.addr(ops[1], i)}); GuestFn f = recomp_lookup(t & ~1u); if (f) {{ f(c); return; }} "
+        return [f"{{ uint32_t t = RD32({self.addr(ops[1], i)}); GuestFn f = recomp_lookup_here(t & ~1u); if (f) {{ f(c); return; }} "
                 f"if ((t & ~1u) >= 0x{lo:x}u && (t & ~1u) <= 0x{hi:x}u) JUMP(t & ~1u); recomp_call_external(c, t); return; }}"]
 
     def multi(self, i, mn, ops):
@@ -439,7 +517,7 @@ class Fn:
             else:
                 r = self.r(ops[0].reg, i)
                 body = [f"{{ uint32_t t = {r};" + (f" c->r[14] = 0x{nxt | self.tbit:x}u;" if mn == "blx" else "")
-                        + " GuestFn f = recomp_lookup(t & ~1u); if (f) f(c); else recomp_call_external(c, t); }",
+                        + " GuestFn f = recomp_lookup_here(t & ~1u); if (f) f(c); else recomp_call_external(c, t); }",
                         "if (c->stop) return;"] + (["return;"] if mn == "bx" else [])
             return body if cc == 15 else [f"if (COND(c, {cc})) {{"] + body + ["}"]
         if mn in ("tbb", "tbh"):
@@ -449,7 +527,15 @@ class Fn:
             idx = self.r(m.index, i)
             tab = i.address + 4
             ld = f"RD8(0x{tab:x}u + {idx})" if mn == "tbb" else f"RD16(0x{tab:x}u + 2 * {idx})"
-            return [f"{{ uint32_t t = 0x{tab:x}u + 2 * {ld}; JUMP(t); }}"]
+            targets = self.table_targets(tab, 1 if mn == "tbb" else 2)
+            if targets is None:
+                return [f"{{ uint32_t t = 0x{tab:x}u + 2 * {ld}; JUMP(t); }}"]
+            # the table's own targets, read from the code: a local switch instead of JUMP. JUMP's function-wide
+            # switch makes every instruction a branch target, and one tbh in a 46k-line function cost 21 min of
+            # compile (x86 register coalescer, BUILD-03). An index past the table took JUMP's default before too.
+            return ([f"{{ uint32_t t = 0x{tab:x}u + 2 * {ld}; switch (t) {{"]
+                    + [f"\tcase 0x{a:x}u: goto L_{a:08x};" for a in sorted(set(targets))]
+                    + ["\tdefault: { GuestFn f = recomp_lookup_here(t); if (f) { f(c); return; } } c->r[15] = t; recomp_unimplemented(c, t); return;", "} }"])
         raise Unsupported(mn)
 
     # ------------------------------------------------------------------ VFP / NEON
@@ -524,6 +610,13 @@ class Fn:
             miss = f"o[k]" if mn == "vtbx" else "0"
             return [f"{{ uint8_t t[32], ix[8], o[8]; {loads} memcpy(ix, &c->vfp.d[{ix}], 8); memcpy(o, &c->vfp.d[{dd}], 8);"
                     f" for (int k = 0; k < 8; k++) o[k] = ix[k] < {n} ? t[ix[k]] : {miss}; memcpy(&c->vfp.d[{dd}], o, 8); }}"]
+        if mn == "vtrn" and dt in ("8", "16") and len(regs) == 2 and regs[0][0] == regs[1][0]:
+            # transpose: for each pair of elements (2e, 2e+1), D's 2e+1 and M's 2e swap
+            (a0, cnt), (b0, _) = dbytes(regs[0]), dbytes(regs[1])
+            es, nb = int(dt) // 8, 8 * cnt
+            return [f"{{ uint8_t x[16], y[16], t[2]; memcpy(x, &c->vfp.d[{a0}], {nb}); memcpy(y, &c->vfp.d[{b0}], {nb});"
+                    f" for (int e = 0; e < {nb // es}; e += 2) {{ memcpy(t, x + (e + 1) * {es}, {es}); memcpy(x + (e + 1) * {es}, y + e * {es}, {es}); memcpy(y + e * {es}, t, {es}); }}"
+                    f" memcpy(&c->vfp.d[{a0}], x, {nb}); memcpy(&c->vfp.d[{b0}], y, {nb}); }}"]
         if mn == "vtrn" and dt == "32" and len(regs) == 2 and regs[0][0] == regs[1][0]:
             (a0, cnt), (b0, _) = dbytes(regs[0]), dbytes(regs[1])
             out = []
@@ -674,7 +767,7 @@ class Fn:
             return [f"{{ {ty} x[{8 // es}], y[{8 // es}]; {oty} o[{8 // es}]; memcpy(x, &c->vfp.d[{a}], 8); memcpy(y, &c->vfp.d[{b}], 8);"
                     f" for (int k = 0; k < {8 // es}; k++) o[k] = ({oty})x[k] * ({oty})y[k]; memcpy(&c->vfp.d[{q0}], o, 16); }}"]
         if mn in ("vmlal", "vmlsl") and dt in ("u8", "s8", "u16", "s16", "u32", "s32") and regs[0][0] == "q" and regs[1][0] == "d" and regs[2][0] == "d":
-            # widening multiply-accumulate: qD +/- dN * dM at twice the width (a game's blend/skinning code)
+            # widening multiply-accumulate: qD +/- dN * dM at twice the width (SSD's blend/skinning code)
             es = int(dt[1:]) // 8
             ty, oty = {("u", 1): ("uint8_t", "uint16_t"), ("s", 1): ("int8_t", "int16_t"), ("u", 2): ("uint16_t", "uint32_t"),
                        ("s", 2): ("int16_t", "int32_t"), ("u", 4): ("uint32_t", "uint64_t"), ("s", 4): ("int32_t", "int64_t")}[(dt[0], es)]
@@ -689,14 +782,17 @@ class Fn:
             d, q0 = regs[0][1], 2 * regs[1][1]
             return [f"{{ {ty} a[{16 // es}]; {oty} o[{16 // es}]; memcpy(a, &c->vfp.d[{q0}], 16); for (int k = 0; k < {16 // es}; k++) o[k] = ({oty})(a[k] >> {n});"
                     f" memcpy(&c->vfp.d[{d}], o, 8); }}"]
-        if mn in ("vqshrn", "vqshrun") and dt in ("s16", "s32", "s64", "u16", "u32", "u64") and regs[0][0] == "d" and regs[1][0] == "q" and len(ops) == 3 and ops[2].type == ARM_OP_IMM:
+        if mn in ("vqshrn", "vqshrun", "vqrshrn", "vqrshrun") and dt in ("s16", "s32", "s64", "u16", "u32", "u64") and not (mn[2] == "r" and dt[1:] == "64") and regs[0][0] == "d" and regs[1][0] == "q" and len(ops) == 3 and ops[2].type == ARM_OP_IMM:
             # saturating narrowing shift right: each element of qM shifted right by the immediate (signed:
-            # arithmetic), saturated to the result's range (vqshrun: signed input, unsigned result)
+            # arithmetic), saturated to the result's range (vq[r]shrun: signed input, unsigned result); the
+            # rounding forms (vqrshrn / vqrshrun) add half the shifted-out unit first, at full precision (not for 64-bit elements: 65 bits)
             es = int(dt[1:]) // 8; n = ops[2].imm; ob = int(dt[1:]) // 2
+            rnd = mn.startswith("vqr")
+            mn = mn.replace("vqr", "vq")
             ty, oty = {2: ("uint16_t", "uint8_t"), 4: ("uint32_t", "uint16_t"), 8: ("uint64_t", "uint32_t")}[es]
             sg_in = dt[0] == "s"
             ity = {2: "int16_t", 4: "int32_t", 8: "int64_t"}[es] if sg_in else ty
-            shift = f"((int64_t)({ity})a[k] >> {n})" if sg_in else f"(uint64_t)(a[k] >> {n})"
+            shift = (f"((int64_t)({ity})a[k] >> {n})" if sg_in else f"(uint64_t)(a[k] >> {n})") if not rnd else                     (f"(((int64_t)({ity})a[k] + {1 << (n - 1)}ll) >> {n})" if sg_in else f"(((uint64_t)a[k] + {1 << (n - 1)}ull) >> {n})")
             if mn == "vqshrun" or not sg_in:
                 body = (f"o[k] = ({oty})SATU({shift}, {ob});" if sg_in else
                         f"{{ uint64_t t = {shift}; o[k] = t > {1 << ob}ull - 1 ? {oty}({(1 << ob) - 1}) : ({oty})t; }}")
@@ -708,13 +804,30 @@ class Fn:
         if mn == "vmovn" and dt == "i64" and regs[0][0] == "d" and regs[1][0] == "q":
             d, q0 = regs[0][1], 2 * regs[1][1]
             return [f"c->vfp.d[{d}] = (uint64_t)(uint32_t)c->vfp.d[{q0 + 1}] << 32 | (uint32_t)c->vfp.d[{q0}];"]
-        if mn == "vpaddl" and dt in ("u8", "u16", "s8", "s16"):
+        # (u32/s32: pairs of words into 64-bit lanes -- a shipped image-tracking module's vpaddl.u32 q1, q1)
+        if mn == "vpaddl" and dt in ("u8", "u16", "u32", "s8", "s16", "s32"):
             (dn, cnt), (an, _) = dbytes(regs[0]), dbytes(regs[1])
             es = int(dt[1:]) // 8
             ty, oty = {("u", 1): ("uint8_t", "uint16_t"), ("s", 1): ("int8_t", "int16_t"),
-                       ("u", 2): ("uint16_t", "uint32_t"), ("s", 2): ("int16_t", "int32_t")}[(dt[0], es)]
+                       ("u", 2): ("uint16_t", "uint32_t"), ("s", 2): ("int16_t", "int32_t"),
+                       ("u", 4): ("uint32_t", "uint64_t"), ("s", 4): ("int32_t", "uint64_t")}[(dt[0], es)]
             n = 8 * cnt // es
             return [f"{{ {ty} a[16]; {oty} o[8]; memcpy(a, &c->vfp.d[{an}], {8 * cnt}); for (int k = 0; k < {n // 2}; k++) o[k] = ({oty})a[2 * k] + ({oty})a[2 * k + 1];"
+                    f" memcpy(&c->vfp.d[{dn}], o, {8 * cnt}); }}"]
+        if mn == "vpadal" and dt in ("u8", "u16", "u32", "s8", "s16", "s32"):
+            # pairwise add of the source's adjacent elements, accumulated into the dest's elements at
+            # twice the source's width (VPADAL.U8 d10, d0: each halfword of d10 += the sum of a byte
+            # pair, wrapping at the dest width; pairs never cross a 64-bit half). Measured on Unicorn
+            # 2026-11-07: VPADAL.U8 accumulates FOUR 16-bit lanes, not two 32-bit ones -- the earlier
+            # per=4 / c->vfp.s shape was wrong for u8/s8 and is replaced by the vpaddl mirror below.
+            (dn, cnt), (an, _) = dbytes(regs[0]), dbytes(regs[1])
+            es = int(dt[1:]) // 8
+            ty, oty = {("u", 1): ("uint8_t", "uint16_t"), ("s", 1): ("int8_t", "int16_t"),
+                       ("u", 2): ("uint16_t", "uint32_t"), ("s", 2): ("int16_t", "int32_t"),
+                       ("u", 4): ("uint32_t", "uint64_t"), ("s", 4): ("int32_t", "uint64_t")}[(dt[0], es)]
+            n = 8 * cnt // es
+            return [f"{{ {ty} a[16]; {oty} o[8]; memcpy(a, &c->vfp.d[{an}], {8 * cnt}); memcpy(o, &c->vfp.d[{dn}], {8 * cnt});"
+                    f" for (int k = 0; k < {n // 2}; k++) o[k] = ({oty})(o[k] + ({oty})a[2 * k] + ({oty})a[2 * k + 1]);"
                     f" memcpy(&c->vfp.d[{dn}], o, {8 * cnt}); }}"]
         # half precision, 4 lanes: vcvt.f32.f16 qD, dM / vcvt.f16.f32 dD, qM
         if mn == "vcvt" and i.mnemonic.endswith((".f32.f16", ".f16.f32")) and len(regs) == 2:
@@ -727,6 +840,14 @@ class Fn:
                 return [f"{{ uint64_t t = 0; for (int k = 0; k < 4; k++) t |= (uint64_t)F2H(c->vfp.s[{sq} + k]) << (16 * k); c->vfp.d[{dd}] = t; }}"]
         # by scalar: vmul/vmla/vmls.f32 qD|dD, qN|dN, dM[x] (capstone leaves the lane in the text)
         sm = re.search(r"d(\d+)\[(\d)\]$", i.op_str)
+        if sm and dt in ("i16", "i32") and mn in ("vmul", "vmla", "vmls") and len(ops) == 3 and regs[0][0] == regs[1][0]:
+            # integer: each element of N times element x of dM, into (or added to / subtracted from) D, modulo the element
+            (dn, cnt), (an, _) = dbytes(regs[0]), dbytes(regs[1])
+            ty = "uint16_t" if dt == "i16" else "uint32_t"; es = int(dt[1:]) // 8
+            sc = f"({ty})(c->vfp.d[{int(sm.group(1))}] >> {8 * es * int(sm.group(2))})"
+            e = {"vmul": "p", "vmla": f"o[k] + p", "vmls": f"o[k] - p"}[mn]
+            return [f"{{ {ty} a[8], o[8], s = {sc}; memcpy(a, &c->vfp.d[{an}], {8 * cnt}); memcpy(o, &c->vfp.d[{dn}], {8 * cnt});"
+                    f" for (int k = 0; k < {8 * cnt // es}; k++) {{ {ty} p = ({ty})(a[k] * s); o[k] = ({ty})({e}); }} memcpy(&c->vfp.d[{dn}], o, {8 * cnt}); }}"]
         if sm and dt == "f32" and mn in ("vmul", "vmla", "vmls") and len(ops) == 3:
             dbase = (4 if q else 2) * regs[0][1]
             abase = (4 if regs[1][0] == "q" else 2) * regs[1][1]
@@ -778,6 +899,33 @@ class Fn:
                 e = lambda k: f"PACK16({A_(2 * k)} {op} {narrow(b, 2 * k)}, {A_(2 * k + 1)} {op} {narrow(b, 2 * k + 1)})"
             tmp = " ".join(f"uint32_t t{k} = {e(k)};" for k in range(4))
             return [f"{{ {tmp} " + " ".join(f"c->vfp.s[{D + k}] = t{k};" for k in range(4)) + " }"]
+        # widening shift left: vshll.{u,s}{16,32} qD, dN, #imm -- every element of dN shifted left and
+        # widened (zero- or sign-extended) to twice the element width. Medieval Defenders' boot asserts
+        # on vshll.u16 q8, d16, #8 (PCSB00672, 2026-11-07) -- the demonstrated contract. 8-bit elements (.u8/.s8,
+        # 16-bit results) and the maximum-shift form .i8/.i16/.i32 #width (encoding A2: the extension bits are shifted
+        # out, so it is the unsigned form) since a firmware font module's vshll.i8 q13, d16, #8 (AUTO-01, 2026-11-08).
+        if mn == "vshll" and re.fullmatch(r"[usi](8|16|32)", dt) and len(ops) == 3 and ops[2].type == ARM_OP_IMM and regs[0][0] == "q" and regs[1][0] == "d":
+            bits, sg, sh = int(dt[1:]), dt[0] == "s", ops[2].imm
+            es = bits // 8
+            a = regs[1][1]
+            if es == 1:   # eight 16-bit results, two per 32-bit lane of qD
+                def e8(j):
+                    raw = f"((c->vfp.s[{2 * a + j // 4}] >> {8 * (j % 4)}) & 0xffu)"
+                    return f"(({'(uint32_t)(int32_t)(int8_t)' if sg else ''}{raw}) << {sh})"
+                D = 4 * regs[0][1]
+                tmp = " ".join(f"uint32_t t{k} = PACK16({e8(2 * k)}, {e8(2 * k + 1)});" for k in range(4))
+                return [f"{{ {tmp} " + " ".join(f"c->vfp.s[{D + k}] = t{k};" for k in range(4)) + " }"]
+            def nx(j):   # element j of dN widened to 32 (sign- or zero-extended), as vaddl's narrow
+                w = f"c->vfp.s[{2 * a + j // (4 // es)}]"
+                raw = {2: f"LANE16({w}, {j % 2})", 4: w}[es]
+                return f"(uint32_t)(int{bits}_t){raw}" if sg else raw
+            D = 4 * regs[0][1]
+            if es == 2:   # 32-bit results, one per lane of qD
+                tmp = " ".join(f"uint32_t t{k} = (uint32_t)({nx(k)} << {sh});" for k in range(4))
+                return [f"{{ {tmp} " + " ".join(f"c->vfp.s[{D + k}] = t{k};" for k in range(4)) + " }"]
+            cast = "(uint64_t)(int64_t)(int32_t)" if sg else "(uint64_t)"   # es == 4: 64-bit results, one per d of qD
+            tmp = " ".join(f"uint64_t t{k} = {cast}c->vfp.s[{2 * a + k}] << {sh};" for k in range(2))
+            return [f"{{ {tmp} c->vfp.d[{D // 2}] = t0; c->vfp.d[{D // 2 + 1}] = t1; }}"]
         if any(r and r[0] and r[0] in "dq" and (r[0] == "q") != q for r in regs[1:]) and mn != "vdup":
             return None
         base = lambda r: (4 if r[0] == "q" else 2) * r[1]
@@ -835,6 +983,17 @@ class Fn:
             sr = "(uint32_t)((int32_t)" if dt == "s32" else "("
             return lanes(lambda k: f"({{ int8_t sh = (int8_t){B(k)}; sh >= 32 || sh <= -32 ? {'((int32_t)' + A(k) + ' < 0 && sh < 0 ? 0xffffffffu : 0u)' if dt == 's32' else '0u'}"
                                    f" : sh >= 0 ? {A(k)} << sh : {sr}{A(k)} >> -sh); }})")
+        # 64-bit elements, shift by register: vshl.{u,s}64 qD|dD, qN|dN, qM|dM -- the signed low byte
+        # of M's element, SHLR64 mirroring SHLR_U/SHLR_S. Medieval Defenders' GHASH (vshl.u64 q14, q0,
+        # q15 and vshl.u64 d1, d28, d18, 2026-11-07) is the demonstrated contract.
+        if mn == "vshl" and dt in ("u64", "s64", "i64") and len(ops) == 3 and not imm0 and regs[2] and regs[2][0] in "dq":
+            f_ = "SHLR64_S" if dt == "s64" else "SHLR64_U"
+            db = lambda r: (2 if r[0] == "q" else 1) * r[1]
+            Dd, Nn, Mm = db(regs[0]), db(regs[1]), db(regs[2])
+            nb = 2 if regs[0][0] == "q" else 1
+            tmp = " ".join(f"uint64_t t{k} = {f_}(c->vfp.d[{Nn + k}], (int8_t)c->vfp.d[{Mm + k}], 64);" for k in range(nb))
+            put = " ".join(f"c->vfp.d[{Dd + k}] = t{k};" for k in range(nb))
+            return [f"{{ {tmp} {put} }}"]
         cmp = {"vcgt": ">", "vcge": ">=", "vclt": "<", "vcle": "<=", "veq": "==", "vceq": "=="}
         if mn in cmp and (len(ops) == 3) and dt == "f32":
             op = cmp[mn]
@@ -885,6 +1044,14 @@ class Fn:
             if mn in ("vhadd", "vhsub") and two:   # halving: the exact sum or difference, then floor(x / 2)
                 op = "+" if mn == "vhadd" else "-"
                 return pack(lambda j: f"(uint32_t)(({wide}{sa(j)} {op} {wide}{sb(j)}) >> 1)")
+            if mn in ("vqdmulh", "vqrdmulh") and two and sg and bits in (16, 32):
+                # high half of 2*a*b (+ rounding), saturated: computed as (a*b [+ 2^(bits-2)]) >> (bits-1), the same value
+                # without 2*MIN*MIN overflowing 64 bits; SATS clamps that one case (MIN*MIN) to MAX
+                rd = f" + {1 << (bits - 2)}ll" if mn == "vqrdmulh" else ""
+                return pack(lambda j: f"(uint32_t)SATS(((int64_t){sa(j)} * (int64_t){sb(j)}{rd}) >> {bits - 1}, {bits})")
+            if mn in ("vabd", "vaba") and two:   # |a - b| exact (64-bit), truncated to the element; vaba adds it to d
+                ad = lambda j: f"(uint32_t)({wide}{sa(j)} > {wide}{sb(j)} ? {wide}{sa(j)} - {wide}{sb(j)} : {wide}{sb(j)} - {wide}{sa(j)})"
+                return pack(ad if mn == "vabd" else (lambda j: f"({E(regs[0], j)} + {ad(j)})"))
             if mn in ("vqadd", "vqsub") and two:   # saturating to the element's range
                 op = "+" if mn == "vqadd" else "-"
                 sat = "SATS" if sg else "SATU"
@@ -1090,6 +1257,16 @@ class Fn:
                 return [f"c->vfp.s[{regs[0][1]}] = (c->vfp.s[{regs[0][1]}] & ~(0xffffu << {sh})) | ((uint32_t)F2H(c->vfp.s[{regs[1][1]}]) << {sh});"]
         if mn == "vcvt":
             parts = i.mnemonic.split(".")[1:]
+            if len(ops) == 3 and ops[2].type == ARM_OP_IMM and regs[0][0] == "s" and regs[1][0] == "s":
+                # VFP fixed point, 32-bit fixed (A8.8.307): to fixed = x * 2^fbits toward zero, saturating; from fixed =
+                # n / 2^fbits (exact in double, then one rounding to float). A firmware font module (AUTO-01, 2026-11-08)
+                to, frm, fb = parts[0], parts[1], ops[2].imm
+                dd, ss = regs[0][1], regs[1][1]
+                if frm == "f32" and to in ("s32", "u32"):
+                    return [f"c->vfp.s[{dd}] = {'(uint32_t)F2S' if to == 's32' else 'F2U'}((double)c->vfp.f[{ss}] * {float(1 << fb)!r});"]
+                if to == "f32" and frm in ("s32", "u32"):
+                    return [f"c->vfp.f[{dd}] = (float)((double){'(int32_t)' if frm == 's32' else ''}c->vfp.s[{ss}] / {float(1 << fb)!r});"]
+                raise Unsupported(f"vcvt fixed-point {to}.{frm}")
             if len(ops) != 2:
                 raise Unsupported("vcvt fixed-point")
             to, frm = parts[0], parts[1]
@@ -1106,6 +1283,32 @@ class Fn:
                 return [f"c->vfp.f[{d[1]}] = (float)({src});"]
             if to == "f64":
                 return [f"c->vfp.fd[{d[1]}] = {src};"]
+        if mn == "vmvn" and ops and ops[-1].type == ARM_OP_IMM and regs[0] and regs[0][0] in "dq":
+            # vmvn.i8/i16/i32 dD|qD, #imm: the dest is OVERWRITTEN with NOT(capstone's per-lane pattern)
+            # in every lane (vmvn.i16 d0, #0xe -> 0xfff1fff1fff1fff1 -- verified on Unicorn; the source
+            # register is not read). Medieval Defenders' GHASH (vmvn.i16 d0, #0xe, 2026-11-07).
+            es = {"i8": 1, "i16": 2, "i32": 4}[dt]
+            imm = ops[-1].imm & ((1 << (8 * es)) - 1)
+            word = sum(((~imm) & ((1 << (8 * es)) - 1)) << (8 * es * t) for t in range(64 // (8 * es)))
+            n = 2 if regs[0][0] == "q" else 1
+            db = (2 if regs[0][0] == "q" else 1) * regs[0][1]
+            return [" ".join(f"c->vfp.d[{db + w}] = 0x{word:x}ull;" for w in range(n))]
+        if mn in ("vorr", "vand", "veor", "vbic", "vorn") and dt == "i32" and ops and ops[-1].type == ARM_OP_IMM and regs[0] and regs[0][0] in "dq":
+            # NEON modified immediate: the 32-bit pattern capstone prints, replicated into every lane
+            # (vorr.i32 d31, #0xc0 ORs 0x000000c0 into both words -- verified on Unicorn). dD|qD, #imm
+            # and dD|qD, dN|qN, #imm forms, done on the 64-bit words like the register form below.
+            # Medieval Defenders' GHASH (vorr.i32 d31, #0xc0, 2026-11-07).
+            op = {"vorr": "a | b", "vand": "a & b", "veor": "a ^ b", "vbic": "a & ~b", "vorn": "a | ~b"}[mn]
+            imm = ops[-1].imm & 0xffffffff
+            pat = (imm | (imm << 32)) & 0xffffffffffffffff
+            src = regs[1] if len(ops) == 3 and regs[1] else regs[0]
+            n = 2 if regs[0][0] == "q" else 1
+            db = lambda r: (2 if r[0] == "q" else 1) * r[1]
+            out = []
+            for k in range(n):
+                d, a = db(regs[0]) + k, db(src) + k
+                out.append(f"{{ uint64_t a = c->vfp.d[{a}], b = 0x{pat:x}ull; c->vfp.d[{d}] = {op}; }}")
+            return [" ".join(out)]
         if mn in ("vorr", "vand", "veor", "vbic", "vorn") and len(regs) == 3 and all(r and r[0] in "dq" for r in regs):
             op = {"vorr": "a | b", "vand": "a & b", "veor": "a ^ b", "vbic": "a & ~b", "vorn": "a | ~b"}[mn]
             n = 2 if regs[0][0] == "q" else 1
@@ -1205,14 +1408,14 @@ class Fn:
                     else:
                         out.append(f" memcpy(G(ea + {es * k}), {p_} + {lane * es}, {es});")
                 post = [o for o in ops if o.type == ARM_OP_REG and md.reg_name(o.reg) in GPR and o is not ops[0]]
-                if i.writeback:   # one element transferred either way
+                if i.writeback or post:   # one element transferred either way; a post-increment register: capstone leaves writeback unset for [rN], rM
                     out.append(f" c->r[{base}] = ea + {es if alld else es * len(ds)};" if not post else f" c->r[{base}] = ea + {self.r(post[-1].reg, i)};")
                 out.append(" }")
                 return ["".join(out)]
             for k, dn in enumerate(ds):
                 out.append(f" c->vfp.d[{dn}] = RD64(ea + {8 * k});" if mn == "vld1" else f" WR64(ea + {8 * k}, c->vfp.d[{dn}]);")
             post = [o for o in ops if o.type == ARM_OP_REG and md.reg_name(o.reg) in GPR and o is not ops[0]]
-            if i.writeback:
+            if i.writeback or post:   # (capstone leaves writeback unset for a post-increment register: [rN], rM)
                 out.append(f" c->r[{base}] = ea + {8 * len(ds)};" if not post else f" c->r[{base}] = ea + {self.r(post[-1].reg, i)};")
             out.append(" }")
             return ["".join(out)]
@@ -1230,6 +1433,16 @@ class Fn:
 
     # ------------------------------------------------------------------ whole function
     def build(self):
+        """the function's C lines; its full instructions exist only while they are built"""
+        self.insns = decode(self.src[0], self.src[1], True, self.src[2])
+        self.addrs = set(self.iaddrs)
+        try:
+            return self._build()
+        finally:
+            del self.insns, self.addrs
+            self.__dict__.pop("_bt", None)
+
+    def _build(self):
         lines = [f"void fn_{self.entry:08x}(Cpu *c) {{"]
         lines.append(f"\tENTER(c, 0x{self.entry:x}u);")
         hook = HOOKS.get(self.entry)
@@ -1252,12 +1465,18 @@ class Fn:
                 reg = GPR.get(i.reg_name(ops[0].reg), -1) if ops and ops[0].type == ARM_OP_REG else -1
                 lines.append(f"\trecomp_ihook_{ih}(c, {reg});   /* --insn-hooks: after this instruction */")
         lines.append("\treturn;")
-        # computed jumps (tbb/tbh) land on any instruction of the function
+        # computed jumps (an indirect branch inside the function, a table recomp could not read) land on any
+        # instruction of the function; a function without one gets no such switch (a quarter of all lines, BUILD-03)
+        if not any("JUMP(" in l or "goto jump" in l for l in lines):
+            lines.append("}")
+            return lines
         lines.append("jump:")
         lines.append("\tswitch (c->r[15]) {")
         for i in self.insns:
             lines.append(f"\tcase 0x{i.address:x}u: goto L_{i.address:08x};")
-        lines.append("\tdefault: recomp_unimplemented(c, c->r[15]); return;")
+        # a computed jump to another function's entry (a table case that is a split-off entry: libSceFt2's FreeType
+        # interpreter, AUTO-01 GR-11) is a tail call: run it and return, as the branch would; anything else asserts
+        lines.append("\tdefault: { GuestFn f = recomp_lookup_here(c->r[15]); if (f) { f(c); return; } } recomp_unimplemented(c, c->r[15]); return;")
         lines.append("\t}")
         lines.append("}")
         return lines
@@ -1280,10 +1499,18 @@ def main():
             if s <= lo and hi <= s + len(bb):
                 return bb[lo - s:hi - s]
         return None
+    CODE[0] = code
     entries = sorted({v & ~1 for v in d["functions"].values()})
     # body ranges: [first, last byte] (Ghidra), or [first, last, owner entry] (analyze.py, which knows)
     bodies = sorted(tuple(b) for b in d["bodies"])
     out = ['#include "rt.h"', "#define JUMP(t) do { c->r[15] = (t); goto jump; } while (0)"]
+    # an indirect branch's / computed jump's target, looked up in this file's own table first: a module's (recomp.py
+    # --module) functions are in recomp_lookup_<module>, not in the main program's recomp_lookup -- a module calling or
+    # jumping to its own code through a register found nothing there (libSceFt2's split FreeType interpreter, AUTO-01)
+    lmod = sys.argv[sys.argv.index("--module") + 1] if "--module" in sys.argv else None
+    out += ([f"GuestFn recomp_lookup_{lmod}(uint32_t a);",
+             f"static inline GuestFn recomp_lookup_here(uint32_t a) {{ GuestFn f = recomp_lookup_{lmod}(a); return f ? f : recomp_lookup(a); }}"]
+            if lmod else ["#define recomp_lookup_here recomp_lookup"])
     fns, total, bad = [], 0, []
     # a function can be several code chunks: each chunk belongs to its owner when the export says,
     # else (Ghidra's ranges) to itself if it's an entry, else the nearest entry before it
@@ -1299,22 +1526,7 @@ def main():
     entries = [e for e in entries if e not in stubs]
     bodies = [b for b in bodies if b[0] not in stubs]
     SETJMP_STUBS.update(a for a in stubs if names[a] in ("setjmp", "_setjmp"))
-    eset, chunks, fspans = set(entries), {}, {}
-
-    def decode(spans, arm_mode):
-        """linear decode of a function's spans; undecodable bytes (literal pools) are skipped"""
-        dis, step = (md_arm, 4) if arm_mode else (md, 2)
-        insns = []
-        for lo, hi in spans:
-            c = code(lo, hi + 1)
-            pos = 0
-            while c and pos < len(c):
-                got = list(dis.disasm(c[pos:], lo + pos))
-                insns += got
-                pos = (got[-1].address + got[-1].size - lo) if got else pos
-                if pos < len(c) and (not got or got[-1].address + got[-1].size - lo == pos):
-                    pos += step
-        return insns
+    eset, chunks, fspans, maybe_arm = set(entries), {}, {}, []
 
     def junk(insns):
         for i in insns[:64]:
@@ -1351,7 +1563,10 @@ def main():
                 spans.append([spans[-1][1] + 1, lo - 1])   # the hole
             spans.append([lo, hi])
         fspans[entry] = spans
-        fns.append(Fn(entry, decode(spans, False), eset))
+        lite = decode(spans, False)
+        fns.append(Fn(entry, (spans, False, None), eset, lite=lite))
+        if junk(lite):
+            maybe_arm.append(entry)
     # ARM-mode functions: a Thumb "blx #imm" always switches to ARM, so its targets are ARM; from
     # ARM code, "bl" stays ARM and "blx #imm" goes back to Thumb (propagated to a fixed point); a
     # function only reached through pointers is ARM when its Thumb decode holds instructions no Vita
@@ -1360,9 +1575,9 @@ def main():
     # the image's own function pointers carry the mode: a word entry|1 is the linker saying Thumb.
     # A blx #imm to such an entry contradicts that (a blx immediate only ever lands in ARM state),
     # and the pointer is what the code that actually runs -- the static-init table walk -- uses:
-    # a game's Thumb function can sit in the init table with its Thumb bit set while a caller's
-    # disassembly has "blx #<that address>"; classifying it ARM derails the init walk. The pointer
-    # bit wins: those entries stay Thumb.
+    # fn_818f4e30 (PCSF00532) sits in the init table as 0x818f4e31 while one caller's disassembly
+    # has "blx #0x818f4e30"; classifying it ARM derailed the init walk (docs/progress.md 2026-11-02,
+    # N01b-13 probe 2). The pointer bit wins: those entries stay Thumb.
     thumb_refs = set()
     for start, bb in blocks.items():
         for o in range((-start) % 4, len(bb) - 3, 4):
@@ -1371,20 +1586,28 @@ def main():
                 thumb_refs.add(v & ~1)
     arm = set()
     def calls(f, mnem):
-        for i in f.insns:
-            if i.mnemonic == mnem and i.operands and i.operands[0].type == ARM_OP_IMM:
-                yield i.operands[0].imm & 0xffffffff
-    todo = [t for f in fns for t in calls(f, "blx") if t in by_entry and t not in thumb_refs]
+        return (t for m, t in f.calls if m == mnem)
+    # (only Thumb code's blx: the Thumb decode of a function the analysis knows as ARM is noise, and its "blx #imm"
+    # read that way turned a Thumb function ARM, NIGHT-01; its real calls come from its ARM decode below)
+    known_arm = set(d.get("arm", []))
+    todo = [t for f in fns if f.entry not in known_arm for t in calls(f, "blx") if t in by_entry and t not in thumb_refs]
     todo += [a for a in d.get("arm", []) if a in by_entry]   # the analysis decoded these as ARM (its exports and calls say so)
-    for f in fns:
-        if junk(f.insns) and not junk(decode(fspans[f.entry], True)):
-            todo.append(f.entry)
+    # a Thumb "bl" keeps the state: an entry that a function of certain Thumb code (no ARM candidate of any kind) calls
+    # with "bl" is Thumb, whatever its own decode looks like -- the guess below yields to it (NIGHT-01: Thumb functions
+    # whose data read as a coprocessor instruction went ARM; blx targets and the analysis' list stay facts)
+    cand = set(todo) | set(maybe_arm)
+    thumb_bl = {t for f in fns if f.entry not in cand for t in calls(f, "bl")}
+    for e in maybe_arm:
+        if e not in thumb_bl and not junk(decode(fspans[e], True)):
+            todo.append(e)
     while todo:
         e = todo.pop()
-        if e in arm or e not in by_entry:
+        # an ARM instruction starts on a word: an entry with bit 1 set is Thumb whatever its decode looks like (a
+        # Thumb function whose literal pool reads as a coprocessor instruction went ARM by the guess above, NIGHT-01)
+        if e in arm or e not in by_entry or e & 3:
             continue
         arm.add(e)
-        f = Fn(e, decode(fspans[e], True), eset, arm=True)
+        f = Fn(e, (fspans[e], True, None), eset, arm=True)
         by_entry[e] = f
         todo += [t for t in calls(f, "bl") if t in by_entry]
     fns = [by_entry[f.entry] for f in fns]
@@ -1393,7 +1616,7 @@ def main():
     # code reached only through a pointer (a callback the module installs for itself) can sit inside
     # what Ghidra made one function: any Thumb code pointer in the image's words that lands on an
     # instruction of a function, not at its entry, gets its own entry (that function, entered there)
-    starts = {i.address: f for f in fns for i in f.insns}
+    starts = {a: f for f in fns for a in f.iaddrs}
     arm_starts = {a for a, f in starts.items() if f.arm}
     alt = set()
     # a word that is itself a decoded ARM instruction holds no pointer, however it looks: an ARM
@@ -1410,7 +1633,7 @@ def main():
                 alt.add(a)
     for a in sorted(alt):
         eset.add(a)
-        fns.append(Fn(a, starts[a].insns, eset, arm=starts[a].arm))
+        fns.append(Fn(a, starts[a].src, eset, arm=starts[a].arm, share=starts[a]))
     # small functions only reached through a pointer (a virtual method in a .rodata vtable) can sit
     # in a gap no Ghidra body covers: a Thumb pointer into such a gap gets a function decoded from
     # there to the next body, when that decodes cleanly to a return
@@ -1438,12 +1661,12 @@ def main():
         if not insns or insns[0].address != a or end is None or junk(insns[:end + 1]):
             continue
         eset.add(a); ngap += 1
-        fns.append(Fn(a, insns[:end + 1], eset))
+        fns.append(Fn(a, ([(a, min(nxt, a + 0x400) - 1)], False, end + 1), eset, lite=insns[:end + 1]))
     if ngap:
         print(f"{ngap} functions in gaps between Ghidra's bodies (reached through pointers)")
     for a in sorted(set(HOOKS) - {f.entry for f in fns}):   # a typo, or an address that moved: say so now, not after a run shows nothing changed
         print(f"warning: --hooks {a:#x}:{HOOKS[a]} is not a function entry; that hook will never run")
-    insn_addrs = {i.address for f in fns for i in f.insns}
+    insn_addrs = {a for f in fns for a in f.iaddrs} if IHOOKS else set()
     for a in sorted(set(IHOOKS) - insn_addrs):
         print(f"warning: --insn-hooks {a:#x}:{IHOOKS[a]} is not an instruction of any function; that hook will never run")
     decls = [f"extern void recomp_hook_{n}(Cpu *c);" for n in sorted(set(HOOKS.values()))]
@@ -1455,25 +1678,39 @@ def main():
     parts = [[] for _ in range(nsplit)]
     if nsplit:
         base = sys.argv[2][:-2] if sys.argv[2].endswith(".c") else sys.argv[2]
-        open(base + ".h", "w").write("\n".join(out + decls) + "\n")
+        write_if_changed(base + ".h", "\n".join(out + decls) + "\n")
         out = [f'#include "{os.path.basename(base)}.h"']
     else:
         out += decls
-    per = (sum(len(f.insns) for f in fns) // max(nsplit, 1)) + 1
-    k = acc = 0
-    for f in fns:
-        body = f.build()
-        total += len(f.insns)
-        bad += f.unimpl
-        if nsplit:
-            parts[k] += body
-            acc += len(f.insns)
+    # parts balanced by lines of C (the compile cost), not by guest instructions: a NEON-heavy function is many more
+    # lines per instruction than integer code (BUILD-03)
+    # (BUILD-02) with --split each body goes to a scratch file as it is built, its byte offset and line count noted:
+    # all bodies' C at once was gigabytes of strings on a big game; a part is read back, one part in memory at a time
+    sizes, offs = [], [0]
+    scratch = base + ".bodies.tmp" if nsplit else None
+    with (open(scratch, "w+b") if nsplit else open(os.devnull, "wb")) as tmp:
+        for f in fns:
+            body = f.build()
+            total += len(f.iaddrs)
+            bad += f.unimpl
+            if nsplit:
+                tmp.write(("\n".join(body) + "\n").encode())
+                sizes.append(len(body)); offs.append(tmp.tell())
+            else: out += body
+        per = sum(sizes) // max(nsplit, 1) + 1
+        k = acc = 0
+        for j, n in enumerate(sizes):   # parts[k]: the indices of its bodies, consecutive
+            parts[k].append(j)
+            acc += n
             if acc >= per and k < nsplit - 1:
                 k, acc = k + 1, 0
-        else:
-            out += body
-    for n, part in enumerate(parts):
-        open(f"{base}_part{n}.c", "w").write("\n".join([f'#include "{os.path.basename(base)}.h"'] + part) + "\n")
+        for n, part in enumerate(parts):
+            text = ""
+            if part:
+                tmp.seek(offs[part[0]])
+                text = tmp.read(offs[part[-1] + 1] - offs[part[0]]).decode()
+            write_if_changed(f"{base}_part{n}.c", f'#include "{os.path.basename(base)}.h"\n' + text)
+    if scratch: os.remove(scratch)
     # --module NAME: a module loaded with the main program (a .suprx): its tables are suffixed and
     # register themselves with the host (main.c's module registry) before main() runs
     mod = sys.argv[sys.argv.index("--module") + 1] if "--module" in sys.argv else None
@@ -1492,11 +1729,22 @@ def main():
     if mod:
         out.append("void recomp_register_module(const char *name, GuestFn (*lookup)(uint32_t), const char *(*import_name)(uint32_t), int (*is_arm)(uint32_t));")
         out.append(f'__attribute__((constructor)) static void register_{mod}(void) {{ recomp_register_module("{mod}", recomp_lookup{sfx}, recomp_import_name{sfx}, recomp_is_arm{sfx}); }}')
-    open(sys.argv[2], "w").write("\n".join(out) + "\n")
+    write_if_changed(sys.argv[2], "\n".join(out) + "\n")
     print(f"{len(fns)} functions, {len(stubs)} imports, {total} instructions, {len(bad)} unsupported -> {sys.argv[2]}")
     from collections import Counter
     for (k, n) in Counter(u[1].split()[0] for u in bad).most_common(15):
         print(f"  {n:4} {k}")
+
+
+def write_if_changed(path, text):
+    """a generated file, written only when its text differs from what is there: an unchanged part keeps its time, so a
+    recompile that changes a few functions rebuilds only their parts (runtime/build.py's "newer than" test). The bytes
+    are the same either way (text mode, as the open(path, "w") before)"""
+    try:
+        with open(path, "r", newline="") as f:
+            if f.read() == text.replace("\n", os.linesep): return
+    except (OSError, UnicodeDecodeError): pass
+    with open(path, "w") as f: f.write(text)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-/* input_rec.c -- `# nativ-input v2` encode/parse/validate; see input_rec.h. */
+/* input_rec.c -- `# nativ-input v2` encode/parse/validate (N02g-2/N02g-4); see input_rec.h. */
 #include "input_rec.h"
 #include <string.h>
 #include <stdio.h>
@@ -197,7 +197,7 @@ uint64_t input_rec_frame_at_ms(const InputRecRow *rows, int n, uint64_t ms)
 	return a->frame + (b->frame - a->frame) * (ms - a->ms) / (b->ms - a->ms);
 }
 
-/* --- replay checkpoint fingerprint ------------------------------------------------- */
+/* --- replay checkpoint fingerprint (N02g-7) ------------------------------------------------- */
 
 static uint64_t fnv1a(uint64_t h, const uint8_t *p, size_t n)
 {

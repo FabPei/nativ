@@ -107,6 +107,12 @@ def other_release(title: str, name: str, index: list[dict]) -> dict | None:
 def release_note(title: str, content_id: str, name: str, version: str, status: str, packs: str, index=None) -> str:
     """What to tell a player of a copy Nativ can't play as it is: which release and version it does play."""
     index = index if index is not None else pack_index(packs)
+    if status == "check" and packconf.pack_for(packs, title) not in ("", title):
+        p = next(p for p in index if p["id"] == packconf.pack_for(packs, title))
+        mine = region_of(content_id, title) or title
+        theirs = p["region"] or region_of("", p["id"]) or p["id"]
+        vs = f", {', '.join(p['versions'])}" if p["versions"] else ""
+        return f"{mine} release: plays with the {theirs} release's pack ({p['id']}{vs}) if its program is that build"
     if status == "unsupported":
         p = next((p for p in index if p["id"] == title), None)
         return f"Nativ plays {', '.join(p['versions'])}" if p and p["versions"] else ""
@@ -249,7 +255,9 @@ def scan(root: str, packs: str, dumps: str, firmware: str, import_licences: bool
             licence = "yes"
         else:
             status = _status(kind, title, version, packs, dumps)
-            if status == "nopack" and kind != "addon" and other_release(title, name, index):
+            if status == "nopack" and kind != "addon" and packconf.pack_for(packs, title):
+                status = "check"   # (another release's pack lists it: its hash decides when added)
+            elif status == "nopack" and kind != "addon" and other_release(title, name, index):
                 status = "otherregion"
             has_lib_licence = os.path.isfile(os.path.join(dumps, title, "license.rif"))
             if own_licence(kind, form, path):
@@ -269,6 +277,22 @@ def scan(root: str, packs: str, dumps: str, firmware: str, import_licences: bool
     return rows
 
 
+def _is_dir_link(p: str) -> bool:
+    return os.path.islink(p) or (hasattr(os.path, "isjunction") and os.path.isjunction(p))
+
+
+def _link_dir(target: str, link: str) -> bool:   # (a junction on Windows, no privilege needed; False: refused, walk it)
+    try:
+        if os.name == "nt":
+            import _winapi
+            _winapi.CreateJunction(os.path.abspath(target), os.path.abspath(link))
+        else:
+            os.symlink(os.path.abspath(target), link)
+        return True
+    except OSError:
+        return False
+
+
 def layer(app0: str, patch0: str, out: str) -> tuple[int, int]:
     """out = app0 with patch0's files over it. Hard links where the filesystem allows (no second copy of a game's
     gigabytes), copies otherwise. Returns (linked, copied)."""
@@ -276,10 +300,15 @@ def layer(app0: str, patch0: str, out: str) -> tuple[int, int]:
     remove_tree(tmp)
     linked = copied = 0
     for src_root in (app0, patch0):
-        for dirpath, _dirnames, filenames in os.walk(src_root):
-            rel = os.path.relpath(dirpath, src_root)
+        for dirpath, dirnames, filenames in os.walk(src_root, followlinks=src_root == app0):   # (app0's only links: folders read in place -- walked
+            rel = os.path.relpath(dirpath, src_root)                                          # where not linked again; Windows walks a junction anyway)
             dst_dir = os.path.join(tmp, rel) if rel != "." else tmp
             os.makedirs(dst_dir, exist_ok=True)
+            if src_root == app0:   # a folder of the game read in place (vitadecrypt.game --link-dirs: a link to another
+                for dn in list(dirnames):   # drive): linked again when the update has nothing in it, else walked
+                    sd = os.path.join(dirpath, dn)
+                    if _is_dir_link(sd) and not os.path.lexists(os.path.join(patch0, rel, dn)) and _link_dir(os.path.realpath(sd), os.path.join(dst_dir, dn)):
+                        dirnames.remove(dn)
             for fn in filenames:
                 s, d = os.path.join(dirpath, fn), os.path.join(dst_dir, fn)
                 if os.path.lexists(d):
@@ -312,7 +341,7 @@ def selftest() -> None:
         # a second game, kept elsewhere and linked in, its licence in ux0:license
         put("elsewhere/PCSB00099/sce_sys/param.sfo", SFO.build_sfo({"APP_VER": "01.00", "CATEGORY": "gd", "TITLE_ID": "PCSB00099",
                                                                      "TITLE": "Linked", "CONTENT_ID": "IP0177-PCSB00099_00-LINKED0000000000"}))
-        os.symlink(os.path.join(tmp, "elsewhere", "PCSB00099"), os.path.join(tmp, "ux0", "app", "PCSB00099"))
+        assert _link_dir(os.path.join(tmp, "elsewhere", "PCSB00099"), os.path.join(tmp, "ux0", "app", "PCSB00099"))   # (a junction on Windows: no Developer Mode needed)
         put("ux0/license/app/PCSB00099/a.rif", RIF.build_rif("IP0177-PCSB00099_00-LINKED0000000000", bytes(16)) + bytes(512))
         put("ux0/app/PCSB00013/eboot.bin", b"SCE\0")   # (a title folder's insides aren't searched)
         put("ux0/patch/PCSB00013/sce_sys/param.sfo", sfo("gp", "01.01"))
@@ -328,7 +357,13 @@ def selftest() -> None:
         eu = scan(os.path.join(tmp, "eu"), os.path.join(tmp, "packs"), os.path.join(tmp, "dumps"), os.path.join(tmp, "firmware"))
         assert [(r[2], r[4], r[10]) for r in eu] == [
             ("PCSG00099", "otherregion", "JP release: Nativ plays the EU release (PCSB00013, 1.00, 1.01)"),
-            ("PCSF00001", "otherregion", "EU release: Nativ plays the US release (PCSA00029, 1.00)")], eu
+            ("PCSF00001", "check", "EU release: plays with the US release's pack (PCSA00029, 1.00) if its program is that build")], eu
+        # a release a pack lists among its OTHER_TITLES is played with that pack (its hash decides when added);
+        # its own pack wins, and one that's only a name match isn't taken
+        assert packconf.pack_for(os.path.join(tmp, "packs"), "PCSF00001") == "PCSA00029"
+        assert packconf.pack_for(os.path.join(tmp, "packs"), "PCSA00029") == "PCSA00029"
+        assert packconf.pack_for(os.path.join(tmp, "packs"), "PCSG00099") == ""
+        assert packconf.pack_for(os.path.join(tmp, "packs"), "PCSX00000") == ""
         shutil.rmtree(os.path.join(tmp, "eu"))
         os.makedirs(os.path.join(tmp, "firmware", "3.74"))
         rows = scan(os.path.join(tmp, "ux0"), os.path.join(tmp, "packs"), os.path.join(tmp, "dumps"), os.path.join(tmp, "firmware"))
@@ -349,6 +384,20 @@ def selftest() -> None:
                 for dp, _dn, fs in os.walk(out) for f in fs} == {"a": b"X", os.path.join("d", "b"): b"2", "c": b"3"}
         assert os.stat(os.path.join(out, "d", "b")).st_ino == os.stat(os.path.join(app0, "d", "b")).st_ino
         assert open(os.path.join(app0, "a"), "rb").read() == b"1"   # (the game's own file untouched)
+        # a game whose folders are read in place (links to another drive): one the update leaves alone stays a link,
+        # one it changes is walked; the player's folder is untouched, also when the result is removed
+        put("drive2/data/x", b"4"); put("drive2/movie/m", b"5"); put("app1/eboot.bin", b"e")
+        for dn in ("data", "movie"):
+            assert _link_dir(os.path.join(tmp, "drive2", dn), os.path.join(tmp, "app1", dn))
+        put("patch1/movie/m2", b"6")
+        out1 = os.path.join(tmp, "out1")
+        layer(os.path.join(tmp, "app1"), os.path.join(tmp, "patch1"), out1)
+        assert _is_dir_link(os.path.join(out1, "data")) and not _is_dir_link(os.path.join(out1, "movie"))
+        assert open(os.path.join(out1, "data", "x"), "rb").read() == b"4"
+        assert sorted(os.listdir(os.path.join(out1, "movie"))) == ["m", "m2"]
+        assert sorted(os.listdir(os.path.join(tmp, "drive2", "movie"))) == ["m"]
+        remove_tree(out1)
+        assert open(os.path.join(tmp, "drive2", "data", "x"), "rb").read() == b"4"
     print("packs.py self-test: OK")
 
 

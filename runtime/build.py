@@ -29,6 +29,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 
 RT = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.dirname(RT); RECOMPILER = os.path.join(ROOT, "recompiler")
 SUBDIRS = ("core", "gfx", "audio", "media", "input", "net", "ui", "platform", "debug")   # the runtime's parts (docs/architecture.md)
@@ -124,7 +125,7 @@ def main(argv):
         WT = ENV.get("ATIV_WIN_TOOLCHAIN") or next((d for d in (os.path.join(ROOT, "toolchain"),) if os.path.isdir(d)), os.path.join(os.path.expanduser("~"), "toolchains", "ativ-win"))
         cc = os.path.join(WT, "llvm-mingw", "bin", "x86_64-w64-mingw32-clang" + exe)
         if not os.path.isfile(cc): die(f"no Windows toolchain at {WT}: run runtime/platform/win/setup-toolchain.sh")
-        if VERIFY: die("VERIFY builds: macOS and Linux only")   # PROFILE allowed on Windows (the counter hook is plain C)
+        if VERIFY: die("VERIFY builds: macOS and Linux only")   # N01b-11 diagnostic: PROFILE allowed on Windows (the counter hook is plain C)
         CC = cc; CXX = os.path.join(WT, "llvm-mingw", "bin", "x86_64-w64-mingw32-clang++" + exe)
         SDLW = os.path.join(WT, "SDL3", "x86_64-w64-mingw32")
         # win32_compat.h: the POSIX names Windows spells differently (mkdir's mode, pread, realpath); 64-bit off_t;
@@ -166,8 +167,12 @@ def main(argv):
         UCLIB = "-l:libunicorn.so.2" if os.path.isfile(os.path.join(UC, "lib", "libunicorn.so.2")) and not os.path.isfile(os.path.join(UC, "lib", "libunicorn.so")) else "-lunicorn"   # pip's Linux wheel
         FLAGS += ["-DRECOMP_VERIFY", "-I", os.path.join(UC, "include")]
         EXTRA = [part("verify"), "-L" + os.path.join(UC, "lib"), UCLIB, "-Wl,-rpath," + os.path.join(UC, "lib")]
-    srcs = [BASE + ".c"] + sorted(glob.glob(glob.escape(BASE) + "_part*.c"))
-    for m in mods: srcs += [m + ".c"] + sorted(glob.glob(glob.escape(m) + "_part*.c"))   # modules loaded with it (recomp.py --module)
+    # (each with its base's header, game.h: recomp.py rewrites only the files whose text changed, so a part can be older
+    # than a header whose declarations it compiles against)
+    header = {}
+    for b in [BASE] + mods:   # the game, then the modules loaded with it (recomp.py --module)
+        for s in [b + ".c"] + sorted(glob.glob(glob.escape(b) + "_part*.c")): header[s] = b + ".h"
+    srcs = list(header)
     srcs += sorted(glob.glob(os.path.join(ROOT, "third_party", "libatrac9", "*.c")))   # LibAtrac9 (MIT): the NGS ATRAC9 player's decoder
     # JOBS: compiles at once. A part file is ~10 MB of C: Uncharted's 40 parts all at once under GCC peaked
     # at 27 GB and systemd-oomd killed the build on a 30 GB Linux machine (one that also keeps a language
@@ -178,10 +183,36 @@ def main(argv):
         per = 3 if "Free Software Foundation" in " ".join(out_of([CC, "--version"])) else 2
         jobs = max(1, min(memory_gb() // per, os.cpu_count() or 1))
     rt = os.path.join(RECOMPILER, "rt.h")
+    # rt.h and the part's header by content (<object>.in: their hash when it was compiled), not by time: a checkout that
+    # rewrites rt.h unchanged (a branch switch, a pull, a second worktree) rebuilt every part -- 19 min for Soul Sacrifice --
+    # for the same object code. An object from before these stamps: the time test once, then a stamp
+    sums = {}
+    def digest(*files):
+        if files not in sums:
+            h = hashlib.sha1()
+            for f in files:
+                try: h.update(open(f, "rb").read())
+                except OSError: h.update(b"\0missing")
+            sums[files] = h.hexdigest()
+        return sums[files]
+    def write_stamp(o, text):
+        with open(f"{o}.in.{os.getpid()}", "w") as f: f.write(text + "\n")
+        os.replace(f"{o}.in.{os.getpid()}", o + ".in")
     work = []
     for s in srcs:
         o = os.path.join(OBJ, os.path.splitext(os.path.basename(s))[0] + ".o")
-        if not os.path.isfile(o) or newer(s, o) or newer(rt, o): work.append(([CC, "-c"] + FLAGS + [s, "-o", o], s, o, CC, False))
+        # RECOMP_GUEST_CODE: generated code, where rt.h declares the arena base const (see there; BUILD-03); in the
+        # stamp, so an object compiled without it is rebuilt
+        guest = ["-DRECOMP_GUEST_CODE"] if s in header else []
+        ins = (rt, header[s]) if s in header else (rt,); now = " ".join([digest(*ins)] + guest)
+        try: was = open(o + ".in").read().strip()
+        except OSError: was = None
+        if not os.path.isfile(o) or newer(s, o): stale = True
+        elif was is None:
+            stale = any(newer(f, o) for f in ins)
+            if not stale: write_stamp(o, now)
+        else: stale = was != now
+        if stale: work.append(([CC, "-c"] + FLAGS + guest + [s, "-o", o], s, o, CC, lambda o=o, now=now: write_stamp(o, now)))
     # the in-game overlay (runtime/ui/overlay.cpp, this project's one C++ file) and Dear ImGui itself
     # (third_party/imgui/, MIT: see its own README for the pinned release): built once into their own
     # cached objects -- nothing here depends on which game is being linked -- and reused by that game's later builds
@@ -192,7 +223,7 @@ def main(argv):
     IMGUI = os.path.join(ROOT, "third_party", "imgui"); IMGUIOBJ = os.path.join(OBJ, "imgui"); os.makedirs(IMGUIOBJ, exist_ok=True)
     CXXFLAGS = ["-O2", "-std=c++17", "-w", "-I", IMGUI, "-I", os.path.join(IMGUI, "backends")] + INCLUDES + sdl_cflags
     if WIN: CXXFLAGS += ["-D_FILE_OFFSET_BITS=64", "-include", os.path.join(RT, "platform", "win32_compat.h")]
-    imgui_srcs = [os.path.join(IMGUI, f) for f in ("imgui.cpp", "imgui_draw.cpp", "imgui_tables.cpp", "imgui_widgets.cpp", os.path.join("backends", "imgui_impl_sdl3.cpp"), os.path.join("backends", "imgui_impl_sdlgpu3.cpp"))] + [os.path.join(RT, "ui", "overlay.cpp")]
+    imgui_srcs = [os.path.join(IMGUI, f) for f in ("imgui.cpp", "imgui_draw.cpp", "imgui_tables.cpp", "imgui_widgets.cpp", os.path.join("backends", "imgui_impl_sdl3.cpp"), os.path.join("backends", "imgui_impl_sdlgpu3.cpp"))] + [os.path.join(RT, "ui", f) for f in ("overlay.cpp", "savedlg_ui.cpp", "imedlg_ui.cpp")]
     # the touch card's input icons (third_party/kenney-prompts/prompts.png) as bytes overlay.cpp includes: a game's binary
     # carries them, wherever it runs from
     PROMPTS = os.path.join(ROOT, "third_party", "kenney-prompts", "prompts.png"); PROMPTS_H = os.path.join(IMGUIOBJ, "prompts_png.h")
@@ -204,20 +235,8 @@ def main(argv):
     CXXFLAGS += ["-I", IMGUIOBJ]
     for s in imgui_srcs:
         o = os.path.join(IMGUIOBJ, os.path.splitext(os.path.basename(s))[0] + ".o")
-        if not os.path.isfile(o) or newer(s, o) or newer(os.path.join(RT, "ui", "overlay.h"), o) or (s.endswith("overlay.cpp") and newer(PROMPTS_H, o)):
-            work.append(([CXX, "-c"] + CXXFLAGS + [s, "-o", f"{o}.{os.getpid()}"], s, o, CXX, True))
-
-    def compile_one(w):
-        argv, s, o, cc, tmp = w
-        r = subprocess.run(argv)
-        if r.returncode:
-            if tmp: _rm(argv[-1])
-            return s
-        if tmp: os.replace(argv[-1], o)
-        say(f"  {cc} {os.path.basename(s)}")
-        return None
-    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as ex: failed = [f for f in ex.map(compile_one, work) if f]
-    if failed: die("build: " + ", ".join(os.path.basename(f) for f in failed) + " did not compile")
+        if not os.path.isfile(o) or newer(s, o) or newer(os.path.join(RT, "ui", "overlay.h"), o) or (s.endswith("overlay.cpp") and newer(PROMPTS_H, o)) or stale_deps(o):
+            work.append(deps_job([CXX, "-c"] + CXXFLAGS, s, o, CXX))
     # spirv-cross (SPIRV-Cross's C API): only needed where SDL_GPU doesn't consume SPIR-V directly,
     # i.e. on Metal (Mac); Vulkan (Linux/Windows) takes our SPIR-V as-is, no translation at runtime.
     SPIRV_CROSS = []
@@ -253,7 +272,7 @@ def main(argv):
         if AVCODEC and os.path.isfile(os.path.join(MT, "ffmpeg", "lib", "libnativ_rawdec.a")): AVCODEC[1:1] = ["-DRECOMP_RAWDEC"]; AVCODEC.insert(3, os.path.join(MT, "ffmpeg", "lib", "libnativ_rawdec.a"))   # (sceAudiodec AAC)
     elif not WIN and pkg_exists("libavcodec", "libavutil"):
         AVCODEC = ["-DRECOMP_AVCODEC"] + out_of(["pkg-config", "--cflags", "--libs", "libavcodec", "libavutil"])
-    elif WIN and os.path.isfile(os.path.join(WT, "ffmpeg", "lib", "libavcodec.a")):   # Windows: the toolchain's static FFmpeg, H.264 and AAC decoders (runtime/platform/win/setup-toolchain.sh)
+    elif WIN and os.path.isfile(os.path.join(WT, "ffmpeg", "lib", "libavcodec.a")):   # Windows: the toolchain's static H.264-only FFmpeg (runtime/platform/win/setup-toolchain.sh)
         AVCODEC = ["-DRECOMP_AVCODEC", "-I" + os.path.join(WT, "ffmpeg", "include"), os.path.join(WT, "ffmpeg", "lib", "libavcodec.a"), os.path.join(WT, "ffmpeg", "lib", "libavutil.a"), "-lole32", "-luser32", "-lbcrypt"]
         # the AAC decoder's raw-frame shim (runtime/platform/ffmpeg/rawdec.c, built by setup-toolchain.sh): sceAudiodec AAC
         if os.path.isfile(os.path.join(WT, "ffmpeg", "lib", "libnativ_rawdec.a")): AVCODEC[1:1] = ["-DRECOMP_RAWDEC"]; AVCODEC.insert(3, os.path.join(WT, "ffmpeg", "lib", "libnativ_rawdec.a"))
@@ -270,14 +289,59 @@ def main(argv):
     # the guest addresses the game's hooks use for this build of it (vitarecomp: the pack's GAME_ADDRS; hooks.c game_addr)
     if ENV.get("RECOMP_GAME_ADDRS"): ENVDEF.append(f'-DRECOMP_GAME_ADDRS="{ENV["RECOMP_GAME_ADDRS"]}"')
     host = [part(f) for f in (
-        "main hle libc events io sysmem apputil fios psarc gxp_index kernel gpu video display input_rec gesture gxm_sony usse usse_spirv gfx_soft gfx_gpu "
-        "gfx_dispatch gfx_coverage gfx_capture guestwatch metrics settings hooks motion window gpulock ngs audiodec stallprof waitstats memscan jpeg camera post "
-        "ssao texpack fsr/fsr net np http sha1 ssl_local online/m2_server online/m2_wire online/m2_rooms online/m2_proxy online/discovery online/basic_msg online/stun online/overlay online/dht online/upnp online/aes128 online/status online/crypto").split()]
+        "main gaps hle modload libc events io sysmem apputil trophy imedlg fios psarc gxp_index kernel gpu video display input_rec gesture gxm_sony usse usse_spirv gfx_soft gfx_gpu "
+        "gfx_dispatch gfx_coverage gfx_capture guestwatch metrics settings hooks motion pad_bind window ui_text gpulock ngs audiodec stallprof waitstats memscan jpeg camera smart post "
+        "ssao texpack fsr/fsr net net_offline netinfo np http sha1 ssl_local online/m2_server online/m2_wire online/m2_rooms online/m2_proxy online/discovery online/basic_msg online/stun online/overlay online/dht online/upnp online/aes128 online/status online/crypto").split()]
     # the game's own host code (vitarecomp: every .c in packs/<title>/), in this game's build alone
     host += [f for f in (ENV.get("RECOMP_PACK_SOURCES") or "").split(os.pathsep) if f]
+    # the runtime's own sources (and the pack's) as cached objects, compiled in parallel with the game's parts -- they were
+    # compiled inside the link command, one after another, on every build: ~60 files, minutes for a one-line change.
+    # Each is rebuilt when it or a header it includes (the compiler's -MMD list) is newer than its object; the objects of
+    # one set of flags (RUN_ENV, GAME_ADDRS, the toolchain ...) in their own folder, OBJ/host_<hash>, so a diagnostic build
+    # with other defaults (BUILD_EXTRA_ENV) never overwrites the play build's
+    lists = EXTRA + SPIRV_CROSS + AVCODEC + CURL
+    hsrcs = PLATFORM + host + [a for a in lists if a.endswith((".c", ".m")) and os.path.isfile(a)]
+    hcflags, lwords, k = FLAGS + ENVDEF + ["-Wall"] + sdl_cflags, [], 0
+    while k < len(lists):   # the libraries' words: compile flags (-D, -I ...) and link words, each in their order
+        a = lists[k]
+        if a in ("-I", "-D", "-isystem", "-include"): hcflags += lists[k:k + 2]; k += 2; continue
+        if a.startswith(("-D", "-I", "-isystem", "-F")) or a == "-pthread": hcflags.append(a)
+        if not a.startswith(("-D", "-I", "-isystem")) and a not in hsrcs: lwords.append(a)
+        k += 1
+    HOSTOBJ = os.path.join(OBJ, "host_" + hashlib.sha1("\0".join([CC] + hcflags).encode()).hexdigest()[:10]); os.makedirs(HOSTOBJ, exist_ok=True)
+    hobjs = []
+    for s in hsrcs:
+        rel = os.path.relpath(s, ROOT)
+        name = rel.replace(os.sep, "__").replace("/", "__") if not rel.startswith("..") else os.path.basename(s) + "_" + hashlib.sha1(s.encode()).hexdigest()[:8]
+        o = os.path.join(HOSTOBJ, os.path.splitext(name)[0] + ".o"); hobjs.append(o)
+        if not os.path.isfile(o) or newer(s, o) or stale_deps(o): work.append(deps_job([CC, "-c"] + hcflags, s, o, CC))
+
+    def compile_one(w):
+        argv, s, o, cc, done = w
+        t0 = time.monotonic()
+        r = subprocess.run(argv)
+        if r.returncode:
+            if done: _rm(argv[-1]); _rm(o + f".d.{os.getpid()}")
+            return s
+        if done: done()
+        say(f"  {cc} {os.path.basename(s)} ({time.monotonic() - t0:.1f} s)")   # seconds: which file is a clean build's long pole
+        return None
+    # the biggest first: a game's largest part (Soul Sacrifice's game_part15.c, 24 MB) is the build's longest compile and
+    # starts at once instead of when the alphabet reaches it
+    work.sort(key=lambda w: -os.path.getsize(w[1]))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as ex: failed = [f for f in ex.map(compile_one, work) if f]
+    if failed: die("build: " + ", ".join(os.path.basename(f) for f in failed) + " did not compile")
     objs = sorted(glob.glob(os.path.join(glob.escape(OBJ), "*.o"))) + sorted(glob.glob(os.path.join(glob.escape(IMGUIOBJ), "*.o")))
-    # (Linux links libm/pthread explicitly; zlib: PSARC archives)
-    link = [CC] + FLAGS + ENVDEF + ["-Wall"] + sdl_cflags + PLATFORM + host + EXTRA + objs + sdl_libs + SPIRV_CROSS + AVCODEC + CURL + CXXLIB + LIBS + ["-o", OUT]
+    # (Linux links libm/pthread explicitly; zlib: PSARC archives) -- objects only: the code generation flags a link
+    # needs (RECOMP_CFLAGS' -flto) and the libraries' link words
+    link = [CC] + CPUFLAGS + extra + ["-w"] + hobjs + lwords + objs + sdl_libs + CXXLIB + LIBS + ["-o", OUT]
+    if sum(len(a) + 3 for a in link) > 30000:   # (Windows' command line holds 32 KiB: a game with its on-demand modules --
+        # LOAD_MODULES, ~90 modules' objects -- failed with WinError 206; the objects go into response files, in order)
+        def rsp(name, args):
+            p = f"{OUT}.{name}.rsp"
+            with open(p, "w", newline="\n") as f: f.write("".join('"' + a.replace("\\", "/").replace('"', '\\"') + '"\n' for a in args))
+            return "@" + p
+        link = [CC] + CPUFLAGS + extra + ["-w", rsp("game", hobjs)] + lwords + [rsp("runtime", objs)] + sdl_libs + CXXLIB + LIBS + ["-o", OUT]
     sys.stdout.flush()
     r = subprocess.run(link)
     if r.returncode: return r.returncode
@@ -289,6 +353,29 @@ def main(argv):
     if MT: beside(os.path.join(MT, "SDL3", "lib", "libSDL3.0.dylib"))   # (what -rpath @executable_path finds)
     say(f"built {OUT}")
     return 0
+
+
+def deps_file(o): return o + ".d"
+
+
+def stale_deps(o):
+    """whether a file the object was compiled from (the compiler's -MMD list: its source and headers) is newer than it;
+    no list: stale"""
+    try: text = open(deps_file(o)).read()
+    except OSError: return True
+    i = text.find(": ")   # (after the target: C:\... has a colon of its own)
+    if i < 0: return True
+    text = re.sub(r"\\\r?\n", " ", text[i + 2:])   # (continued lines; a space in a name is "\ ")
+    return any(newer(d.replace("\\ ", " "), o) for d in re.split(r"(?<!\\)\s+", text) if d)
+
+
+def deps_job(argv, s, o, cc):
+    """a compile into a temporary, with its header list (-MMD), both renamed into place when it succeeds: whole or not at
+    all, so two builds of one title never see half a file"""
+    pid = os.getpid(); _rm(deps_file(o))   # (a compile that dies leaves no list: compiled again next time)
+    def done():
+        os.replace(f"{o}.{pid}", o); os.replace(f"{o}.d.{pid}", deps_file(o))
+    return (argv + [s, "-MMD", "-MF", f"{o}.d.{pid}", "-o", f"{o}.{pid}"], s, o, cc, done)
 
 
 def _rm(p):

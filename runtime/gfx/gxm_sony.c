@@ -16,8 +16,10 @@
 #include <string.h>
 #include <time.h>
 #include "hle.h"
+#include "hle_small.h"
 #include "gfx.h"
 #include "gfx_coverage.h"
+#include "gaps.h"   /* GAPS-01 */
 
 /* RECOMP_LOG_CLIP: each scene's valid region, every sceGxmSetRegionClip and the context clip at a scene's first draw */
 static int clip_log(void) { static int v = -1; if (v < 0) v = getenv("RECOMP_LOG_CLIP") != 0; return v; }
@@ -332,6 +334,55 @@ static int8_t clamp8(int v) { return (int8_t)(v < -128 ? -128 : v > 127 ? 127 : 
 /* a diagnostic switch, read once: getenv walks the environment, and the draw observers called it on every draw (1.4% of
  * Uncharted's main thread, 2026-11-01) */
 static int env_flag(const char *name, int *v) { if (*v < 0) *v = getenv(name) != 0; return *v; }
+/* ---- deferred contexts' command lists (sceGxmBeginCommandList / EndCommandList / ExecuteCommandList). A draw on a
+ * context between Begin and End is the list's, not the frame's: it runs when an immediate context executes the list,
+ * in that context's scene, each time it is executed. Each recording keeps the draws' snapshots (GfxDraw: the state as
+ * the draw saw it, which the list's own buffers keep valid until it runs); End files them under the list's address,
+ * Execute replays them. Drawn at record time instead, Tearaway's lists landed in whatever scene was current, out of order
+ * with the frame's own draws -- its whole picture came out as blocky posterised rings (AUTO-01 TW-3). */
+typedef struct { uint32_t key; GfxDraw *d; int n, cap; } DrawList;
+#define MAX_RECORDING 16
+#define MAX_LISTS 512
+static DrawList recording[MAX_RECORDING], lists[MAX_LISTS];
+static DrawList *dl_find(DrawList *t, int n, uint32_t key, int make) {
+	for (int i = 0; i < n; i++) if (t[i].key == key) return &t[i];
+	if (!make) return 0;
+	for (int i = 0; i < n; i++) if (!t[i].key) { t[i].key = key; t[i].n = 0; return &t[i]; }
+	return 0;
+}
+static void dl_push(DrawList *l, const GfxDraw *d) {
+	if (l->n == l->cap) { int c = l->cap ? 2 * l->cap : 16; GfxDraw *v = realloc(l->d, sizeof *v * (size_t)c); if (!v) return; l->d = v; l->cap = c; }
+	l->d[l->n++] = *d;
+}
+static void o_begin_command_list(Cpu *c) {   /* (deferred context): its draws from here on are recorded */
+	DrawList *r = dl_find(recording, MAX_RECORDING, A0, 1);
+	if (r) r->n = 0;
+	else { static int warned; if (!warned++) fprintf(stderr, "    gxm: more than %d deferred contexts recording: drawn at once\n", MAX_RECORDING); }
+}
+static void o_end_command_list(Cpu *c) {   /* (deferred context, list): the recording becomes that list's (a list re-recorded is replaced) */
+	DrawList *r = dl_find(recording, MAX_RECORDING, A0, 0);
+	if (!r) return;
+	DrawList *l = dl_find(lists, MAX_LISTS, A1, 1);
+	if (l) { DrawList t = *l; *l = *r; l->key = A1; *r = t; r->key = 0; r->n = 0; }   /* (swap the buffers: no copy) */
+	else { static int warned; if (!warned++) fprintf(stderr, "    gxm: more than %d command lists: one dropped\n", MAX_LISTS); r->key = 0; r->n = 0; }
+}
+/* a draw's final counter: a SET test is written 1 here for every renderer unless RECOMP_VIS_SET=gpu|real (see draw), else
+ * the renderer counts it at its address */
+static void vis_resolve(GfxDraw *d) {
+	if (!d->vis_addr) { d->vis_set = 0; return; }
+	static int stub = -1; if (stub < 0) { const char *e = getenv("RECOMP_VIS_SET"); stub = !(e && (!strcmp(e, "gpu") || !strcmp(e, "real"))); }
+	if (d->vis_set && stub) { gfx_vis_write(d->vis_addr, 1); d->vis_addr = 0; d->vis_set = 0; }
+}
+static void o_execute_command_list(Cpu *c) {   /* (immediate context, list): its draws, in order, in this scene */
+	DrawList *l = dl_find(lists, MAX_LISTS, A1, 0);
+	const uint32_t buf = vis[vis_slot(A0)].buf;
+	for (int i = 0; l && i < l->n; i++) {
+		if (!(l->d[i].vis_set & HLE_VIS_DEFERRED)) { gfx_draw(&l->d[i]); continue; }
+		GfxDraw d = l->d[i]; uint32_t a = d.vis_addr; uint8_t f = d.vis_set;   /* (PTW-VIS) its counter in this context's buffer; the recording stays relative for the next execute */
+		hle_vis_execute(buf, &a, &f); d.vis_addr = a; d.vis_set = f; vis_resolve(&d);
+		gfx_draw(&d);
+	}
+}
 static void draw(uint32_t cx, const uint32_t *stream, uint32_t prim, uint32_t index_format, uint32_t indices, uint32_t count) {
 	GfxDraw d;
 	memset(&d, 0, sizeof d);
@@ -436,11 +487,13 @@ static void draw(uint32_t cx, const uint32_t *stream, uint32_t prim, uint32_t in
 	 * counts aren't right yet -- with them on (6eecbdc, 2026-10-21) Killzone hid a door and other things in plain view, and
 	 * two consecutive frames of one view disagreed on ~20 of 73 boxes (a 1.12 capture, frame_4802: scenes 6 and 12). */
 	{ int i = dbias_slot(cx); d.depth_bias_factor = clamp8(dbias[i].factor); d.depth_bias_units = clamp8(dbias[i].units); }
-	{ int i = vis_slot(cx); if (vis[i].on && vis[i].buf) {
-		static int stub = -1; if (stub < 0) { const char *e = getenv("RECOMP_VIS_SET"); stub = !(e && (!strcmp(e, "gpu") || !strcmp(e, "real"))); }
-		if (vis[i].set && stub) gfx_vis_write(vis[i].buf + 4u * vis[i].index, 1);
-		else { d.vis_addr = vis[i].buf + 4u * vis[i].index; d.vis_set = (uint8_t)vis[i].set; } } }
-	gfx_draw(&d);
+	DrawList *rec = dl_find(recording, MAX_RECORDING, cx, 0);
+	/* (PTW-VIS) a deferred context has no visibility buffer of its own: its recorded draws keep the counter's offset and
+	 * count into the executing immediate context's buffer (hle_small.h hle_vis_record / hle_vis_execute, vis_resolve) */
+	{ int i = vis_slot(cx); uint32_t a; uint8_t f;
+	  if (hle_vis_record(vis[i].on, vis[i].buf, vis[i].index, vis[i].set, rec != 0, &a, &f)) { d.vis_addr = a; d.vis_set = f; if (!(f & HLE_VIS_DEFERRED)) vis_resolve(&d); } }
+	if (rec) dl_push(rec, &d);   /* a deferred context's draw: its command list's, run when the list is executed */
+	else gfx_draw(&d);
 	vis_record(cx, front);
 }
 
@@ -655,6 +708,7 @@ static uint32_t transfer_index(uint32_t x, uint32_t y, int32_t stride, int bytes
 	return y * (bytes ? (uint32_t)(stride / bytes) : 0) + x;   /* SCE_GXM_TRANSFER_LINEAR */
 }
 static void transfer_log_once(const char *op, uint32_t fmt, uint32_t type, uint32_t w, uint32_t h, int ok) {
+	if (!ok) gap(GAP_TRANSFER, fmt, op);   /* GAPS-01: key = the format */
 	struct Seen { const char *op; uint32_t fmt, type; }; static struct Seen seen[64]; static int nseen;
 	for (int i = 0; i < nseen; i++) if (!strcmp(seen[i].op, op) && seen[i].fmt == fmt && seen[i].type == type) return;
 	if (nseen < 64) { seen[nseen].op = op; seen[nseen].fmt = fmt; seen[nseen].type = type; nseen++; }
@@ -817,6 +871,7 @@ static const HleEntry observers[] = {
 	{"sceGxmBeginScene", o_begin_scene}, {"sceGxmBeginSceneEx", o_begin_scene_ex}, {"sceGxmSetRegionClip", o_set_region_clip}, {"sceGxmEndScene", o_end_scene},
 	{"sceGxmTransferCopy", o_transfer_copy}, {"sceGxmTransferDownscale", o_transfer_downscale}, {"sceGxmTransferFill", o_transfer_fill},
 	{"sceGxmDisplayQueueAddEntry", o_display_queue},
+	{"sceGxmBeginCommandList", o_begin_command_list}, {"sceGxmEndCommandList", o_end_command_list}, {"sceGxmExecuteCommandList", o_execute_command_list},
 	{"sceGxmSetVisibilityBuffer", o_vis_buffer}, {"sceGxmSetFrontVisibilityTestEnable", o_vis_enable}, {"sceGxmSetFrontVisibilityTestIndex", o_vis_index}, {"sceGxmSetFrontVisibilityTestOp", o_vis_op}, {"sceGxmSetFrontDepthBias", o_depth_bias},
 	{0, 0},
 };

@@ -1,9 +1,9 @@
-/* input_rec.h -- `# nativ-input v2`: the pure recording/replay format logic.
+/* input_rec.h -- `# nativ-input v2`: the pure recording/replay format logic (N02g-2/N02g-4).
  *
  * Encode, parse, validate and the replay's frame lookup, with no runtime or SDL dependency so
  * runtime/tests/input_rec_test.c can drive it directly. display.c uses it at one point only: the
  * delivered pad state in ctrl_peek (what guest code actually reads, after window mapping,
- * RECOMP_INPUT script and replay). Design and evidence: docs/input-recording.md.
+ * RECOMP_INPUT script and replay). Design and evidence: docs/input-recording.md (N02g-0/N02g-1).
  *
  * File shape (v2): a version header, `#` comments, and one `C` row per delivered-input CHANGE
  * (a held state adds no row -- the run-length encoding; the span row -> next row is the hold).
@@ -46,7 +46,7 @@ typedef struct {
 	int          version;    /* 0 = no header (legacy), else INPUT_REC_VERSION */
 	int          rows;       /* rows added */
 	int          lines;      /* lines examined */
-	uint64_t     hash;       /* FNV-1a over the rows added (the trace identity) */
+	uint64_t     hash;       /* FNV-1a over the rows added (the trace identity, N02g-7) */
 } InputRecLoader;
 
 /* the file's first line: a version header -> 1 with *version set; unknown nativ-input version ->
@@ -93,7 +93,7 @@ int  input_rec_latest_ms_at_or_before(const InputRecRow *rows, int n, uint64_t m
  * are served at this frame, so they stay in step with the controller rows */
 uint64_t input_rec_frame_at_ms(const InputRecRow *rows, int n, uint64_t ms);
 
-/* --- replay checkpoint fingerprint -------------------------------------------------
+/* --- replay checkpoint fingerprint (N02g-7) -------------------------------------------------
  * A small stable, RUNTIME-OBSERVABLE identity of what a replay run actually did: the loaded
  * trace's format/content, and how far the run presented frames at the checkpoint. Compared
  * strictly on the stable fields; an unreached checkpoint reports unknown rather than a mismatch

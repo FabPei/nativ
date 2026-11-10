@@ -1,4 +1,4 @@
-/* monitor_test.c -- fixture: the exclusive monitor's semantics across the runtime's own
+/* monitor_test.c -- P0b-2 fixture: the exclusive monitor's semantics across the runtime's own
  * context-switch points and the HLE import boundary (the ULT worker-start race's mechanism).
  *
  * Case 3 (the fiber switch) is the fail-before / pass-after case: a strex after a fiber
@@ -76,7 +76,7 @@ static void test_plain(void) {
 
 /* ---- case 2: the HLE import boundary with NO context switch inside keeps the monitor (the
  * import pair kernel.c exposes to main.c's dispatch; the unconditional drop at the dispatch is
- * a separate suspect and is measured separately in the native runs) */
+ * the P0b-1 suspect A and is measured separately in the native runs) */
 static void test_import_pair(void) {
 	uint32_t w = word();
 	LDREX(w);

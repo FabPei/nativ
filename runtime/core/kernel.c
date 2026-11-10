@@ -128,6 +128,7 @@ static Thread main_thread = { .uid = 0x40010003, .name = "main", .init_prio = 16
 static pthread_mutex_t klock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t kcond = PTHREAD_COND_INITIALIZER;   /* thread ends */
 static __thread uint32_t cur_tid = 0x40010003;              /* the main thread's */
+uint32_t kernel_current_tid(void) { return cur_tid; }   /* the guest thread running here (main.c's import log) */
 /* how far through the lwmutex handler the thread is; plain stores (no I/O, no allocation, no extra
  * locks) read only by the bounded stall dump (kernel_report_pcs). The quiet hot path has no other
  * observability -- the per-call fprintf phase traces exist only in the opt-in verbose mode
@@ -145,7 +146,7 @@ static uint32_t klock_held;                                 /* whose handler hol
 static int lwm_count_on;                                    /* enabled once before guest threads start */
 static void klock_take(void) { pthread_mutex_lock(&klock); klock_held = cur_tid; }
 static void klock_give(void) { klock_held = 0; pthread_mutex_unlock(&klock); }
-/* kernel-object event counts, exact and always on: one count per
+/* kernel-object event counts (N01b-7's A/B evidence), exact and always on: one count per
  * SignalSema/SetEvent call and object -- the loader's request-completion gates and the render-start
  * event counted even in a quiet run, whose log has no import lines to grep. Printed by the bounded
  * stall dump and the exit summary (kernel_report_obj_counts). */
@@ -292,7 +293,7 @@ static void sched_wait_turn(Thread *t) {   /* sched_m held */
 	extern __thread int recomp_excl_valid;
 	extern __thread uint32_t recomp_switch_seq; extern __thread int recomp_excl_drop_reason;
 	recomp_excl_valid = 0;   /* the thread is about to yield the CPU: the firmware's scheduler clears the exclusive monitor on a context switch, so a strex after this point must fail and its loop retry (a stale ldrex value must never publish) */
-	recomp_excl_drop_reason = 2; recomp_switch_seq++;   /* this drop site's tag + the switch sequence rt.h's staleness check compares */
+	recomp_excl_drop_reason = 2; recomp_switch_seq++;   /* P0b diag: this drop site's tag + the switch sequence rt.h's staleness check compares */
 	while (t->s_state != S_RUN) pthread_cond_wait(&t->s_cv, &sched_m);
 }
 static void sched_get_slot(Thread *t, int front) {   /* sched_m held: a free slot it may use (nobody waiting can use it), else the list */
@@ -565,6 +566,7 @@ static void *thread_main(void *p) {
 #endif
 		if (waitstats_on()) waitstats_name(t->name);
 	}
+	plat_thread_guard();   /* room for the fault handlers on a stack overflow (platform.h) */
 	recomp_runfast();   /* FPCR is per host thread */
 	cur_tid = t->uid; cur_thread = t;
 	extern uint32_t tls_block(void);
@@ -590,8 +592,17 @@ static void spawn(Thread *t, Cpu *n) {
 static void h_start_thread(Cpu *c) {   /* (uid, arg size, arg block): the block is copied to the new stack */
 	Thread *t = thread_of(A0);
 	if (!t || t == &main_thread) { RET(E_UNKNOWN_THREAD_ID); return; }
-	if (t->started) { RET(E_NOT_DORMANT); return; }
-	Cpu *n = calloc(1, sizeof *n);
+	/* NOT_DORMANT only while it runs: a thread that ended (returned or sceKernelExitThread) is DORMANT again and
+	 * starts anew, as the firmware's does (a game's worker thread started once per job; refused, every job after the
+	 * first was dropped -- NIGHT-01 batch B). The old host thread is past thread_done and touches nothing of t (its
+	 * Cpu block is reused here) */
+	klock_take();
+	const int running = t->started && !t->done;
+	if (!running && t->started) { t->done = 0; t->status = 0; t->signal_pending = 0; t->wait_type = t->wait_id = 0; t->fiber = 0; t->fgo = t->fexit = 0; }
+	klock_give();
+	if (running) { RET(E_NOT_DORMANT); return; }
+	Cpu *n = t->cpu ? t->cpu : calloc(1, sizeof *n);
+	memset(n, 0, sizeof *n);
 	uint32_t sp = t->stack + t->stack_size - 16, size = A1;
 	if (size && A2) { sp = (sp - size) & ~7u; memcpy(G(sp), G(A2), size); }
 	n->r[0] = size; n->r[1] = size && A2 ? sp : 0;
@@ -1310,6 +1321,30 @@ static void h_evf_info(Cpu *c) {   /* (uid, *SceKernelEventFlagInfo 0x38) */
 	RET(0);
 }
 
+/* ---- sceKernelGetThreadmgrUIDClass(uid): the kind of thread-manager object a uid names. A game's generic "wait for
+ * this object" (a Win32 WaitForSingleObject port) asks it and then calls the kind's own wait: one title waits for a
+ * thread's end on class 1 and for a simple event on class 0xd. Unimplemented, the stub's 0 matched no kind, the wrapper
+ * waited for nothing and reported the object signalled at once -- the title's start-up hand-shakes all ran ahead and it
+ * sat behind a cleared screen. The numbers: thread 1 (VitaSDK SceKernelIdListType SCE_KERNEL_TMID_Thread, and that
+ * title's own check), simple event 0xd (that title's check, written against the hardware), semaphore 2 / event flag 3
+ * (VitaSDK's list, which follows the PSP's). Other kinds have no known number: 0 as before, reported once each. */
+static void h_uid_class(Cpu *c) {
+	const uint32_t uid = A0;
+	if (uid && thread_of(uid)) { RET(1); return; }
+	static const struct { int kind; uint32_t cls; const char *name; } k[] = {
+		{SEVENT, 0xd, "simple event"}, {SEMA, 2, "semaphore"}, {EVF, 3, "event flag"},
+		{MUTEX, 0, "mutex"}, {LWMUTEX, 0, "lwmutex"}, {LWCOND, 0, "lwcond"}, {KCOND, 0, "cond"}, {RWLOCK, 0, "rwlock"},
+		{MSGPIPE, 0, "msgpipe"}, {CALLBACK, 0, "callback"}, {TIMER, 0, "timer"} };
+	for (size_t i = 0; i < sizeof k / sizeof *k; i++) {
+		if (!by_uid(uid, k[i].kind)) continue;
+		if (!k[i].cls) {
+			static uint32_t told; if (!(told & (1u << k[i].kind))) { told |= 1u << k[i].kind; fprintf(stderr, "    sceKernelGetThreadmgrUIDClass: %s %#x -- its class number is not known, returns 0\n", k[i].name, uid); }
+		}
+		RET(k[i].cls); return;
+	}
+	static int told_unknown; if (!told_unknown) { told_unknown = 1; fprintf(stderr, "    sceKernelGetThreadmgrUIDClass: %#x is no thread-manager object here, returns 0\n", uid); }
+	RET(0);
+}
 /* ---- simple events (sceKernelCreateSimpleEvent: name, attr, initial pattern, opt): a pattern a
  * thread waits on with WaitEvent (any of its bits), which hands back the whole pattern and the
  * 64-bit user data of the last SetEvent, and clears the bits it waited for only when the event was
@@ -1337,6 +1372,13 @@ static uint32_t sevent_wait(Obj *o, uint32_t bits, uint32_t out, uint32_t udata,
 }
 static void h_wait_sevent(Cpu *c) { Obj *o = by_uid(A0, SEVENT); RET(o ? sevent_wait(o, A1, A2, A3, STK(0), 0) : E_UNKNOWN_EVENT_ID); }   /* (uid, waitPattern, *resultPattern, *userData, *timeout) */
 static void h_poll_sevent(Cpu *c) { Obj *o = by_uid(A0, SEVENT); RET(o ? sevent_wait(o, A1, A2, A3, 0, 1) : E_UNKNOWN_EVENT_ID); }
+/* (HLE-LIB-03) sceKernelGetEventPattern(uid, *pattern): the simple event's pattern now, nothing cleared */
+static void h_get_sevent_pattern(Cpu *c) {
+	Obj *o = by_uid(A0, SEVENT); if (!o) { RET(E_UNKNOWN_EVENT_ID); return; }
+	pthread_mutex_lock(&o->m); const uint32_t b = o->bits; pthread_mutex_unlock(&o->m);
+	if (A1) WR32(A1, b);
+	RET(0);
+}
 static void h_set_sevent(Cpu *c) {   /* (uid, setPattern, userData (r2:r3)) */
 	objev_count(A0);
 	Obj *o = by_uid(A0, SEVENT); if (!o) { RET(E_UNKNOWN_EVENT_ID); return; }
@@ -1452,7 +1494,7 @@ void kernel_report_pcs(void) {
 		if (lwm_count_on) fprintf(stderr, "  stall: lwm-lookup-count tid %#x entered %llu returned %llu\n", t->uid,
 		    (unsigned long long)__atomic_load_n(&t->lw_lookup_enter, __ATOMIC_RELAXED),
 		    (unsigned long long)__atomic_load_n(&t->lw_lookup_return, __ATOMIC_RELAXED));
-		if (!t->in_hle) {   /* the guest call-frame chain (each frame's saved lr) for threads in pure guest code */
+		if (!t->in_hle) {   /* N01b-12 diagnostic: the guest call-frame chain (each frame's saved lr) for threads in pure guest code */
 			fprintf(stderr, "  stall: stack tid %#x", t->uid);
 			for (int w = 0; w < 40; w++) fprintf(stderr, " %08x", ((uint32_t *)G(t->cpu->r[13]))[w]);
 			fprintf(stderr, "\n");
@@ -1724,11 +1766,11 @@ static void h_msgpipe_info(Cpu *c) {   /* (uid, *SceKernelMppInfo 0x3c) */
  * over its own Cpu and the guest stack the game supplied, parked on a handoff while it isn't the
  * one running: the same way the host runs ULT ulthreads. A fiber with no context (addrContext 0)
  * starts from its entry at every Run, as the SDK's does; its stack is its OWN private guest
- * memory: the game cannot observe a context-less fiber's stack location (sceFiberInfo
+ * memory (P0c-3): the game cannot observe a context-less fiber's stack location (sceFiberInfo
  * reports addrContext/sizeContext 0), and the runtime's old placement -- a 512-byte carve below
  * the caller's sp -- put the fiber's frames inside a neighbouring strand's live stack region,
- * where a concurrent chain clobbered its saved registers (the phantom parent-set wrote
- * from a smashed saved r4). The game's SceFiber (128
+ * where a concurrent chain clobbered its saved registers (P0c-1: the phantom parent-set wrote
+ * from a smashed saved r4; measured p0c1fu1/run-3 seq 15372-15448). The game's SceFiber (128
  * bytes it owns) holds a tag and the host object's address. */
 typedef struct Fiber {
 	uint32_t addr;                    /* the guest SceFiber */
@@ -1756,8 +1798,8 @@ static void fiber_identity(Fiber *f) {   /* the fiber's host thread is the threa
 }
 static void fiber_park(Fiber *f) {   /* flock held: until a Run/Switch resumes it; a finalize ends the host thread (its guest stack is abandoned) */
 	extern __thread uint32_t recomp_switch_seq; extern __thread int recomp_excl_valid; extern __thread int recomp_excl_drop_reason;
-	recomp_switch_seq++;   /* a fiber context switch -- rt.h's staleness check flags an strex that succeeds across it (the firmware's monitor would have been cleared) */
-	recomp_excl_valid = 0; recomp_excl_drop_reason = 3;   /* the firmware's exclusive monitor does not survive a context switch (fiber or thread) -- a strex after this park must fail and its loop retry (monitor_test case 3 fail-before/pass-after) */
+	recomp_switch_seq++;   /* P0b diag: a fiber context switch -- rt.h's staleness check flags an strex that succeeds across it (the firmware's monitor would have been cleared) */
+	recomp_excl_valid = 0; recomp_excl_drop_reason = 3;   /* P0b-2 fix B: the firmware's exclusive monitor does not survive a context switch (fiber or thread) -- a strex after this park must fail and its loop retry (monitor_test case 3 fail-before/pass-after) */
 	while (!f->go && !f->finalize) pthread_cond_wait(&f->cv, &flock);
 	f->go = 0;
 	if (f->finalize) { pthread_mutex_unlock(&flock); pthread_cond_destroy(&f->cv); free(f); pthread_exit(0); }
@@ -1774,6 +1816,7 @@ static void *fiber_main(void *p) {
 #endif
 	  if (waitstats_on()) waitstats_name(f->name);
 	}
+	plat_thread_guard();
 	recomp_runfast();
 	pthread_mutex_lock(&flock);
 	fiber_identity(f);
@@ -1825,7 +1868,7 @@ static uint32_t fiber_init(Cpu *c, uint32_t fiber, uint32_t name, uint32_t entry
 }
 static void h_fiber_init(Cpu *c) { RET(fiber_init(c, A0, A1, A2, A3, STK(0), STK(1))); }   /* (fiber, name, entry, argOnInitialize, addrContext, sizeContext, params[, sdk version]) */
 static void h_fiber_opt_param_init(Cpu *c) { if (!A0) { RET(E_FIBER_NULL); return; } memset(G(A0), 0, 128); RET(0); }
-static void fiber_stack_private(Fiber *f) {   /* a context-less fiber's stack is its own guest memory, not a carve below the caller */
+static void fiber_stack_private(Fiber *f) {   /* P0c-3: a context-less fiber's stack is its own guest memory, not a carve below the caller */
 	if (f->sp0) return;                     /* the restart copies the struct: the incarnation stack is reused */
 	f->sp0 = (guest_alloc(0x10000, 16) + 0x10000) & ~7u;
 }
@@ -1874,7 +1917,7 @@ static void h_fiber_switch(Cpu *c) {   /* (fiber, argOnRunTo, *argOnRun): from a
 	if (g->state == F_RUNNING) { pthread_mutex_unlock(&flock); RET(E_FIBER_STATE); return; }
 	if (!g->ctx) {
 		if (g->started) { Fiber *old = g; g = calloc(1, sizeof *g); *g = *old; g->started = g->go = 0; pthread_cond_init(&g->cv, 0); WR64(g->addr + 8, (uint64_t)(uintptr_t)g); old->finalize = 1; pthread_cond_broadcast(&old->cv); }
-		fiber_stack_private(g);   /* its own guest stack, not a carve below this fiber's sp */
+		fiber_stack_private(g);   /* P0c-3: its own guest stack, not a carve below this fiber's sp */
 	}
 	f->state = F_SUSPENDED; f->run_arg_p = A2;
 	fiber_resume(g, f->thread, A1);
@@ -1890,22 +1933,22 @@ static void h_fiber_get_self(Cpu *c) { if (!A0) { RET(E_FIBER_NULL); return; } W
 static void fiber_attach_context(Fiber *g, uint32_t a, uint32_t sz) {
 	if (a && sz) { g->ctx = a; g->ctx_size = sz; g->sp0 = (a + sz) & ~7u; }
 }
-/* the store-trace window (rt.h's WR accessors log into it): the worker's CAS state word. */
+/* P0b store-trace window (rt.h's WR accessors log into it): the worker's CAS state word. */
 uint32_t recomp_watch_lo, recomp_watch_hi;
 void recomp_watch_write(uint32_t a, uint32_t v, int width) {
-	extern const char *recomp_cur_tname(void);
-	fprintf(stderr, "    watch write ea=%#x val=%#x w=%d pc=%#x thread=%s fib=%#x hf=%p ret=%p\n",
-		a, v, width, cur_fiber ? cur_fiber->cpu.r[15] : (SELF() && SELF()->cpu ? SELF()->cpu->r[15] : 0), recomp_cur_tname(),
+	extern const char *recomp_cur_tname(void); extern __thread uint32_t recomp_last_pc;
+	fprintf(stderr, "    watch write ea=%#x val=%#x w=%d pc=%#x last=%#x tid=%#x thread=%s fib=%#x hf=%p ret=%p\n",
+		a, v, width, cur_fiber ? cur_fiber->cpu.r[15] : (SELF() && SELF()->cpu ? SELF()->cpu->r[15] : 0), recomp_last_pc, cur_tid, recomp_cur_tname(),
 		cur_fiber ? cur_fiber->addr : 0, (void *)cur_fiber, __builtin_return_address(0));
 }
 
-/* the ULT creation/parent-ownership chain trace (RECOMP_ULT_TRACE=1; compiled in always,
+/* P0c-1: the ULT creation/parent-ownership chain trace (RECOMP_ULT_TRACE=1; compiled in always,
  * quiet when the env is unset). The generated libult code's spawn/adopt/parent-write sites call
  * this with an event tag and four values (per site's meaning: adopt carries the thread's current
  * parent in d, parent-* writers the value they write in b). The record table remembers each
  * object's parent as last WRITTEN by a traced writer and flags any observed change with no
  * writer in between (ULT-DIVERGENCE: the "corrupted parent" discriminator -- a producer outside
- * the traced chain, e.g. a host-side bulk copy or a guest link write). Logged per event:
+ * the traced chain, e.g. a host-side bulk copy or the fn_8c0071ae link write). Logged per event:
  * the host thread (name/uid), its fiber and scheduler slot state at the moment of the event. */
 static int ult_tr_on(void) { static int on = -1; if (on < 0) on = getenv("RECOMP_ULT_TRACE") != 0; return on; }
 static void ult_tr_arm_watch(void) {  /* RECOMP_WATCH_FIXED=<addr>,<len>: write-watch on a fixed window */
@@ -1920,6 +1963,7 @@ static void ult_tr_arm_watch(void) {  /* RECOMP_WATCH_FIXED=<addr>,<len>: write-
 		fprintf(stderr, "watch-fixed lo=%#x hi=%#x\n", recomp_watch_lo, recomp_watch_hi);
 	}
 }
+void recomp_watch_fixed_arm(void) { ult_tr_arm_watch(); }   /* main.c, at start: the window watched from the first instruction */
 #define ULT_TR_MAX 96
 static struct { uint32_t obj, parent; unsigned seq; const char *writer; } ult_tr_objs[ULT_TR_MAX];
 static unsigned ult_tr_seq;
@@ -1971,7 +2015,7 @@ static void h_fiber_attach_and_switch(Cpu *c) {   /* (fiber, addrContext, sizeCo
 			fprintf(stderr, "\n    desc@%#x:", dp);
 			if (dp > 0x10000) { for (int i = 0; i < 12; i++) fprintf(stderr, " %08x", RD32(dp + 4 * i));
 				uint32_t own = RD32(dp); fprintf(stderr, "  cas@%#x=%08x", own + 0xa0, own > 0x10000 ? RD32(own + 0xa0) : 0);
-				if (own > 0x10000) { recomp_watch_lo = own + 0xa0; recomp_watch_hi = 8; } } }   /* watch the CAS word from here on */
+				if (own > 0x10000) { recomp_watch_lo = own + 0xa0; recomp_watch_hi = 8; } } }   /* P0b: watch the CAS word from here on */
 		fprintf(stderr, "  [ctx %#x size %#x arg %#x]\n", A1, A2, A3);
 	}
 	if (!A0) { RET(E_FIBER_NULL); return; }
@@ -1981,9 +2025,9 @@ static void h_fiber_attach_and_switch(Cpu *c) {   /* (fiber, addrContext, sizeCo
 	if (!g) {   /* a fresh SceFiber: the attach CREATES the worker fiber and switches into it.
 	             * The reference asserts !fiber->addrContext here and runs the fiber at its entry
 	             * (SceFiberEntry(argOnInitialize, argOnRun)); the guest's struct is blank at this
-	             * point (measured), so the entry comes from the spawning fiber itself --
-	             * the ULT worker is another incarnation of the same entry shape (its
-	             * scheduler fibers all run the same entry). */
+	             * point (measured, exp 7), so the entry comes from the spawning fiber itself --
+	             * the ULT worker is another incarnation of the same entry shape (the 8 f0
+	             * scheduler fibers all run fn_8c009536(obj); exp 8). */
 		if (!A1 || !A2 || (A2 & 7) || (A1 & 7) || !f->entry) { pthread_mutex_unlock(&flock); RET(E_FIBER_INVALID); return; }
 		g = calloc(1, sizeof *g);
 		pthread_cond_init(&g->cv, 0);
@@ -2186,8 +2230,9 @@ const HleEntry hle_kernel[] = {
 	{"sceKernelCreateEventFlag", h_create_evf}, {"sceKernelWaitEventFlag", h_wait_evf}, {"sceKernelWaitEventFlagCB", h_wait_evf_cb},
 	{"sceKernelPollEventFlag", h_poll_evf}, {"sceKernelSetEventFlag", h_set_evf}, {"sceKernelClearEventFlag", h_clear_evf},
 	{"sceKernelDeleteEventFlag", h_delete_evf}, {"sceKernelGetEventFlagInfo", h_evf_info},
+	{"sceKernelGetThreadmgrUIDClass", h_uid_class},
 	{"sceKernelCreateSimpleEvent", h_create_sevent}, {"sceKernelDeleteSimpleEvent", h_delete_sevent}, {"sceKernelWaitEvent", h_wait_sevent}, {"sceKernelWaitEventCB", h_wait_sevent_cb},
-	{"sceKernelPollEvent", h_poll_sevent}, {"sceKernelSetEvent", h_set_sevent}, {"sceKernelClearEvent", h_clear_sevent},
+	{"sceKernelPollEvent", h_poll_sevent}, {"sceKernelSetEvent", h_set_sevent}, {"sceKernelGetEventPattern", h_get_sevent_pattern}, {"sceKernelClearEvent", h_clear_sevent},
 	{"sceKernelCreateMutex", h_create_mutex}, {"sceKernelLockMutex", h_lock_mutex}, {"sceKernelLockMutexCB", h_lock_mutex_cb},
 	{"sceKernelTryLockMutex", h_trylock_mutex}, {"sceKernelUnlockMutex", h_unlock_mutex}, {"sceKernelDeleteMutex", h_delete_mutex}, {"sceKernelGetMutexInfo", h_mutex_info},
 	{"sceKernelCreateCond", h_create_cond}, {"sceKernelWaitCond", h_wait_cond}, {"sceKernelWaitCondCB", h_wait_cond_cb}, {"sceKernelSignalCond", h_signal_cond},

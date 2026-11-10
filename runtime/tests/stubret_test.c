@@ -1,8 +1,8 @@
 /* stubret_test.c -- what an unimplemented import returns (runtime/core/stubret.h). The device/network families the
  * host doesn't emulate answer their "not initialised" error for operational calls, but their set-up/tear-down calls
  * and every common dialog's GetStatus answer 0: a dialog the host never opens is SCE_COMMON_DIALOG_STATUS_NONE.
- * sceNpMessageDialogGetStatus / sceNpProfileDialogGetStatus used to answer 0x80550002, which a game polling every
- * dialog before opening its own read as "a dialog is still running" -- its save-data dialog never opened.
+ * sceNpMessageDialogGetStatus / sceNpProfileDialogGetStatus used to answer 0x80550002, which Soul Sacrifice Delta
+ * read as "a dialog is still running" every frame and so never opened its save-data dialog (measured 2026-11-05).
  *
  * The dialog cases are the fail-before / pass-after cases; -DSTUBRET_UNDER_TEST='"<file>"' compiles the fixture
  * against another copy of the policy (the pre-fix rules) for the fail-before run. The rest pin the existing policy.
@@ -39,9 +39,19 @@ int main(void) {
 	check("sceNpMessageDialogInit", 0, 0);
 	check("sceNpMessageDialogTerm", 0, 0);
 	check("sceNpRegisterServiceStateCallback", 0, 0);
+	/* set-up too (NIGHT-01 batch B): naming the title to the web API right after its Initialize -- a game module
+	 * asserted on the family error and stopped at start-up */
+	check("sceNpWebApiSetNpTitleId", 0, 0);
+	check("sceNpSetNpTitleId", 0, 0);
 	check("sceImeUpdate", 0, 0);
 	check("sceNpManagerGetAccountRegion", 1, 0);
 
+	/* (AUTO-01 LBP-8) an offline sceNetEpollWait waits out its timeout (capped at 1 s); other stubs return at once */
+	{ struct { const char *n; uint32_t a3; int zero; uint32_t want; } w[] = {
+		{"sceNetEpollWait", 100000u, 0, 100000u}, {"sceNetEpollWait", 0xffffffffu, 0, 1000000u}, {"sceNetEpollWait", 5000000u, 0, 1000000u},
+		{"sceNetEpollWait", 0, 0, 0}, {"sceNetEpollWait", 100000u, 1, 0}, {"sceNetEpollControl", 100000u, 0, 0}, {"sceNetRecvfrom", 100000u, 0, 0} };
+	  for (unsigned i = 0; i < sizeof w / sizeof *w; i++) { uint32_t got = stub_wait_us(w[i].n, w[i].a3, w[i].zero);
+		printf("wait %-34s a3=%#010x zero=%d -> %u us %s\n", w[i].n, w[i].a3, w[i].zero, got, got == w[i].want ? "ok" : "FAILED"); if (got != w[i].want) fails++; } }
 	if (fails) { printf("%d checks FAILED\n", fails); return 1; }
 	printf("all passed\n");
 	return 0;

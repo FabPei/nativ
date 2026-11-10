@@ -31,7 +31,15 @@ typedef void (*GuestFn)(Cpu *);
  * frame to return to (main.c's recomp_longjmp) */
 typedef struct RecompJmp { uint32_t guest, r[16], fpscr; uint64_t d[8]; jmp_buf host; } RecompJmp;
 extern RecompJmp *recomp_setjmp_begin(Cpu *c);
+/* the guest arena: set once by the host (main.c, plat_reserve) before any guest code runs. Generated code
+ * (RECOMP_GUEST_CODE, defined by build.py for the game and module parts only) sees it as const: else every
+ * guest call and every WR* watch slow path makes the compiler reload it and merge the copies with a phi at each
+ * join (a 46k-line function: 4,472 loads of it and 63,596 such phis; const: 3 loads, -40 % compile time, BUILD-03) */
+#ifdef RECOMP_GUEST_CODE
+extern uint8_t *const recomp_mem;
+#else
 extern uint8_t *recomp_mem;
+#endif
 /* provided by the host: a call to a guest address that isn't recompiled code (an import) */
 extern void recomp_call_external(Cpu *c, uint32_t addr);
 extern void recomp_unimplemented(Cpu *c, uint32_t addr);
@@ -43,7 +51,7 @@ extern const char *recomp_import_name(uint32_t addr);   /* the import a stub add
  * cache a load (a spin-wait would never end) nor drop or merge stores -- the same requirement
  * vita-recomp-kit documents in its armrecomp.h rdv/wrv accessors. These are typed volatile
  * accesses, not memcpy: memcpy lets the optimizer cache and hoist. Bulk NEON copies still go
- * through memcpy on G(a). */
+ * through memcpy on G(a). (N01b-10 difference 1.) */
 static inline uint32_t RD32(uint32_t a) { return *(volatile uint32_t *)(G(a)); }
 static inline uint16_t RD16(uint32_t a) { return *(volatile uint16_t *)(G(a)); }
 static inline uint8_t RD8(uint32_t a) { return *(volatile uint8_t *)(G(a)); }
@@ -53,7 +61,7 @@ static inline uint32_t RD32A(uint32_t a) { if (a & 3) { uint32_t v = RD32(a); __
 static inline uint16_t RD16A(uint32_t a) { if (a & 1) { uint16_t v = RD16(a); __atomic_thread_fence(__ATOMIC_ACQUIRE); return v; } return __atomic_load_n((uint16_t *)G(a), __ATOMIC_ACQUIRE); }
 static inline uint8_t RD8A(uint32_t a) { return __atomic_load_n(G(a), __ATOMIC_ACQUIRE); }
 /* a store-trace window [lo, lo+hi): every WR8/16/32 into it logs value/width/thread/return-address
- * (who writes the worker's CAS state word). lo=hi=0 disables (one unsigned compare). */
+ * (P0b: who writes the worker's CAS state word). lo=hi=0 disables (one unsigned compare). */
 extern uint32_t recomp_watch_lo, recomp_watch_hi;
 extern void recomp_watch_write(uint32_t a, uint32_t v, int width);
 static inline void WR32(uint32_t a, uint32_t v) { if (a - recomp_watch_lo < recomp_watch_hi) recomp_watch_write(a, v, 4); *(volatile uint32_t *)(G(a)) = v; }
@@ -127,22 +135,22 @@ static inline uint32_t F2U(double x) { if (x != x || x <= 0) return 0; if (x >= 
  * lock-free code compilers emit for atomics tolerates). The firmware's monitor is also cleared by
  * a context switch -- the runtime drops the monitor at every HLE import call and at every scheduler
  * park (main.c / kernel.c), so a strex across either fails and the guest's retry loop re-reads.
- * every drop site tags WHY the monitor went (1 import, 2 scheduler park,
+ * P0b diag (race ledger): every drop site tags WHY the monitor went (1 import, 2 scheduler park,
  * 3 fiber park); an ldrex records the per-thread switch sequence it ran under. A strex that fails
  * only because the monitor was dropped while the value is untouched (w=10+reason) and a strex that
  * SUCCEEDS although a switch happened since its ldrex (w=20) are the two ways a lost bookkeeping
  * update shows up in the watched words. */
 extern __thread uint32_t recomp_excl_addr, recomp_excl_val;
 extern __thread int recomp_excl_valid;
-extern __thread uint32_t recomp_switch_seq, recomp_excl_seq;   /* switches since thread start / at the ldrex */
-extern __thread int recomp_excl_drop_reason;                   /* the last drop site's tag */
+extern __thread uint32_t recomp_switch_seq, recomp_excl_seq;   /* P0b: switches since thread start / at the ldrex */
+extern __thread int recomp_excl_drop_reason;                   /* P0b: the last drop site's tag */
 static inline uint32_t LDREX(uint32_t a) {
 	uint32_t v = __atomic_load_n((uint32_t *)G(a), __ATOMIC_SEQ_CST);
 	recomp_excl_addr = a; recomp_excl_val = v; recomp_excl_valid = 1;
 	recomp_excl_seq = recomp_switch_seq;
 	return v;
 }
-/* a strex whose monitor was dropped while the value is still the ldrex's snapshot would have
+/* P0b: a strex whose monitor was dropped while the value is still the ldrex's snapshot would have
  * succeeded on hardware -- log it against the watch window with the drop site's tag. */
 static inline void recomp_excl_spurious(uint32_t a, uint32_t v, int width) {
 	if (recomp_excl_addr == a && !recomp_excl_valid &&
@@ -312,6 +320,8 @@ static inline uint64_t SATU(int64_t v, int bits) { int64_t mx = ((int64_t)1 << b
  * shifts right (logical/arithmetic by sign), results truncated or saturated to the element */
 static inline uint32_t SHLR_U(uint32_t v, int sh, int bits) { return sh >= bits || sh <= -bits ? 0 : sh >= 0 ? v << sh : v >> -sh; }
 static inline uint32_t SHLR_S(int32_t v, int sh, int bits) { return sh >= bits ? 0 : sh <= -bits ? (uint32_t)(v >> 31) : sh >= 0 ? (uint32_t)v << sh : (uint32_t)(v >> -sh); }
+static inline uint64_t SHLR64_U(uint64_t v, int sh, int bits) { return sh >= bits || sh <= -bits ? 0 : sh >= 0 ? v << sh : v >> -sh; }   /* vshl.u64 by register (Medieval Defenders' GHASH, 2026-11-07) */
+static inline uint64_t SHLR64_S(int64_t v, int sh, int bits) { return sh >= bits ? 0 : sh <= -bits ? (uint64_t)(v >> 63) : sh >= 0 ? (uint64_t)v << sh : (uint64_t)(v >> -sh); }
 static inline uint64_t QSHLU(uint64_t v, int sh, int bits) {
 	uint64_t mx = bits == 64 ? ~0ull : (1ull << bits) - 1;
 	if (sh <= -64) return 0;

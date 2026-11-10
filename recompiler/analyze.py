@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from imports import known_names
 
 VAR_BASE, VAR_SLOT, VAR_SIZE = 0xfff00000, 0x1000, 0x80000
+INSN_CACHE_MAX = 131072   # Analyser.insn's memo bound (~0.55 GB)
 
 
 class Module:
@@ -289,6 +290,10 @@ class Analyser:
     def insn(self, a, arm):
         k = (a, arm)
         if k not in self.cache:
+            # a bounded memo: a capstone instruction with detail is ~4 KB in Python and pointer seeding probes the
+            # whole text, so an unbounded cache grew past 12 GB on a 17.5 MB eboot; clearing it only costs re-decodes
+            if len(self.cache) >= INSN_CACHE_MAX:
+                self.cache.clear()
             o = a - self.lo
             if not (0 <= o < len(self.code) - 1):
                 self.cache[k] = None
@@ -311,6 +316,32 @@ class Analyser:
     @staticmethod
     def cond(i):
         return i.cc not in (ARM_CC_AL, ARM_CC_INVALID)
+
+    def in_it(self, a):
+        """Thumb: the instruction at a sits in an IT block, so it is conditional although a lone decode (insn) says
+        otherwise -- capstone takes the condition from the it before it. `subs r2, r1, #1; it eq; bxeq lr; <divide>`
+        (the EABI divide helper's divide-by-1 exit) was taken for the function's end, and the divide never ran"""
+        for back in range(2, 18, 2):
+            hw = self.half(a - back)
+            if hw is None or (hw & 0xff00) != 0xbf00 or not hw & 0xf:
+                continue
+            it = self.insn(a - back, False)
+            if it is None or not it.mnemonic.startswith("it"):
+                continue
+            mask = hw & 0xf
+            x = a - back + 2
+            for _ in range(4 - ((mask & -mask).bit_length() - 1)):   # the block's length: the mask's lowest set bit
+                if x == a:
+                    return True
+                j = self.insn(x, False)
+                if j is None:
+                    break
+                x += j.size
+        return False
+
+    def conditional(self, i, arm):
+        """i runs only on a condition: its own, or (Thumb) its IT block's"""
+        return self.cond(i) or (not arm and self.in_it(i.address))
 
     @staticmethod
     def imm_target(i):
@@ -469,7 +500,7 @@ class Analyser:
                     if t in self.noreturn or (not arm and self.noreturn_after(a + i.size)):   # a call that doesn't come back
                         break
                 elif op in (A.ARM_INS_B, A.ARM_INS_CBZ, A.ARM_INS_CBNZ) and t is not None:
-                    conditional = self.cond(i) or op != A.ARM_INS_B
+                    conditional = op != A.ARM_INS_B or self.conditional(i, arm)
                     if t in entries and t != entry:   # a tail call
                         calls.add((t, arm))
                     elif self.in_text(t):
@@ -483,7 +514,7 @@ class Analyser:
                     targets, (tlo, thi) = self.table_targets(i, prev, arm)
                     todo += targets
                     ranges.append((tlo, thi))
-                    if not self.cond(i):
+                    if not self.conditional(i, arm):
                         break
                 elif arm and op == A.ARM_INS_ADD and len(ops) == 3 and ops[0].type == ARM_OP_REG and ops[0].reg == ARM_REG_PC \
                         and ops[1].type == ARM_OP_REG and ops[1].reg == ARM_REG_PC and ops[2].type == ARM_OP_REG:
@@ -498,10 +529,10 @@ class Analyser:
                         slots.append(t); k += 1
                     todo += slots
                     self.jumps.update(slots)
-                    if not self.cond(i):
+                    if not self.conditional(i, arm):
                         break
                 elif op == A.ARM_INS_BX or writes_pc or op in (A.ARM_INS_UDF, A.ARM_INS_BKPT):
-                    if not self.cond(i):
+                    if not self.conditional(i, arm):
                         break
                 prev.append(i)
                 a += i.size
@@ -554,7 +585,7 @@ class Analyser:
             if p is not None and p.address + p.size == a:
                 stop = p.id in (A.ARM_INS_BX, A.ARM_INS_B) or (p.id in LDM and "pc" in p.op_str)
                 i = self.insn(a, False)
-                return stop and not self.cond(p) and i is not None and i.mnemonic != "nop" and self.half(a) != 0
+                return stop and not self.conditional(p, False) and i is not None and i.mnemonic != "nop" and self.half(a) != 0
         return False
 
     def noreturn_after(self, a):

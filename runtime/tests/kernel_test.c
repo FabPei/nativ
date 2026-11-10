@@ -10,6 +10,8 @@
 #include <signal.h>
 #include <stdarg.h>
 #include "../core/kernel.c"
+__thread uint32_t recomp_last_pc;   /* (main.c defines it in the runtime: the write watch names the last guest pc) */
+void plat_thread_guard(void) {}   /* (platform_*.c defines it in the runtime: AUTO-01 LBP-9 stack guarantee; nothing here) */
 
 /* ---- the runtime kernel.c expects */
 uint8_t *recomp_mem;
@@ -387,6 +389,14 @@ static void test_threads(void) {
 	uint32_t st = word(); WR32(st, 0xffffffff);
 	CHECKEQ(call(h_wait_thread_end, 3, t, st, 0), 0); CHECKEQ(RD32(st), 1);
 	CHECKEQ(call(h_thread_exit_status, 2, t, st), 0); CHECKEQ(RD32(st), 1);
+	/* an ended thread is DORMANT again: it starts anew (a game's worker started once per job), with the new
+	 * argument block, and ends with the new status; it is only NOT_DORMANT while it runs */
+	WR32(arg, 0x1234);
+	CHECKEQ(call(h_start_thread, 3, t, 4, arg), 0);
+	WR32(st, 0xffffffff); CHECKEQ(call(h_wait_thread_end, 3, t, st, 0), 0); CHECKEQ(RD32(st), 0);   /* argp no longer 0xabcd */
+	WR32(arg, 0xabcd);
+	CHECKEQ(call(h_start_thread, 3, t, 4, arg), 0);
+	WR32(st, 0xffffffff); CHECKEQ(call(h_wait_thread_end, 3, t, st, 0), 0); CHECKEQ(RD32(st), 1);
 	CHECKEQ(call(h_delete_thread, 1, t), 0); CHECKEQ(call(h_wait_thread_end, 3, t, st, 0), E_UNKNOWN_THREAD_ID);
 	/* a thread ending through sceKernelExitThread; event handlers see its start and exit */
 	uint32_t h = call(h_register_thread_event, 5, name, 0xfffffff0u, 4 | 8, 0x100c, 0xc0ffee);
@@ -394,7 +404,11 @@ static void test_threads(void) {
 	uint32_t t2 = call(h_create_thread, 7, name, 0x1004, 160, 0x1000, 0, 0, 0);
 	CHECKEQ(call(h_start_thread, 3, t2, 0, 0), 0);
 	CHECKEQ(call(h_wait_thread_end, 3, t2, st, 0), 0); CHECKEQ(RD32(st), 9);
-	CHECKEQ((uint32_t)handler_calls, 2); CHECKEQ(handler_type_seen, 12); CHECKEQ(handler_common, 0xc0ffee);
+	CHECKEQ((uint32_t)handler_calls, 2);
+	/* one that ended through sceKernelExitThread starts again too */
+	CHECKEQ(call(h_start_thread, 3, t2, 0, 0), 0);
+	WR32(st, 0); CHECKEQ(call(h_wait_thread_end, 3, t2, st, 0), 0); CHECKEQ(RD32(st), 9);
+	CHECKEQ((uint32_t)handler_calls, 4);   /* the event handler saw the second run's start and exit as well */ CHECKEQ(handler_type_seen, 12); CHECKEQ(handler_common, 0xc0ffee);
 	CHECKEQ(call(h_unregister_thread_event, 1, h), 0); CHECKEQ(call(h_unregister_thread_event, 1, h), 0x80028061u);
 	/* a thread that runs on: exit status not available, a timed wait times out */
 	uint32_t s = the_sema = call(h_create_sema, 5, name, 0, 0, 1, 0);
@@ -899,6 +913,21 @@ static void test_sched(void) {
 	pthread_mutex_unlock(&sched_m);
 }
 
+/* ================= sceKernelGetThreadmgrUIDClass: the kind of object a uid names (a game's generic wait asks it, then
+ * calls that kind's own wait; the stub's 0 made it wait for nothing) */
+static void test_uid_class(void) {
+	uint32_t name = guest_alloc(16, 4); strcpy((char *)G(name), "uc");
+	pthread_mutex_lock(&klock);
+	Thread *t = &threads[nthreads++]; memset(t, 0, sizeof *t); t->uid = 0x40010f01; t->started = 1; snprintf(t->name, sizeof t->name, "uc");
+	pthread_mutex_unlock(&klock);
+	CHECKEQ(call(h_uid_class, 1, 0x40010f01), 1);                                     /* thread */
+	CHECKEQ(call(h_uid_class, 1, call(h_create_sevent, 4, name, 0x100, 0, 0)), 0xd);  /* simple event */
+	CHECKEQ(call(h_uid_class, 1, call(h_create_sema, 5, name, 0, 0, 1, 0)), 2);       /* semaphore */
+	CHECKEQ(call(h_uid_class, 1, call(h_create_evf, 4, name, 0, 0, 0)), 3);           /* event flag */
+	uint32_t e = call(h_create_sevent, 4, name, 0, 0, 0); call(h_delete_sevent, 1, e);
+	CHECKEQ(call(h_uid_class, 1, e), 0);                                              /* a deleted object: no class */
+	CHECKEQ(call(h_uid_class, 1, 0x12345679), 0);                                     /* no object */
+}
 int main(void) {
 	recomp_mem = mmap(0, 1ull << 32, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
 	if (recomp_mem == MAP_FAILED) { perror("mmap"); return 2; }
@@ -907,6 +936,7 @@ int main(void) {
 	test_mutex();
 	test_cond();
 	test_sevent();
+	test_uid_class();
 	test_ult();
 	test_threads();
 	test_rwlock();

@@ -9,9 +9,10 @@
 #include "net.h"
 
 static const HleEntry *const modules[] = {
-	hle_kernel, hle_display, hle_ngs, hle_libc, hle_io, hle_sysmem, hle_apputil, hle_fios, hle_gpu, hle_video, hle_gesture, hle_jpeg, hle_camera, hle_audiodec,
+	hle_kernel, hle_display, hle_ngs, hle_libc, hle_io, hle_sysmem, hle_apputil, hle_fios, hle_gpu, hle_video, hle_gesture, hle_jpeg, hle_camera, hle_smart, hle_audiodec, hle_trophy, hle_modload, hle_netinfo,
 };
 static const HleEntry *const online_modules[] = { hle_net, hle_np, hle_http, hle_ssl_local };   /* only for a game run online (net.h) */
+static const HleEntry *const offline_modules[] = { hle_np_offline, hle_net_offline };   /* a game run offline: what a console that is not signed in (np.c) and has no network connection (net_offline.c) answers */
 
 static HleFn find_in(const HleEntry *const *mods, size_t n, const char *name) {
 	for (size_t m = 0; m < n; m++)
@@ -22,6 +23,7 @@ static HleFn find_in(const HleEntry *const *mods, size_t n, const char *name) {
 HleFn hle_find(const char *name) {
 	HleFn f = find_in(modules, sizeof modules / sizeof *modules, name);
 	if (!f && net_online()) f = find_in(online_modules, sizeof online_modules / sizeof *online_modules, name);
+	else if (!f) f = find_in(offline_modules, sizeof offline_modules / sizeof *offline_modules, name);
 	return f;
 }
 

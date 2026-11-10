@@ -18,6 +18,10 @@
 #include "platform.h"
 #include "savedlg.h"
 #include "settings.h"
+#include "cdlg.h"
+#include "imedlg.h"
+#include "hle_small.h"
+#include "hle_offline.h"
 
 /* ---- common dialogs: one that was opened finishes at once with an OK result, as if the player
  * confirmed it; each kind has its own state (a dialog never opened reports NONE). The save-data
@@ -30,14 +34,115 @@ static int dialog_open[DLG_N];
 	static void h_##name##_term(Cpu *c) { int in_use = dialog_open[kind]; dialog_open[kind] = 0; RET(in_use ? 0 : 0x80020411u); } /* NOT_IN_USE without an open dialog */
 DIALOG(DLG_TROPHY, trophy_dlg)
 DIALOG(DLG_NETCHECK, net_dlg)
-DIALOG(DLG_MSG, msg_dlg)
+DIALOG(DLG_MSG, msg_dlg_base)
+/* the message dialog's result is the console's after the player confirmed it: SceMsgDialogResult {mode, result,
+ * buttonId} -- mode as the game opened it (SceMsgDialogParam.mode, +80 after sdkVersion and the 76-byte
+ * SceCommonDialogParam), result OK, and the button the player took: the first (OK / YES / BUTTON1, id 1) for a user
+ * message with buttons or a system / error message; none (INVALID 0) for a user message without buttons or a progress
+ * bar, which only the game closes. Writing only word 0 left mode 0 and buttonId INVALID: no answer to the question. */
+static uint32_t msg_dlg_mode, msg_dlg_button;
+static void h_msg_dlg_init(Cpu *c) {
+	msg_dlg_mode = A0 ? RD32(A0 + 80) : 0; msg_dlg_button = 1;
+	uint32_t btype = 0xffffffffu;
+	if (msg_dlg_mode == 1 && A0 && RD32(A0 + 84)) { btype = RD32(RD32(A0 + 84)); if (btype == 2) msg_dlg_button = 0; }   /* USER_MSG; button type NONE */
+	if (msg_dlg_mode == 4) msg_dlg_button = 0;   /* PROGRESS_BAR */
+	static int logged; if (logged++ < 4) fprintf(stderr, "    msg dialog: mode %u button type %d -> confirmed, button %u\n", msg_dlg_mode, (int)btype, msg_dlg_button);
+	h_msg_dlg_base_init(c);
+}
+static void h_msg_dlg_status(Cpu *c) { h_msg_dlg_base_status(c); }
+static void h_msg_dlg_term(Cpu *c) { h_msg_dlg_base_term(c); }
+static void h_msg_dlg_result(Cpu *c) { if (A0) { WR32(A0, msg_dlg_mode); WR32(A0 + 4, 0); WR32(A0 + 8, msg_dlg_button); } RET(0); }
 DIALOG(DLG_EULA, eula_dlg)
 static void h_dialog_result(Cpu *c) { if (A0) WR32(A0, 0); RET(0); }
+/* (HLE-LIB-01) Abort / Close for the kinds above: one that is in use finishes (its result stays the host's OK);
+ * one that is not is NOT_RUNNING */
+static void h_old_dialog_abort_kind(Cpu *c, int kind) { RET(dialog_open[kind] ? 0 : 0x80020404u); }
+static void h_msg_dlg_abort(Cpu *c) { h_old_dialog_abort_kind(c, DLG_MSG); }
+static void h_net_dlg_abort(Cpu *c) { h_old_dialog_abort_kind(c, DLG_NETCHECK); }
+static void h_trophy_dlg_abort(Cpu *c) { h_old_dialog_abort_kind(c, DLG_TROPHY); }
+
+/* ---- (HLE-LIB-01) the rest of SceCommonDialog on cdlg.h's state machine: the IME dialog (its initial text entered
+ * as typed -- the host has no on-screen keyboard yet) and the PSN / social / store dialogs (canceled: nothing behind
+ * them). Each kind's result struct starts with its SceInt32 result; the IME's has the button after it. */
+static CdlgState cdlg[CDLG_N];
+static pthread_mutex_t cdlg_lock = PTHREAD_MUTEX_INITIALIZER;
+static void cdlg_call(Cpu *c, int kind, int op) {   /* op: 0 init, 1 status, 2 result, 3 term, 4 abort */
+	pthread_mutex_lock(&cdlg_lock);
+	uint32_t r = 0; int32_t res = 0;
+	switch (op) {
+	case 0: r = cdlg_init(cdlg, kind); break;
+	case 1: r = (uint32_t)cdlg_status(cdlg, kind); break;
+	case 2: r = cdlg_result(cdlg, kind, &res);
+		if (!r && A0) { WR32(A0, (uint32_t)res); if (kind == CDLG_IME) WR32(A0 + 4, res == CDLG_RESULT_OK ? 2u : 0u); }   /* button: ENTER / NONE */
+		break;
+	case 3: r = cdlg_term(cdlg, kind); break;
+	case 4: r = cdlg_abort(cdlg, kind); break;
+	}
+	pthread_mutex_unlock(&cdlg_lock);
+	RET(r);
+}
+/* sceImeDialogInit(SceImeDialogParam *): title +0x28, maxTextLength +0x2c, initialText +0x30, inputTextBuffer +0x34
+ * (UTF-16). With a window (HLE-LIB-05) the host's card asks the player (imedlg.h, runtime/ui/imedlg_ui.cpp): the dialog
+ * runs until they answer, GetStatus takes the answer and writes the text. Without one (headless, tests) the initial text
+ * is entered as typed (HLE-LIB-01). */
+static uint32_t ime_out, ime_max;
+static void ime_write(const char *utf8) {   /* the answer into the game's inputTextBuffer (max units + terminator) */
+	if (!ime_out) return;
+	static uint16_t u[4097]; const size_t m = ime_max && ime_max < 4096 ? ime_max : 4096;
+	const size_t n = imedlg_utf8_to_utf16(utf8, u, m);
+	for (size_t i = 0; i <= n; i++) WR16(ime_out + 2 * (uint32_t)i, u[i]);
+}
+static void h_ime_dlg_init(Cpu *c) {
+	if (!A0) { RET(0x80020402u); return; }   /* SCE_COMMON_DIALOG_ERROR_NULL */
+	const uint32_t tptr = RD32(A0 + 0x28), max = RD32(A0 + 0x2c), init = RD32(A0 + 0x30), out = RD32(A0 + 0x34);
+	static uint16_t t16[513], i16[2049]; char title[1024], text[IMEDLG_TEXT_MAX];
+	size_t k = 0; if (tptr) while (k < 512 && RD16(tptr + 2 * (uint32_t)k)) { t16[k] = RD16(tptr + 2 * (uint32_t)k); k++; } t16[k] = 0;
+	imedlg_utf16_to_utf8(t16, k, title, sizeof title);
+	k = 0; if (init) while (k < 2048 && k < (max ? max : 2048) && RD16(init + 2 * (uint32_t)k)) { i16[k] = RD16(init + 2 * (uint32_t)k); k++; } i16[k] = 0;
+	imedlg_utf16_to_utf8(i16, k, text, sizeof text);
+	pthread_mutex_lock(&cdlg_lock);
+	const int card = cdlg_status(cdlg, CDLG_IME) == CDLG_STATUS_NONE && imedlg_ui_ready();
+	const uint32_t r = card ? cdlg_init_running(cdlg, CDLG_IME) : cdlg_init(cdlg, CDLG_IME);
+	if (!r) { ime_out = out; ime_max = max; }
+	pthread_mutex_unlock(&cdlg_lock);
+	if (!r) {
+		if (card) { imedlg_open(title, text, max); fprintf(stderr, "    ime dialog: \"%s\" -- the card asks the player (max %u)\n", title, max); }
+		else { ime_write(text); fprintf(stderr, "    ime dialog: no window -- the initial text is entered as typed\n"); }
+	}
+	RET(r);
+}
+/* GetStatus: a running card's answer is taken here -- the text written, the dialog FINISHED */
+static void h_ime_dlg_status(Cpu *c) {
+	char t[IMEDLG_TEXT_MAX]; int ok;
+	pthread_mutex_lock(&cdlg_lock);
+	if (cdlg_status(cdlg, CDLG_IME) == CDLG_STATUS_RUNNING && imedlg_take(t, sizeof t, &ok)) {
+		if (ok) ime_write(t);
+		cdlg_finish(cdlg, CDLG_IME, ok ? CDLG_RESULT_OK : CDLG_RESULT_USER_CANCELED);
+	}
+	const int st = cdlg_status(cdlg, CDLG_IME);
+	pthread_mutex_unlock(&cdlg_lock);
+	RET(st);
+}
+static void h_ime_dlg_abort(Cpu *c) { imedlg_close(); cdlg_call(c, CDLG_IME, 4); }
+#define CDLG_HANDLERS(kind, name) \
+	static __attribute__((unused)) void h_##name##_status(Cpu *c) { cdlg_call(c, kind, 1); } \
+	static __attribute__((unused)) void h_##name##_result(Cpu *c) { cdlg_call(c, kind, 2); } \
+	static __attribute__((unused)) void h_##name##_term(Cpu *c) { cdlg_call(c, kind, 3); } \
+	static __attribute__((unused)) void h_##name##_abort(Cpu *c) { cdlg_call(c, kind, 4); }
+#define CDLG_INIT(kind, name) static void h_##name##_init(Cpu *c) { cdlg_call(c, kind, 0); }
+CDLG_HANDLERS(CDLG_IME, cime)
+CDLG_HANDLERS(CDLG_NP_MESSAGE, cnpmsg) CDLG_INIT(CDLG_NP_MESSAGE, cnpmsg)
+CDLG_HANDLERS(CDLG_NP_PROFILE, cnpprof) CDLG_INIT(CDLG_NP_PROFILE, cnpprof)
+CDLG_HANDLERS(CDLG_NP_SNS_FACEBOOK, cfb) CDLG_INIT(CDLG_NP_SNS_FACEBOOK, cfb)
+CDLG_HANDLERS(CDLG_TW, ctw) CDLG_INIT(CDLG_TW, ctw)
+CDLG_HANDLERS(CDLG_STORE_CHECKOUT, cstore) CDLG_INIT(CDLG_STORE_CHECKOUT, cstore)
 /* SceNetCheckDialogResult {result, psnModeSucceeded, ...}: online (net.h), connected and, in the PSN modes, signed in (np.c's
  * local account) -- with psnModeSucceeded left 0 Killzone took its Multiplayer connect as a failed sign-in and went quietly
- * back to the menu */
+ * back to the menu. Offline the check cannot succeed: a Vita without a connection shows its "could not connect" page and the
+ * user backs out -- SCE_COMMON_DIALOG_RESULT_USER_CANCELED (1). Answered OK offline, an online-only title (MHF-G) took the
+ * check as passed and waited for a PSN sign-in for ever behind its dimmed title screen. */
 static void h_net_dlg_result(Cpu *c) {
-	if (A0) { WR32(A0, 0); WR32(A0 + 4, net_online() ? 1 : 0); }
+	if (A0) { WR32(A0, net_online() ? 0 : 1); WR32(A0 + 4, net_online() ? 1 : 0); }
 	if (!net_online() && net_online_needs()) {   /* the game went for its online modes on a version they aren't for: say why it can't (net.h) */
 		static double told; const double now = (double)time(0);
 		if (now - told > 20) { told = now; char b[200]; snprintf(b, sizeof b, "This copy of the game isn't the version online play is for. Add update %s in the launcher, then play again.", net_online_needs());
@@ -95,8 +200,8 @@ static int slot_write(uint32_t id, uint32_t param) {   /* param: a guest SceAppU
 	return 0;
 }
 /* sceAppUtilSaveDataMount(SceAppUtilSaveDataMount * (title id +0, +0x10 scratch), const char *passphrase,
- * ...) mounts ANOTHER title's saved data -- the saved-data bonus check (a game probing its sister
- * titles). A host holding no such saved data must report SLOT_NOT_FOUND, the console's answer
+ * ...) mounts ANOTHER title's saved data -- the saved-data bonus check (SSD probes four other Soul
+ * Sacrifice titles). A host holding no such saved data must report SLOT_NOT_FOUND, the console's answer
  * for missing saved data: the game then skips the bonus. The former unimplemented stub returned success
  * for every call, so the game treated a mounted-but-empty directory as corrupt saved data and its save
  * flow dead-locked behind the error window's task. Mounting real foreign saved data stays unimplemented
@@ -117,7 +222,22 @@ static void h_save_slot_param(Cpu *c) {   /* (slot id, SceAppUtilSaveDataSlotPar
 static void h_save_slot_set_param(Cpu *c) { RET(slot_write(A0, A1) == 0 ? 0 : 0x80100600u); }   /* (slot id, param, mount point): a slot not yet created is created */
 /* (SceAppUtilSaveDataFileSlot * (id +0, slotParam +4), SceAppUtilSaveDataFile[], count, mount point, *required KB)
  * file: path +0, buf +4, size +8, offset +16 (64-bit), mode +24; 64 bytes each */
+/* (NIGHT-01) the save keeps the console's minimum duration (hle_offline.h hle_save_latency_ms): a game whose worker
+ * finished before the starter marked it busy waited for it forever ("Preparing save data..."); the run slot is free
+ * meanwhile, as during any blocking call */
+static void save_io_time(const struct timespec *t0) {
+	static int ms = -1;
+	if (ms < 0) ms = hle_save_latency_ms(getenv("RECOMP_SAVE_LATENCY_MS"));
+	struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
+	int64_t left = hle_save_wait_ns(ms, (int64_t)(now.tv_sec - t0->tv_sec) * 1000000000 + (now.tv_nsec - t0->tv_nsec));
+	if (!left) return;
+	int b = sched_block_begin();
+	struct timespec d = { (time_t)(left / 1000000000), (long)(left % 1000000000) };
+	nanosleep(&d, 0);
+	if (b) sched_block_end();
+}
 static void h_save_data_save(Cpu *c) {
+	struct timespec t0; clock_gettime(CLOCK_MONOTONIC, &t0);
 	char dir[1024]; snprintf(dir, sizeof dir, "%s/savedata0", fs_root()); mkdir(dir, 0755);
 	for (uint32_t i = 0; i < A2; i++) {
 		uint32_t f = A1 + 64 * i, path = RD32(f), buf = RD32(f + 4), size = RD32(f + 8), mode = RD32(f + 24);
@@ -136,6 +256,7 @@ static void h_save_data_save(Cpu *c) {
 	}
 	if (A0) slot_write(RD32(A0), RD32(A0 + 4));   /* the slot: created or updated, its param replaced when one is given */
 	if (STK(0)) WR32(STK(0), 0);
+	save_io_time(&t0);
 	RET(0);
 }
 static void h_save_data_remove(Cpu *c) {   /* (slot, SceAppUtilSaveDataRemoveItem[] (44 bytes: path +0), count, mount) */
@@ -426,8 +547,33 @@ void savedlg_answer(int seq, int choice) {
 	pthread_mutex_unlock(&sd_mu);
 }
 
-/* ---- trophies: a context and a handle that accept everything */
-static void h_trophy_create(Cpu *c) { if (A0) WR32(A0, 1); RET(0); }
+/* ---- trophies: trophy.c (HLE-LIB-02) */
+
+/* (HLE-LIB-03) sceAppUtilSaveDataGetQuota(SceSize *quotaKiB, SceSize *usedKiB, mount point): the quota is the game's
+ * PARAM.SFO SAVEDATA_MAX_SIZE (KiB), the use the files in savedata0 (each rounded up to a KiB) */
+static uint64_t dir_kib(const char *dir) {
+	uint64_t k = 0; DIR *d = opendir(dir); if (!d) return 0;
+	for (struct dirent *e; (e = readdir(d)); ) {
+		if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+		char p[1024]; snprintf(p, sizeof p, "%s/%s", dir, e->d_name); struct stat st;
+		if (stat(p, &st)) continue;
+		k += S_ISDIR(st.st_mode) ? dir_kib(p) : ((uint64_t)st.st_size + 1023) / 1024;
+	}
+	closedir(d); return k;
+}
+static void h_save_quota(Cpu *c) {
+	if (!A0 && !A1) { RET(0x80100600u); return; }   /* SCE_APPUTIL_ERROR_PARAMETER */
+	char p[1024]; snprintf(p, sizeof p, "%s/savedata0", fs_root()); const uint64_t used = dir_kib(p);
+	uint32_t quota = 0;
+	snprintf(p, sizeof p, "%s/app0/sce_sys/param.sfo", fs_root());
+	FILE *f = fopen(p, "rb");
+	if (f) { uint8_t b[16384]; const size_t n = fread(b, 1, sizeof b, f); fclose(f); hle_sfo_int(b, n, "SAVEDATA_MAX_SIZE", &quota); }
+	if (quota < used) quota = (uint32_t)used;   /* (no SFO value: what is there) */
+	if (A0) WR32(A0, quota);
+	if (A1) WR32(A1, (uint32_t)used);
+	RET(0);
+}
+/* (HLE-LIB-03) the system's screenshot settings (the host takes its own, F12) and the LiveArea frame sync: accepted */
 
 /* system events (suspend/resume and the like): none ever arrives; the real call returns an error
  * when the queue is empty, which ends a game's drain loop */
@@ -501,11 +647,134 @@ static void h_avplayer_no_stream(Cpu *c) { RET(0x806a0001u); }   /* GetStreamInf
 static void h_avplayer_time(Cpu *c) { c->r[0] = 0; c->r[1] = 0; }   /* CurrentTime: a 64-bit 0 ms */
 static void h_app_state(Cpu *c) { memset(G(A0), 0, A1); RET(0); }   /* (SceAppMgrAppState *, size, version): nothing pending */
 /* SceSysmodule: the host has every library built in, so loading is bookkeeping -- but IsLoaded answers only for the
- * modules the game loaded (SCE_SYSMODULE_ERROR_UNLOADED 0x805a1001 otherwise), as the system does: a game that asks whether the IME module (0x11) it never loads is loaded before calling sceImeUpdate, and "loaded"
+ * modules the game loaded (SCE_SYSMODULE_ERROR_UNLOADED 0x805a1001 otherwise), as the system does: Soul Sacrifice
+ * Delta asks whether the IME module (0x11) it never loads is loaded before calling sceImeUpdate, and "loaded"
  * plus the update stub's 0 read as "an on-screen keyboard is open", so its save-data dialog was never opened */
 static uint8_t sysmodule_loaded[0x200];
 static void h_sysmodule_load(Cpu *c) { if (A0 < sizeof sysmodule_loaded) __atomic_store_n(&sysmodule_loaded[A0], 1, __ATOMIC_RELAXED); RET(0); }
 static void h_sysmodule_unload(Cpu *c) { if (A0 < sizeof sysmodule_loaded) __atomic_store_n(&sysmodule_loaded[A0], 0, __ATOMIC_RELAXED); RET(0); }
+/* (HLE-PORT-01, HLE-LIB-06) SceIme, the in-game keyboard (libime.h; the IME dialog runs on cdlg.h, HLE-LIB-01): until
+ * sceImeOpen no keyboard is open and sceImeUpdate says so (SCE_IME_ERROR_NOT_OPENED) -- Soul Sacrifice Delta polls
+ * it before its save-data dialog. Open checks the SceImeParam (hle_offline.h) and shows HLE-LIB-05's host text card
+ * (no window: the initial text counts as typed, as for the dialog); each Update hands the game's handler its events
+ * on the calling thread: OPEN once, then the answer -- the text written into inputTextBuffer (UTF-16, at most
+ * maxTextLength units and a 0) with UPDATE_TEXT and PRESS_ENTER, or PRESS_CLOSE when cancelled. The game closes it
+ * with sceImeClose. Events go out after the lock is released: a handler may call sceImeClose itself */
+static pthread_mutex_t ime_lock = PTHREAD_MUTEX_INITIALIZER;
+static HleIme ime_lib;
+static uint32_t ime_handler, ime_arg, ime_buf, ime_maxlen, ime_prev_len, ime_ev;
+static int ime_card;
+static char ime_init[IMEDLG_TEXT_MAX];
+static void h_ime_open(Cpu *c) {
+	HleImeParam p = {0};
+	if (A0) { p.type = RD32(A0 + 0x14); p.option = RD32(A0 + 0x18); p.work = RD32(A0 + 0x1c); p.handler = RD32(A0 + 0x24); p.max_len = RD32(A0 + 0x30); p.input_buf = RD32(A0 + 0x34); p.enter_label = RD8(A0 + 0x38); }
+	pthread_mutex_lock(&ime_lock);
+	const uint32_t r = hle_ime_open(&ime_lib, A0 ? &p : 0);
+	if (!r) {
+		static uint16_t i16[HLE_IME_MAX_TEXT_LENGTH + 1];
+		const uint32_t init = RD32(A0 + 0x2c); size_t k = 0;
+		if (init) while (k < p.max_len && RD16(init + 2 * (uint32_t)k)) { i16[k] = RD16(init + 2 * (uint32_t)k); k++; }
+		i16[k] = 0;
+		imedlg_utf16_to_utf8(i16, k, ime_init, sizeof ime_init);
+		ime_handler = p.handler; ime_arg = RD32(A0 + 0x20); ime_buf = p.input_buf; ime_maxlen = p.max_len; ime_prev_len = (uint32_t)k;
+		ime_card = imedlg_open("", ime_init, p.max_len);
+	}
+	const int card = ime_card;
+	pthread_mutex_unlock(&ime_lock);
+	if (!r) fprintf(stderr, "    ime: keyboard opened (max %u)%s\n", p.max_len, card ? " -- the card asks the player" : " -- no window: the initial text is entered as typed");
+	RET(r);
+}
+static void h_ime_update(Cpu *c) {
+	pthread_mutex_lock(&ime_lock);
+	if (!ime_lib.open) { pthread_mutex_unlock(&ime_lock); RET(HLE_IME_ERR_NOT_OPENED); return; }
+	int answer = -1; char t[IMEDLG_TEXT_MAX];
+	if (ime_lib.sent_open && !ime_lib.done) {
+		int ok;
+		if (!ime_card) { snprintf(t, sizeof t, "%s", ime_init); answer = 1; }
+		else if (imedlg_take(t, sizeof t, &ok)) answer = ok;
+	}
+	uint32_t ids[3]; const int n = hle_ime_events(&ime_lib, answer, ids);
+	uint32_t len = 0; int32_t change = 0;
+	if (answer == 1) {
+		static uint16_t t16[HLE_IME_MAX_TEXT_LENGTH + 1];
+		len = (uint32_t)imedlg_utf8_to_utf16(t, t16, ime_maxlen);
+		for (uint32_t k = 0; k <= len; k++) WR16(ime_buf + 2 * k, t16[k]);
+		change = (int32_t)len - (int32_t)ime_prev_len; ime_prev_len = len;
+	}
+	if (!ime_ev) ime_ev = guest_alloc(HLE_IME_EVENT_SIZE, 8);
+	const uint32_t fn = ime_handler, arg = ime_arg, buf = ime_buf, ev = ime_ev;
+	pthread_mutex_unlock(&ime_lock);
+	if (answer >= 0) fprintf(stderr, "    ime: %s\n", answer ? "text entered" : "cancelled");
+	for (int i = 0; i < n; i++) {
+		uint8_t b[HLE_IME_EVENT_SIZE]; hle_ime_event_bytes(b, ids[i], len, buf, change);
+		memcpy(G(ev), b, sizeof b);
+		guest_call(c, fn, arg, ev);
+	}
+	RET(0);
+}
+static void h_ime_close(Cpu *c) {
+	pthread_mutex_lock(&ime_lock);
+	const uint32_t r = hle_ime_close(&ime_lib);
+	const int card = ime_card; if (!r) ime_card = 0;
+	pthread_mutex_unlock(&ime_lock);
+	if (!r && card) imedlg_close();
+	RET(r);
+}
+
+/* ---- (HLE-LIB-06) SceLiveAreaUtil: no LiveArea screen on the host; the console's argument checks and a per-frame
+ * revision table (hle_offline.h). Nothing asynchronous is ever pending */
+static pthread_mutex_t la_lock = PTHREAD_MUTEX_INITIALIZER;
+static HleLiveArea la_state;
+static void h_la_status(Cpu *c) { RET(HLE_LA_ERR_NO_REQUEST); }
+static void h_la_replace_all(Cpu *c) {
+	pthread_mutex_lock(&la_lock); const uint32_t r = hle_la_replace_all(&la_state, A0 ? (const char *)G(A0) : 0); pthread_mutex_unlock(&la_lock);
+	RET(r);
+}
+static void h_la_update_frame(Cpu *c) {   /* (format_version, frame_xml, frame_xml_length, contents_path, target_type) */
+	const uint32_t target = STK(0);
+	pthread_mutex_lock(&la_lock);
+	const uint32_t r = hle_la_update_frame(&la_state, A0 ? (const char *)G(A0) : 0, A1 ? (const char *)G(A1) : 0, (int32_t)A2, A3 ? (const char *)G(A3) : 0, target);
+	pthread_mutex_unlock(&la_lock);
+	if (r) fprintf(stderr, "    livearea: UpdateFrameSync refused (%#x)\n", r);
+	RET(r);
+}
+static void h_la_frame_revision(Cpu *c) {   /* (frame_id, SceUInt64 *revision) */
+	uint64_t rev = 0;
+	pthread_mutex_lock(&la_lock); const uint32_t r = hle_la_frame_revision(&la_state, A0 ? (const char *)G(A0) : 0, A1 != 0, &rev); pthread_mutex_unlock(&la_lock);
+	if (!r) WR64(A1, rev);
+	RET(r);
+}
+/* (HLE-LIB-06) sceAppUtilBgdlGetStatus: no background download ever ran -- a zeroed SceAppUtilBgdlStatus */
+static void h_bgdl_status(Cpu *c) { if (!A0) { RET(HLE_APPUTIL_ERR_PARAMETER); return; } memset(G(A0), 0, HLE_BGDL_STATUS_SIZE); RET(0); }
+/* (HLE-LIB-06) sceAppUtilStoreBrowse(SceAppUtilStoreBrowseParam *): on the console a success only hands the screen to
+ * the PS Store, and the game carries on when the player comes back. There is no store offline: the hand-over is
+ * logged and the game carries on at once, as after leaving the store */
+static void h_store_browse(Cpu *c) {
+	if (!A0) { RET(HLE_APPUTIL_ERR_PARAMETER); return; }
+	const uint32_t id = RD32(A0 + 4);
+	fprintf(stderr, "    store: browse (type %u%s%s) -- no PS Store offline, the game carries on\n", RD32(A0), id ? ", " : "", id ? (const char *)G(id) : "");
+	RET(0);
+}
+/* (HLE-LIB-06) sceAppMgrAcquireBgmPort: the BGM port is contested only by the system's music player, which the host
+ * doesn't have -- the game always gets it */
+static void h_acquire_bgm_port(Cpu *c) { RET(0); }
+/* (HLE-LIB-06) sceAppMgrLoadExec(path, argv, optParam): the console replaces this program by another SELF in app0.
+ * A pack is one recompiled program, so a SELF that exists fails loudly (NOEXEC); a missing one gets the console's
+ * INVALID_SELF_PATH (Uncharted EU asks for a card game SELF its app0 doesn't ship) */
+static void h_load_exec(Cpu *c) {
+	const char *path = A0 ? (const char *)G(A0) : 0;
+	size_t argv_bytes = 0;
+	if (A1) for (uint32_t i = 0, a; i < 64 && (a = RD32(A1 + 4 * i)); i++) argv_bytes += strlen((const char *)G(a));
+	int exists = 0;
+	if (path && !strncmp(path, "app0:", 5)) {
+		const char *rest = path + 5; while (*rest == '/') rest++;
+		char hp[1024]; struct stat st; snprintf(hp, sizeof hp, "%s/app0/%s", fs_root(), rest);
+		exists = stat(hp, &st) == 0 && S_ISREG(st.st_mode);
+	}
+	const uint32_t r = hle_loadexec_check(path, A2 != 0, argv_bytes, exists);
+	fprintf(stderr, "    sceAppMgrLoadExec(%s): %s (%#x)\n", path ? path : "(null)", r == HLE_APPMGR_ERR_NOEXEC ? "another program -- not supported, one recompiled program per pack" : "refused", r);
+	RET(r);
+}
 static void h_sysmodule_is_loaded(Cpu *c) {
 	RET(A0 < sizeof sysmodule_loaded && __atomic_load_n(&sysmodule_loaded[A0], __ATOMIC_RELAXED) ? 0 : 0x805a1001u);
 }
@@ -517,6 +786,29 @@ static void h_app_param_string(Cpu *c) {
 	RET(0);
 }
 const HleEntry hle_apputil[] = {
+	{"sceImeUpdate", h_ime_update},   /* (HLE-PORT-01) */
+	{"sceImeOpen", h_ime_open}, {"sceImeClose", h_ime_close},   /* (HLE-LIB-06) */
+	{"sceLiveAreaGetStatus", h_la_status}, {"sceLiveAreaReplaceAllSync", h_la_replace_all}, {"sceLiveAreaGetFrameRevision", h_la_frame_revision},
+	{"sceAppUtilBgdlGetStatus", h_bgdl_status}, {"sceAppUtilStoreBrowse", h_store_browse},
+	{"sceAppMgrAcquireBgmPort", h_acquire_bgm_port}, {"sceAppMgrLoadExec", h_load_exec},
+	{"sceAppUtilSaveDataGetQuota", h_save_quota},   /* (HLE-LIB-03) */
+	{"sceScreenShotEnable", h_zero}, {"sceScreenShotDisable", h_zero}, {"sceScreenShotSetParam", h_zero}, {"sceScreenShotSetOverlayImage", h_zero},
+	{"sceLiveAreaUpdateFrameSync", h_la_update_frame},   /* (HLE-LIB-06; HLE-LIB-03 accepted anything) */
+	/* (HLE-LIB-01) SceCommonDialog on cdlg.h */
+	{"sceImeDialogInit", h_ime_dlg_init}, {"sceImeDialogGetStatus", h_ime_dlg_status}, {"sceImeDialogGetResult", h_cime_result},
+	{"sceImeDialogTerm", h_cime_term}, {"sceImeDialogAbort", h_ime_dlg_abort},
+	{"sceNpMessageDialogInit", h_cnpmsg_init}, {"sceNpMessageDialogGetStatus", h_cnpmsg_status}, {"sceNpMessageDialogGetResult", h_cnpmsg_result},
+	{"sceNpMessageDialogTerm", h_cnpmsg_term}, {"sceNpMessageDialogAbort", h_cnpmsg_abort},
+	{"sceNpProfileDialogInit", h_cnpprof_init}, {"sceNpProfileDialogGetStatus", h_cnpprof_status}, {"sceNpProfileDialogGetResult", h_cnpprof_result},
+	{"sceNpProfileDialogTerm", h_cnpprof_term}, {"sceNpProfileDialogAbort", h_cnpprof_abort},
+	{"sceNpSnsFacebookDialogInit", h_cfb_init}, {"sceNpSnsFacebookDialogGetStatus", h_cfb_status}, {"sceNpSnsFacebookDialogGetResultLongToken", h_cfb_result},
+	{"sceNpSnsFacebookDialogTerm", h_cfb_term}, {"sceNpSnsFacebookDialogAbort", h_cfb_abort},
+	{"sceTwDialogInit", h_ctw_init}, {"sceTwDialogGetStatus", h_ctw_status}, {"sceTwDialogGetResult", h_ctw_result},
+	{"sceTwDialogTerm", h_ctw_term}, {"sceTwDialogAbort", h_ctw_abort},
+	{"sceStoreCheckoutDialogInit", h_cstore_init}, {"sceStoreCheckoutDialogGetStatus", h_cstore_status}, {"sceStoreCheckoutDialogGetResult", h_cstore_result},
+	{"sceStoreCheckoutDialogTerm", h_cstore_term}, {"sceStoreCheckoutDialogAbort", h_cstore_abort},
+	{"sceMsgDialogAbort", h_msg_dlg_abort}, {"sceMsgDialogClose", h_msg_dlg_abort}, {"sceNetCheckDialogAbort", h_net_dlg_abort},
+	{"sceNpTrophySetupDialogAbort", h_trophy_dlg_abort}, {"sceCommonDialogSetConfigParam", h_zero},
 	{"sceAppMgrAppParamGetString", h_app_param_string},
 	{"sceAppMgrReceiveSystemEvent", h_receive_system_event},
 	{"sceAppUtilSystemParamGetInt", h_system_param_int}, {"_sceAppMgrGetAppState", h_app_state}, {"sceSysmoduleIsLoaded", h_sysmodule_is_loaded},
@@ -554,7 +846,7 @@ const HleEntry hle_apputil[] = {
 	{"sceNetCheckDialogTerm", h_net_dlg_term},
 	{"sceMsgDialogInit", h_msg_dlg_init},
 	{"sceMsgDialogGetStatus", h_msg_dlg_status},
-	{"sceMsgDialogGetResult", h_dialog_result},
+	{"sceMsgDialogGetResult", h_msg_dlg_result},
 	{"sceMsgDialogTerm", h_msg_dlg_term},
 	{"SceCommonDialog_33626E2C", h_eula_dlg_init}, {"SceCommonDialog_B7D4C911", h_eula_dlg_status},
 	{"SceCommonDialog_D1858A78", h_eula_dlg_result}, {"SceCommonDialog_BEBAEF25", h_eula_dlg_term}, {"SceCommonDialog_B55CF0E3", h_eula_dlg_term},
@@ -564,7 +856,5 @@ const HleEntry hle_apputil[] = {
 	{"sceAppUtilSaveDataDataSave", h_save_data_save},
 	{"sceAppUtilSaveDataMount", h_save_data_mount}, {"sceAppUtilSaveDataUmount", h_save_data_umount},
 	{"sceAppUtilSaveDataDataRemove", h_save_data_remove},
-	{"sceNpTrophyCreateContext", h_trophy_create},
-	{"sceNpTrophyCreateHandle", h_trophy_create},
 	{0, 0},
 };
