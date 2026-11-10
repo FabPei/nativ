@@ -571,6 +571,12 @@ static UOp decode_one(uint64_t w, int secondary) {
 		if (opcat == 2 && op2 == 4) { dec_limm(w, secondary, &op); return op; }
 		if (opcat == 3 && op2 == 1) { dec_kill(w, &op); return op; }
 		if (opcat == 3 && op2 == 3) { dec_depthf(w, secondary, &op); return op; }
+		/* GAPS-03: two SPEC forms every game uses, no-ops here by design (docs/usse-isa.md 3.21; Vita3K's SPEC visitor
+		 * ignores them too). opcat 2 op2 3: the last instruction of a vertex program (emit vertex / end; 0xFB275000A0200000):
+		 * the program ends there anyway. opcat 2 op2 1: a data fence after LD/SMP (0xF920...): Nativ's loads and samples
+		 * complete at once, nothing to wait for. Named, so they are no longer counted as unknown forms. */
+		if (opcat == 2 && op2 == 3) { op.op = OP_NOP; op.sub = USSE_NOP_EMIT; return op; }
+		if (opcat == 2 && op2 == 1) { op.op = OP_NOP; op.sub = USSE_NOP_FENCE; return op; }
 		gap(GAP_USSE_OP, op1 << 8 | opcat << 4 | op2, "usse: SPEC form run as a no-op"); op.op = OP_NOP; return op;   /* SPEC catch-all: no-op per docs/usse-isa.md §3.21 */
 	}
 	if (op1 == 0x1D || op1 == 0x1E) { dec_ldst(w, secondary, &op); return op; }
@@ -1419,6 +1425,7 @@ static void exec_instruction(Ctx *cx, const UOp *op) {
 	}
 }
 static const char *opname(int op);
+static const char *uop_name(const UOp *o);
 static void run_program(Ctx *cx, const UOp *code, int n) {
 	for (int s = 0; s < 4; s++) for (int r = 0; r <= 16; r++) cx->inc[s][r] = (int8_t)r;
 	int guard = 0;
@@ -1453,7 +1460,7 @@ static void run_program(Ctx *cx, const UOp *code, int n) {
 		 * (the harness usse_run and gfxreplay both honour it) */
 		static int trace = -1; if (trace < 0) trace = getenv("RECOMP_USSE_TRACE") != 0;
 		if ((trace || g_trace_force) && op->op != OP_NOP) {
-			fprintf(stderr, "  %3d %-8s", pc, opname(op->op));
+			fprintf(stderr, "  %3d %-8s", pc, uop_name(op));
 			if (op->op == OP_VDUAL) {   /* its UOp has no dst: each op's sources and destination words, from the shared decode */
 				static const char *const dn[15] = {"vmad","vdp","vssq","vmul","vadd","vmov","frsq","frcp","fmad","fadd","fmul","fsubflr","fexp","flog","-"};
 				static const char *const srcname[4] = {"us", "i0", "i1", "i2"};
@@ -2055,6 +2062,12 @@ int usse_fragment_fb_blend(const UsseProgram *cp) {
 	return cls;
 }
 /* ---------------------------------------------------------------- 8. disassembler */
+static const char *opname(int op);
+static const char *uop_name(const UOp *o) {   /* opname, with the no-ops that stand for a known instruction named */
+	if (o->op == OP_NOP && o->sub == USSE_NOP_EMIT) return "EMIT";
+	if (o->op == OP_NOP && o->sub == USSE_NOP_FENCE) return "DFENCE";
+	return opname(o->op);
+}
 static const char *opname(int op) {
 	switch (op) {
 	case OP_NOP: return "NOP"; case OP_VMAD2: return "VMAD2"; case OP_VNMAD: return "VNMAD"; case OP_VMAD: return "VMAD"; case OP_VDP: return "VDP";
@@ -2084,7 +2097,7 @@ int usse_disassemble(const UsseProgram *p, void *out_FILE) {
 		fprintf(f, " %s:\n", which ? "primary" : "secondary");
 		for (int i = 0; i < n; i++) {
 			const UOp *o = &ops[i];
-			fprintf(f, "  %4d: %016llx  %-8s", i, (unsigned long long)o->raw, opname(o->op));
+			fprintf(f, "  %4d: %016llx  %-8s", i, (unsigned long long)o->raw, uop_name(o));
 			if (o->op == OP_UNSUPPORTED) { unk++; fprintf(f, "  <-- unsupported encoding"); }
 			fprintf(f, "\n");
 		}

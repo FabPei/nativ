@@ -61,6 +61,11 @@ int main(void) {
 	/* a real site: the USSE decoder meets I8MAD2 (op1 0x19), which it runs as a no-op */
 	(void)decode_one((uint64_t)0x19 << 59, 0);
 	check("site: usse.c decode_one counts I8MAD2 (op1 0x19) as a usse_op gap, key 0x1900", gaps_distinct(GAP_USSE_OP) == 1);
+	/* GAPS-03: the vertex program's last instruction (emit / end) and the data fence after LD/SMP are known no-ops */
+	{ const UOp e = decode_one(0xfb275000a0200000ull, 0), f1 = decode_one(0xf920000000000000ull, 0), f2 = decode_one(0xf920080100000000ull, 0);
+	  check("GAPS-03: 0xfb275000a0200000 (SPEC opcat 2 op2 3) decodes as the named no-op EMIT", e.op == OP_NOP && e.sub == 1);
+	  check("GAPS-03: 0xf920... (opcat 2 op2 1, two variants) decode as the named no-op data fence", f1.op == OP_NOP && f1.sub == 2 && f2.op == OP_NOP && f2.sub == 2);
+	  check("GAPS-03: neither is counted as an unknown USSE form (usse_op still only 0x1900)", gaps_distinct(GAP_USSE_OP) == 1); }
 
 	pthread_t th[4];
 	for (int i = 0; i < 4; i++) pthread_create(&th[i], 0, spam, 0);
