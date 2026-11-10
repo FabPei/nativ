@@ -17,7 +17,7 @@ working tree's peak RSS is at most half the old one's (measured in each child: g
 Before (the old emitter run as the working tree: --as-new <old recomp.py>): the memory check FAILS.
 
 Run (Linux/WSL, capstone):  python3 fixture_recomp_memory.py [--groups N] [--old <recomp.py>] [--as-new <recomp.py>]
---old defaults to `git show ab83d62:recompiler/recomp.py` (the emitter before BUILD-02's change).
+--old defaults to `git show b537bc3^:recompiler/recomp.py` (the emitter before BUILD-02's change).
 """
 import json, os, resource, struct, subprocess, sys, tempfile
 
@@ -130,7 +130,7 @@ def main():
     old = opt("--old", None)
     if old is None:
         old = os.path.join(tmp, "recomp_old.py")
-        src = subprocess.run(["git", "-C", NATIV, "show", "ab83d62:recompiler/recomp.py"], capture_output=True, check=True).stdout
+        src = subprocess.run(["git", "-C", NATIV, "show", "b537bc3^:recompiler/recomp.py"], capture_output=True, check=True).stdout
         open(old, "wb").write(src)
     new = opt("--as-new", NEW)
     data = os.path.join(tmp, "fixture.data.json")
