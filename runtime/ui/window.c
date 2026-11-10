@@ -1269,6 +1269,7 @@ void window_run(void *(*fn)(void *), void *arg) {
 			}
 			if (e.type == SDL_EVENT_GAMEPAD_REMOVED && pad && SDL_GetGamepadID(pad) == e.gdevice.which) pad_close(&pad);
 			if (e.type == SDL_EVENT_GAMEPAD_ADDED || e.type == SDL_EVENT_GAMEPAD_REMOVED) pad_choose(&pad);   /* (UI-02b: the chosen one, else the first) */
+			if (e.type == SDL_EVENT_GAMEPAD_ADDED) overlay_pad_added();   /* (HINT-01: its menu buttons, briefly) */
 			if (e.type == SDL_EVENT_GAMEPAD_SENSOR_UPDATE) {
 				if (e.gsensor.sensor == SDL_SENSOR_ACCEL) motion_feed_accel(e.gsensor.data, e.gsensor.sensor_timestamp);
 				else if (e.gsensor.sensor == SDL_SENSOR_GYRO) motion_feed_gyro(e.gsensor.data, e.gsensor.sensor_timestamp);

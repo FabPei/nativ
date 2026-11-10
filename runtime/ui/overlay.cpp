@@ -1385,13 +1385,28 @@ static bool touch_screen_present(void) {
 	return any;
 }
 extern "C" int window_osb_mode(void);   /* (UI-02e: the hint names the off switch while they can show) */
-/* (UI-02a) the game's first hint: every way to open the menu this player has (menu_hint.h) */
-static void menu_hint_toast(void) {
-	char body[224];
+/* (UI-02a, HINT-01) the game's first hint: every way to open the menu, this player's first (menu_hint.h) */
+static void menu_hint_body(char *body, size_t n) {
 	const bool dump = !g_has_window;   /* (a dump: as a desktop with a keyboard and a mouse) */
-	const bool pad = SDL_HasGamepad(), touch = touch_screen_present();
-	menu_hint_text(body, sizeof body, dump || SDL_HasKeyboard(), dump || SDL_HasMouse(), pad ? player_pad_type() : -1, steam_deck(), touch, touch && !pad && window_osb_mode() != OSB_OFF);
+	const char *dp = std::getenv("RECOMP_OVERLAY_DUMP_NOPAD");   /* (a dump as on a PC without a controller) */
+	const bool pad = SDL_HasGamepad() && !(dp && *dp == '1'), touch = touch_screen_present();
+	menu_hint_text(body, n, dump || SDL_HasKeyboard(), dump || SDL_HasMouse(), pad ? player_pad_type() : -1, steam_deck(), touch, touch && !pad && window_osb_mode() != OSB_OFF);
+}
+static void menu_hint_toast(void) {
+	char body[224]; menu_hint_body(body, sizeof body);
 	overlay_toast_titled("Menu", body, TOAST_S);
+}
+/* (HINT-01) a controller connected while the game runs: a short note with its own buttons for the menu (window.c's
+ * SDL_EVENT_GAMEPAD_ADDED; the pads already there at the start are announced in the first seconds too -- not those) */
+static std::atomic<int> g_pad_hint_req;
+static double g_pad_hint_from = -1;   /* (the first windowed frame's time + 3 s) */
+extern "C" void overlay_pad_added(void) { g_pad_hint_req = 1; }
+static void pad_hint_maybe(double t) {
+	if (g_pad_hint_from < 0) g_pad_hint_from = t + 3.0;
+	if (!g_pad_hint_req.exchange(0) || t < g_pad_hint_from || g_intro) return;
+	char line[96]; menu_hint_pad_line(line, sizeof line, player_pad_type(), steam_deck());
+	char body[128]; snprintf(body, sizeof body, "%s opens the menu", line);
+	overlay_toast_titled("Controller connected", body, 4.0);
 }
 /* (UI-02d) while the controller drives the touch screen (the shoulder pair that isn't L and R held: window.c's touch
  * cursor), a badge at the top centre says which panel it is -- the Vita's front touch screen or its rear touch pad --
@@ -1486,10 +1501,11 @@ static void build_closed(void) {
 		g_bar_want = false; g_bar_pin_until = -1e9; g_bar_active_t = -1e9; g_hot_since = -1; g_hot_block = true;
 	}
 	if (g_has_window) {
+		pad_hint_maybe(t);   /* (HINT-01) */
 		if (!g_toast_checked) {   /* the hint, once per game, on this overlay's first windowed frame */
 			g_toast_checked = true;
 			if (!settings_has("touch_intro_shown")) {   /* the player's first game: the touch card first (it says where the menu is too) */
-				g_intro = true; settings_set_int("menu_hint_shown", 1); save_settings(); g_paused = true; apply_pause();
+				g_intro = true; g_paused = true; apply_pause();   /* (HINT-01: the start hint still comes once, at the next start -- it was marked shown here, and never came) */
 			} else if (!settings_has("menu_hint_shown")) { g_toast_until = t + TOAST_S; menu_hint_toast(); settings_set_int("menu_hint_shown", 1); save_settings(); }
 		}
 		const ImVec2 m = io.MousePos;
@@ -1786,7 +1802,18 @@ static void build_intro(void) {
 		char go[96]; snprintf(go, sizeof go, "Try a touch now, or press any key or button to start playing (by itself in %d s).", (int)ceil(left > 0 ? left : 0));
 		ImGui::PushStyleColor(ImGuiCol_Text, ui::accent); ImGui::TextWrapped("%s", go); ImGui::PopStyleColor();
 	} else ImGui::TextUnformatted("Back to the game.");
-	ui::muted_wrapped("You don't choose anything here: every way works whenever you like. F10 opens the menu, with every control.");
+	ui::muted_wrapped("You don't choose anything here: every way works whenever you like.");
+	{	/* (HINT-01) every way to open the menu, as the start hint says it -- the ways this player has now first */
+		char body[224]; menu_hint_body(body, sizeof body);
+		ImGui::Dummy(ImVec2(0, em * 0.15f));
+		ImGui::TextUnformatted("The menu, with every control:");
+		for (char *l = body; l && *l;) {
+			char *nl = strchr(l, '\n'); if (nl) *nl = 0;
+			std::string plain; for (const char *c = l; *c; c++) if (*c != '[' && *c != ']') plain += *c;   /* (no key caps here) */
+			ImGui::Bullet(); ui::muted_wrapped(plain.c_str());
+			l = nl ? nl + 1 : nullptr;
+		}
+	}
 	ImGui::End();
 	ImGui::PopStyleVar();
 }

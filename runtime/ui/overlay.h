@@ -74,6 +74,8 @@ void overlay_bar_dismiss(void);
  * key or a pad button that isn't part of a touch (intro_skip.h) */
 int overlay_intro_up(void);
 void overlay_intro_skip(void);
+/* (HINT-01) a controller was connected (window.c: SDL_EVENT_GAMEPAD_ADDED): the overlay names its menu buttons briefly */
+void overlay_pad_added(void);
 
 /* one-shot flags the Quit and Capture frame buttons set; window.c polls and clears them once a loop
  * iteration, the same way it reacts to SDL_EVENT_QUIT and F12 */
