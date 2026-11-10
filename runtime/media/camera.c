@@ -212,6 +212,12 @@ static void h_open(Cpu *c) {   /* (devnum, SceCameraInfo *) */
 	        k->buffer == BUF_SETBYREAD ? "per read" : "from open", source() == 1 ? "webcam" : source() == 2 ? "dark" : "light (F7)");
 	RET(0);
 }
+/* (CAM-TOAST) the webcam note: the camera chosen in the menu by its name; none chosen: no guess at the machine
+ * (it once said "your Mac's" on every system) */
+void camera_webcam_note(const char *dev, char *b, size_t n) {
+	if (dev && *dev) snprintf(b, n, "The game is using the Vita's camera: the camera \"%s\" stands in for it\nChange it: [F10] > Controls", dev);
+	else snprintf(b, n, "The game is using the Vita's camera: your computer's camera stands in for it\nChange it: [F10] > Controls");
+}
 static void h_close(Cpu *c) { Cam *k = dev(c); if (!k) { RET(CAM_ERR_PARAM); return; } if (!k->open) { RET(CAM_ERR_NOT_OPEN); return; } k->open = k->started = 0; RET(0); }
 static void h_start(Cpu *c) {
 	Cam *k = dev(c); if (!k) { RET(CAM_ERR_PARAM); return; }
@@ -221,7 +227,9 @@ static void h_start(Cpu *c) {
 	static int said;   /* what the camera sees, once a session: a puzzle may be waiting on it */
 	if (!said) {
 		said = 1; int src = source();
-		overlay_toast_titled("Camera", src == 1 ? "The game is using the Vita's camera: your Mac's camera stands in for it\nChange it: [F10] > Controls"
+		char dev[128], cam[256]; settings_str("camera_device", "", dev, sizeof dev);
+		camera_webcam_note(dev, cam, sizeof cam);
+		overlay_toast_titled("Camera", src == 1 ? cam
 		              : src == 0 && camera_light() ? "The game is using the Vita's camera: it sees a bright lamp\n[F7] turns it off"
 		              : "The game is using the Vita's camera: it sees a dark room\n[F7] shines a lamp into it", 6.0);
 	}

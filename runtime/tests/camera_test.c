@@ -93,6 +93,13 @@ int main(void) {
 	check(call(h_location, 1, loc) == 0 && RD32(loc) == 0 && RD32(loc + 4) == 0 && RD32(loc + 8) == 0, "device location: 0 and a written vector");
 	check(call(h_location, 2, loc) == CAM_ERR_PARAM && call(h_location, 0, 0) == CAM_ERR_PARAM, "device location: bad device or null pointer fails");
 #endif
+	/* (CAM-TOAST) the webcam note names no machine it can't know: the chosen camera, else "your computer's"
+	 * (before: one fixed text, "your Mac's camera", on every system) */
+	char note[256];
+	camera_webcam_note("", note, sizeof note);
+	check(strstr(note, "your computer's camera") && !strstr(note, "Mac"), "webcam note without a chosen camera: no machine named");
+	camera_webcam_note("Integrated Webcam", note, sizeof note);
+	check(strstr(note, "\"Integrated Webcam\"") && !strstr(note, "Mac"), "webcam note names the chosen camera");
 	printf("%s\n", fails ? "FAILED" : "all passed");
 	return fails != 0;
 }
