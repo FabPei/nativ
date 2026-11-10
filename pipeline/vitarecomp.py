@@ -906,8 +906,10 @@ def cmd_dist(out):
 
 UPDATES = "updates.txt"   # (an install's release channel, "github <owner>/<repo>": cmd_dist writes it, cmd_update_check reads it)
 def release_newer(tag, mine):
-    """a release tag newer than this install's version, both vX.Y.Z (a build that isn't a release is never told)"""
-    def parts(v): m = re.fullmatch(r"v?(\d+)\.(\d+)(?:\.(\d+))?", v.strip()); return tuple(int(x or 0) for x in m.groups()) if m else None
+    """a release tag newer than this install's version, both vX.Y.Z or a fork's vX.Y.Z-lfN / vX.Y.Z-fpN (one count: lf3
+    follows fp2; a build that isn't a release is never told); vX.Y.Z-lfN sorts after vX.Y.Z and before the next upstream
+    version"""
+    def parts(v): m = re.fullmatch(r"v?(\d+)\.(\d+)(?:\.(\d+))?(?:-(?:fp|lf)(\d+))?", v.strip()); return tuple(int(x or 0) for x in m.groups()) if m else None
     a, b = parts(tag), parts(mine)
     return bool(a and b and a > b)
 def cmd_update_check():
