@@ -21,6 +21,7 @@
 #include "cdlg.h"
 #include "imedlg.h"
 #include "hle_small.h"
+#include "game_lang.h"   /* (GAME-LANG) the system language a game sees */
 #include "hle_offline.h"
 
 /* ---- common dialogs: one that was opened finishes at once with an OK result, as if the player
@@ -579,13 +580,25 @@ static void h_save_quota(Cpu *c) {
  * when the queue is empty, which ends a game's drain loop */
 static void h_receive_system_event(Cpu *c) { RET(0x80802016u); }
 
-/* system settings (id, *value): 1 language (1 English US), 2 enter button (1 cross), 4 date format
- * (0 YYYY/MM/DD), 5 time format (0 12-hour), 6 time zone (0 minutes: UTC, which is what the host's
- * RTC reports as local time too), 7 summer time (0 off); 3 is the user name, a string. Anything else
- * is SCE_APPUTIL_ERROR_PARAMETER, as on the console. */
+/* system settings (id, *value): 1 language (GAME-LANG: game_lang.h -- the setting game_lang, auto = the host's
+ * locale), 2 enter button (1 cross), 4 date format (0 YYYY/MM/DD), 5 time format (0 12-hour), 6 time zone (0 minutes:
+ * UTC, which is what the host's RTC reports as local time too), 7 summer time (0 off); 3 is the user name, a string.
+ * Anything else is SCE_APPUTIL_ERROR_PARAMETER, as on the console. */
+extern int window_host_locale(char *lang, int nl, char *country, int nc) __attribute__((weak));   /* window.c (SDL); absent in a unit test */
+int apputil_game_lang(void) {   /* the language this run's game sees, decided once: a game reads it at boot */
+	static int lang = -1;
+	if (lang < 0) {
+		char buf[16], l[16] = "", co[16] = "";
+		const char *set = settings_str("game_lang", "auto", buf, sizeof buf);
+		if (window_host_locale) window_host_locale(l, sizeof l, co, sizeof co);
+		lang = game_lang_resolve(getenv("RECOMP_GAME_LANG"), set, getenv("RECOMP_HEADLESS") != NULL, l, co);
+		fprintf(stderr, "    system language: %d (game_lang %s, host locale %s%s%s)\n", lang, set, l[0] ? l : "none", co[0] ? "_" : "", co);
+	}
+	return lang;
+}
 static void h_system_param_int(Cpu *c) {
 	if (A0 < 1 || A0 > 7 || A0 == 3 || !A1) { RET(0x80100600u); return; }
-	WR32(A1, A0 == 1 || A0 == 2 ? 1 : 0); RET(0);
+	WR32(A1, A0 == 1 ? (uint32_t)apputil_game_lang() : A0 == 2 ? 1 : 0); RET(0);
 }
 /* (id, buffer, size): only the user name (3) is a string -- "Player" (RECOMP_USERNAME overrides),
  * truncated to the buffer like strncpy plus a terminator; Killzone asks for it at boot (17 bytes:

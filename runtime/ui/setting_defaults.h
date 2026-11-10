@@ -13,7 +13,7 @@ inline const char *setting_default(const char *k) {
 		{"input_mode", "auto"}, {"mouse_look", "1"}, {"raw_look", "1"}, {"mouse_sens", "1"},
 		{"mouse_invert", "0"}, {"shoulder_buttons", "triggers"}, {"touch_cursor_speed", "1"}, {"osb", "auto"}, {"osb_size", "1"}, {"gyro", "1"},
 		{"gyro_pose", "upright"}, {"gyro_sens", "1"}, {"stick_l_sens", "1"}, {"stick_l_dead", "0"}, {"stick_r_sens", "1"}, {"stick_r_dead", "0"}, {"volume", "1"}, {"online_id", ""}, {"online", "1"},
-		{"camera", "light"}, {"save_dialog", "ask"}, {"audio_sync_trim_ms", "0"}, {"audio_buffers", "1"}};
+		{"camera", "light"}, {"save_dialog", "ask"}, {"audio_sync_trim_ms", "0"}, {"audio_buffers", "1"}, {"game_lang", "auto"}};
 	for (const auto &e : d) if (!strcmp(e.k, k)) return e.v;
 	return nullptr;
 }

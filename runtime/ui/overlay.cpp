@@ -110,6 +110,7 @@ int metrics_osd_lines(char (*out)[40], int max);   /* the F1 overlay's text, dra
 int metrics_frame_times(float *ms, int max);       /* the full level's frame-time graph: recent game-frame durations, oldest first */
 }
 #include "metrics.h"   /* (MetricsSnapshot: the full level's HUD) */
+#include "game_lang.h"   /* (GAME-LANG) the Game page's language row */
 extern "C" {
 const char *window_present_mode(void);   /* window.c: vsync, mailbox or immediate */
 int display_frame_rate_60(void);         /* display.c: the frame-rate setting */
@@ -530,6 +531,18 @@ static void page_game(void) {
 		int l[3], n = fr_list(display_frame_rates_allowed(), l), cur = fr_effective(P.fr, display_frame_rates_allowed()), v = 0;
 		const char *names[3]; for (int i = 0; i < n; i++) { names[i] = all[l[i] >= 120 ? 2 : l[i] >= 60 ? 1 : 0]; if (l[i] == cur) v = i; }
 		if (ui::segmented(names, n, &v)) set_frame_rate(l[v]); }
+	{	/* (GAME-LANG) the Vita system language games see (game_lang.h; apputil.c reads it once, at the game's start) */
+		char cur[16]; settings_str("game_lang", "auto", cur, sizeof cur);
+		ui::row(ui_tr("game.lang"), ui_tr("game.lang_help"), note_s("game_lang", ui_tr("mark.after_restart")));
+		static char labels[GAME_LANG_N + 1][48]; const char *names[GAME_LANG_N + 1];
+		tr_suf(ui_tr("set.lang_auto"), "##gl", labels[0], sizeof labels[0]); names[0] = labels[0];
+		int v = 0;
+		for (int i = 0; i < GAME_LANG_N; i++) {
+			snprintf(labels[i + 1], sizeof labels[i + 1], "%s##gl", game_langs[i].name); names[i + 1] = labels[i + 1];
+			if (!strcmp(cur, game_langs[i].key)) v = i + 1;
+		}
+		if (ui::segmented(names, GAME_LANG_N + 1, &v)) { settings_set_str("game_lang", v ? game_langs[v - 1].key : "auto"); save_settings(); }
+	}
 	if (game_option("fov")) {
 		ui::row(ui_tr("game.fov"), ui_tr("game.fov_help"));
 		ImGui::SetNextItemWidth(-FLT_MIN); if (ui::slider_float("##fov", &P.fov, 0.75f, 1.5f, "%.2f×")) set_fov(P.fov);

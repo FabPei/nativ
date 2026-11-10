@@ -1,7 +1,8 @@
 /*
  * HLE-LIB-02: SceNpTrophy offline. A context reads the game's own trophy set from its app0
  * (sce_sys/trophy/<NPCOMMID>_<nn>/TROPHY.TRP, trophy_parse.h: TROPCONF.SFM for ids/grades/hidden/platinum links,
- * TROP_01.SFM -- the host's system language is English (apputil.c's system params) -- for names, the PNG icons);
+ * TROP_<nn>.SFM in the system language the game sees (apputil.c, GAME-LANG), else TROP_01 (English) or TROP.SFM -- for
+ * names, the PNG icons);
  * unlocks persist per player in <RECOMP_FS or fs>/trophy/<NPCOMMID>_<nn>.dat (magic "NTR1", the 128-bit flag array,
  * 128 RTC ticks) and show a toast. Error codes and struct layouts as the console's (Vita3K's SceNpTrophy module was the
  * reference for the call shapes: GameDetails/GameData/GroupDetails/GroupData/Details/Data). Before this file the set was
@@ -17,6 +18,7 @@
 #include "hle.h"
 #include "overlay.h"
 #include "trophy_parse.h"
+extern int apputil_game_lang(void) __attribute__((weak));   /* (GAME-LANG) apputil.c: the system language the game sees */
 
 #define E_NOT_INITIALIZED     0x80551601u
 #define E_ALREADY_INITIALIZED 0x80551602u
@@ -102,7 +104,8 @@ static void h_create_context(Cpu *c) {
 		pthread_mutex_unlock(&lock); RET(E_TRP_NOT_FOUND); return;
 	}
 	x->count = trp_parse_sfm((const char *)e, n, x->defs, 0);
-	if (trp_find(x->trp, x->trp_len, "TROP_01.SFM", &e, &n) || trp_find(x->trp, x->trp_len, "TROP.SFM", &e, &n)) {
+	char own[16]; snprintf(own, sizeof own, "TROP_%02d.SFM", apputil_game_lang ? apputil_game_lang() : 1);   /* (GAME-LANG) the game's language, else English */
+	if (trp_find(x->trp, x->trp_len, own, &e, &n) || trp_find(x->trp, x->trp_len, "TROP_01.SFM", &e, &n) || trp_find(x->trp, x->trp_len, "TROP.SFM", &e, &n)) {
 		trp_parse_sfm((const char *)e, n, x->defs, 1);
 		trp_elem((const char *)e, (const char *)e + n, "title-name", x->title, sizeof x->title);
 		trp_elem((const char *)e, (const char *)e + n, "title-detail", x->detail, sizeof x->detail);

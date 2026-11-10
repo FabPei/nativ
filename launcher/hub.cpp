@@ -1499,6 +1499,7 @@ static bool game_key(const std::string &k) {   /* (settings.c's game_key: kept i
  * one table now in runtime/ui/setting_defaults.h (UI QUEUE U7), shared with the in-game menu's "default" marks */
 #include "setting_defaults.h"
 #include "frame_rates.h"   /* the frame-rate rules: a game's allowed rates (its pack's RECOMP_FRAME_RATES) */
+#include "../core/game_lang.h"   /* (GAME-LANG) the Vita system language games see: the language row */
 /* keys only some games read (an online one, a camera one, one with ambient occlusion): a game without the key never chose */
 static bool some_games_key(const std::string &k) { return k == "online_id" || k == "online" || k == "np_account_id" || k == "np_age" || k == "camera" || k == "ssao" || k == "ssao_strength"; }
 static std::string shared_path(void) { std::string d = pref_dir(); return d.empty() ? "" : d + "settings.ini"; }
@@ -1660,6 +1661,18 @@ static void seg_row(const SetTarget &t, const char *label, const char *expl, con
 	std::vector<const char *> names; int v = 0, i = 0;
 	for (auto &o : opts) { if (cur == o.first) v = i; names.push_back(o.second); i++; }
 	if (ui::segmented(names.data(), (int)names.size(), &v)) target_write(t, key, opts.begin()[v].first);
+	ImGui::PopID();
+}
+/* (GAME-LANG) the Vita system language games see: Auto (the computer's) or one of the Vita's (game_lang.h) */
+static void game_lang_row(const SetTarget &t) {
+	std::string cur = tget(t, "game_lang", "auto");
+	ui::row("Game language", "The language a game sees as the Vita's system language: most games show their text, and many their voices, in it. "
+	        "Auto: your computer's language (English when the Vita has no such language). A game with a single language keeps it. "
+	        "Applies the next time a game starts.", cur == "auto" ? "default" : nullptr);
+	ImGui::PushID("game_lang");
+	const char *names[GAME_LANG_N + 1]; names[0] = "Auto"; int v = 0;
+	for (int i = 0; i < GAME_LANG_N; i++) { names[i + 1] = game_langs[i].name; if (cur == game_langs[i].key) v = i + 1; }
+	if (ui::segmented(names, GAME_LANG_N + 1, &v)) target_write(t, "game_lang", v ? game_langs[v - 1].key : "auto");
 	ImGui::PopID();
 }
 static void toggle_row(const SetTarget &t, const char *label, const char *expl, const char *key, bool def) {
@@ -2140,6 +2153,7 @@ static void settings_modal(void) {
 			camera_row(t);   /* (UI-02b) */
 			mapping_rows(t);
 		} else {
+			game_lang_row(t);   /* (GAME-LANG) */
 			slider_row(t, "Volume", nullptr, "volume", 1.0, 0.0f, 100.0f, "%.0f%%", 100.0f);
 			toggle_row(t, "Play online", ONLINE_EXPL, "online", true);
 			{ const std::string st = online_status_line(); if (!st.empty()) ui::muted_wrapped(st.c_str()); }
@@ -2196,7 +2210,7 @@ static const char *setting_name(const std::string &k) {
 		{"hud_layout", "HUD"}, {"aspect", "Picture fit"}, {"frame_rate", "Frame rate"}, {"post_aa", "Anti-aliasing"}, {"sharpen", "Sharpening"},
 		{"anisotropy", "Texture filtering"}, {"shadow_filter", "Shadow edges"}, {"full_res_world", "Full-resolution world"}, {"ssao", "Ambient occlusion"},
 		{"ssao_strength", "Occlusion strength"}, {"osd", "On-screen stats"}, {"input_mode", "Play with"}, {"mouse_look", "Mouse look"}, {"raw_look", "Mouse aim"},
-		{"mouse_sens", "Mouse sensitivity"}, {"mouse_invert", "Invert vertical look"}, {"shoulder_buttons", "L and R buttons"}, {"volume", "Volume"}, {"online_id", "Online name"}, {"online", "Play online"}, {"gyro", "Gyro"},
+		{"mouse_sens", "Mouse sensitivity"}, {"mouse_invert", "Invert vertical look"}, {"shoulder_buttons", "L and R buttons"}, {"volume", "Volume"}, {"game_lang", "Game language"}, {"online_id", "Online name"}, {"online", "Play online"}, {"gyro", "Gyro"},
 		{"gyro_sens", "Gyro sensitivity"}, {"camera", "Rear camera"}, {"stick_l_sens", "Left stick sensitivity"}, {"stick_l_dead", "Left stick dead zone"},
 		{"stick_r_sens", "Right stick sensitivity"}, {"stick_r_dead", "Right stick dead zone"}};
 	for (auto &n : names) if (k == n.first) return n.second;

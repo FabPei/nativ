@@ -17,6 +17,9 @@
  *   aspect        window.c    fit | stretch | fill      how the 960x544 picture meets the window
  *   present_mode  window.c    vsync | mailbox | immediate (default empty = today's rule: mailbox on Vulkan, else vsync)
  *                             how frames reach the screen; read once at the swapchain setup (RECOMP_PRESENT_MODE wins)
+ *   game_lang     apputil.c   auto | en_us | en_gb | de | fr | es | it | nl | pt | pt_br | pl | fi | sv | da | no | tr | ru |
+ *                             ja | ko | zh_hans | zh_hant (default auto)   the Vita system language a game sees (game_lang.h);
+ *                             auto = the host locale, read once at the game's start (RECOMP_GAME_LANG wins)
  *   menu_lang     overlay.cpp  auto | en | de (default auto)   the menu's language; auto = the system's
  *                             preference (SDL_GetPreferredLocales); the catalog is runtime/ui/ui_text.c
  *   pad_bind_<vita>  window.c   "" (default) | none | south | east | west | north | start | back | dpad_up |

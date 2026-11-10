@@ -1726,3 +1726,13 @@ void window_run(void *(*fn)(void *), void *arg) {
 		if (metrics_title(title, sizeof title)) SDL_SetWindowTitle(win, title);
 	}
 }
+
+/* (GAME-LANG) the host's preferred locale for apputil.c's system language (game_lang "auto"): SDL's first one;
+ * 0 when SDL knows none. Needs no initialised SDL subsystem. */
+int window_host_locale(char *lang, int nl, char *country, int nc) {
+	int n = 0; SDL_Locale **l = SDL_GetPreferredLocales(&n);
+	int ok = l && n > 0 && l[0] && l[0]->language;
+	if (ok) { snprintf(lang, (size_t)nl, "%s", l[0]->language); snprintf(country, (size_t)nc, "%s", l[0]->country ? l[0]->country : ""); }
+	SDL_free(l);
+	return ok;
+}

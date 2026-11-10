@@ -138,6 +138,18 @@ known intervals, then the full overlay is read back:
 On Windows (llvm-mingw), use `../platform/platform_win32.c` and add `-static -lpthread -lwinmm`. It prints
 `all passed`.
 
+## The system language a game sees: `game_lang_test.c`, `system_lang_test.c`
+
+GAME-LANG. `game_lang_test.c` checks `runtime/core/game_lang.h` alone: the setting `game_lang` (a key such as `de`, or
+the Vita's number), "auto" from the host locale (de_AT German, en_GB English UK, pt_BR, zh_TW, nb, a language the
+Vita lacks -> English US), `RECOMP_GAME_LANG` over the setting, and a headless run with "auto" staying English (US).
+`system_lang_test.c` includes `apputil.c` and asks `sceAppUtilSystemParamGetInt` for the language with a German host
+locale: 4, decided once; fail-before against the older apputil.c (`-DAPPUTIL_UNDER_TEST='"<file>"'`), which answered
+1 (English US) always: 2 FAILED.
+
+    cc -O1 -g -Wall -I ../core game_lang_test.c -o /tmp/game_lang_test && /tmp/game_lang_test
+    cc -O1 -g -Wall -D_GNU_SOURCE $INC -I $SDL3_INC system_lang_test.c -o /tmp/system_lang_test -lpthread && /tmp/system_lang_test
+
 ## What the dialogs that finish at once answer: `dialog_result_test.c`
 
 Checks `runtime/core/apputil.c`'s results offline. `sceMsgDialogGetResult` fills SceMsgDialogResult as a console
