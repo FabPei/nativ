@@ -50,7 +50,7 @@ enum { DEF_MASTER = 1, DEF_SIMPLE, DEF_REVERB, DEF_OTHER, DEF_SCREAM, DEF_SCREAM
 #define P_SCALAR 60
 #define P_CHANNELS 76
 #define P_TYPE 79
-#define P_START 80
+#define P_START HLE_NGS_PLAYER_START_BUFFER   /* (PTW-NGS: +81, not +80; hle_small.h) */
 #define PARAMS_SIZE 512
 typedef struct Voice {
 	uint32_t handle, def;
@@ -458,7 +458,7 @@ static void h_voice_play(Cpu *c) {
 		v->pcm_len = v->pcm_pos = 0; v->at9_cfg = 0; v->stage_on = 0;   /* (a fresh decoder: ATRAC9 frames carry state) */
 		v->ad_valid = 0; v->ad_idx = 0; memset(v->ad_hist, 0, sizeof v->ad_hist);
 		v->at9_waited = v->at9_decoded = 0; v->env_pt = 0; v->env_ms = 0; v->env_level = 0; v->releasing = v->released_out = 0; v->rel_ms = 0; memset(v->bq, 0, sizeof v->bq);
-		uint32_t pp = v->params[0]; if (pp && PCM_PLAYER(v->def)) { v->buffer = (uint8_t)RD8(pp + P_START); if (v->buffer > 3) v->buffer = 0; } }
+		uint32_t pp = v->params[0]; if (pp && PCM_PLAYER(v->def)) { v->buffer = hle_ngs_player_start((int8_t)RD8(pp + P_START)); } }
 	dump_setup();
 	if (v && dump_dir && PLAYER_VOICE(v->def)) {
 		VStat *st = &vstat[VIDX(v)]; uint32_t pp = v->params[0]; int at9 = v->def == DEF_SCREAM_AT9;
@@ -694,6 +694,12 @@ static void rs_read(const Voice *v, double step, float *l, float *r) {
 	*l = sl; *r = sr;
 }
 
+/* (PTW-NGS) the buffer a PCM / ADPCM player goes on with when its current one has no data: its next one if that has, else -1 */
+static int player_skip_empty(const Voice *v, uint32_t pp, uint32_t frame_bytes) {
+	const int16_t nx = (int16_t)RD16(pp + P_BUF(v->buffer) + 10);
+	if (nx < 0 || nx > 3) return -1;
+	return hle_ngs_player_skip_empty((int)v->buffer, nx, RD32(pp + P_BUF(nx)), RD32(pp + P_BUF(nx) + 4), frame_bytes);
+}
 /* the Scream/simple player's ADPCM type (SCE_NGS_PLAYER_TYPE_ADPCM, 1): HE-VAG frames of 16 bytes
  * per channel (stereo: a left frame then a right frame), 28 samples each, through the same buffer
  * chain and resampling as PCM. Unit 13's weapon and world effects are all ADPCM -- 563 of its 565
@@ -705,7 +711,11 @@ static int fetch_adpcm(Voice *v, uint32_t pp, int ch, float rate, float *l, floa
 	for (;;) {
 		if (v->buffer > 3) return 0;
 		uint32_t data = RD32(pp + P_BUF(v->buffer)), bytes = RD32(pp + P_BUF(v->buffer) + 4);
-		if (!data || bytes < frame_bytes) return 0;
+		if (!data || bytes < frame_bytes) {   /* (PTW-NGS) an empty buffer that links on to data: that one (as the PCM path) */
+			const int nb = player_skip_empty(v, pp, frame_bytes);
+			if (nb < 0) return 0;
+			v->buffer = (uint32_t)nb; v->byte_pos = 0; v->loops_done = 0; v->ad_idx = 0; v->ad_valid = 0; continue;
+		}
 		if (v->byte_pos + frame_bytes > bytes) {   /* this buffer is done: repeat it, or move to the next (as the PCM path) */
 			int16_t loops = (int16_t)RD16(pp + P_BUF(v->buffer) + 8), next = (int16_t)RD16(pp + P_BUF(v->buffer) + 10);
 			v->byte_pos = 0; v->ad_idx = 0; v->ad_valid = 0;
@@ -746,7 +756,11 @@ static int fetch_pcm(Voice *v, uint32_t pp, int ch, float rate, float *l, float 
 	for (;;) {
 		if (v->buffer > 3) return 0;
 		uint32_t data = RD32(pp + P_BUF(v->buffer)), bytes = RD32(pp + P_BUF(v->buffer) + 4);
-		if (!data || bytes < frame_bytes) return 0;
+		if (!data || bytes < frame_bytes) {   /* (PTW-NGS) an empty buffer that links on to data: that one (hle_small.h) */
+			const int nb = player_skip_empty(v, pp, frame_bytes);
+			if (nb < 0) return 0;
+			v->buffer = (uint32_t)nb; v->byte_pos = 0; v->loops_done = 0; continue;
+		}
 		if (v->byte_pos + frame_bytes > bytes) {   /* this buffer is done: repeat it, or move to the next */
 			int16_t loops = (int16_t)RD16(pp + P_BUF(v->buffer) + 8), next = (int16_t)RD16(pp + P_BUF(v->buffer) + 10);
 			v->byte_pos = 0;

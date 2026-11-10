@@ -143,6 +143,19 @@ static inline uint32_t hle_ngs_voice_play(int *playing) {
 static inline uint32_t hle_ngs_voice_play_state(int player_voice, int *playing, int *started) {
 	return hle_ngs_voice_play(player_voice ? playing : started);
 }
+/* (PTW-NGS) SceNgsPlayerParams, 0x54 bytes (Vita3K ngs/modules/player.h): descriptor, four buffers of 12 bytes from +8
+ * {data, bytes, s16 loops, s16 next}, +56 frequency, +60 scalar, +64 lead-in samples, +68 sample limit, +72 start bytes,
+ * +76 channels, +77 channel map[2], +79 type, +80 reserved, +81 s8 start buffer. Nativ read the start buffer at +80:
+ * Tearaway's FMOD voices start at buffer 1 (0 is empty), began on the empty one and ended at once -- no sound at all.
+ * The voice's first buffer: 0..3, else 0 */
+#define HLE_NGS_PLAYER_START_BUFFER 81
+static inline uint32_t hle_ngs_player_start(int8_t sb) { return sb >= 0 && sb < 4 ? (uint32_t)sb : 0; }
+/* a player buffer without data (or less than one frame): as the DSP (Vita3K's player), the voice goes on with the buffer
+ * it links to when that one has data -- Tearaway's first voice starts on an empty buffer 0 linking to 1 -- else its
+ * data ends. The buffer to go on with, or -1 */
+static inline int hle_ngs_player_skip_empty(int cur, int16_t next, uint32_t next_data, uint32_t next_bytes, uint32_t frame_bytes) {
+	return next >= 0 && next < 4 && next != cur && next_data && next_bytes >= frame_bytes ? next : -1;
+}
 /* HLE-LIB-03: an integer of a PARAM.SFO (little-endian: "\0PSF" +0, key table +8, data table +0xc, entry count +0x10;
  * 16-byte index entries from +0x14: key offset u16, format u16 (0x0404 = u32), length u32, max u32, data offset u32).
  * 1 and *v when the key holds an integer, else 0 */

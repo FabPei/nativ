@@ -37,6 +37,16 @@ int main(void) {
 	  check("ngs: its second Play: SCE_NGS_ERROR", hle_ngs_voice_play_state(0, &running, &started) == 0x804a0001u);
 	  int pl = 1, st = 0;
 	  check("ngs: a player voice still checks its own playing (SCE_NGS_ERROR)", hle_ngs_voice_play_state(1, &pl, &st) == 0x804a0001u && st == 0); }
+	{ /* (PTW-NGS) a player's start buffer and an empty buffer that links on, in the shape Tearaway's FMOD queues
+	   * (synthetic: 0x54-byte params, buffer 0 empty -> 1 with data -> 2 empty, end) */
+	  uint8_t pb[0x54] = {0}; pb[79] = 1; pb[80] = 0; pb[81] = 1;   /* type ADPCM, reserved 0, start buffer 1 */
+	  check("ngs: the start buffer is the s8 at +81 (Tearaway: 1)", hle_ngs_player_start((int8_t)pb[HLE_NGS_PLAYER_START_BUFFER]) == 1);
+	  check("ngs: a start buffer out of 0..3 starts at 0", hle_ngs_player_start(-1) == 0 && hle_ngs_player_start(4) == 0 && hle_ngs_player_start(3) == 3);
+	  check("ngs: an empty buffer 0 linking to 1 with 0x2170 bytes goes on with 1", hle_ngs_player_skip_empty(0, 1, 0x10000, 0x2170, 16) == 1);
+	  check("ngs: an empty buffer whose next is -1, empty, too short or itself: the data ends",
+	        hle_ngs_player_skip_empty(2, -1, 0, 0, 16) == -1 && hle_ngs_player_skip_empty(0, 1, 0x10000, 0, 16) == -1
+	        && hle_ngs_player_skip_empty(0, 1, 0x10000, 8, 16) == -1 && hle_ngs_player_skip_empty(0, 1, 0, 0x2170, 16) == -1
+	        && hle_ngs_player_skip_empty(1, 1, 0x10000, 0x2170, 16) == -1 && hle_ngs_player_skip_empty(0, 4, 0x10000, 0x2170, 16) == -1); }
 	uint32_t len[HLE_AUDIO_PORTS] = {0};
 	int ok = 1;
 	for (int k = 0; k < HLE_AUDIO_PORTS; k++) { int s = hle_audio_port_free_slot(len); ok &= s == k; if (s >= 0) len[s] = 256; }
