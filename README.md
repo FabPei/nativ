@@ -1,16 +1,20 @@
 # Project Nativ: unofficial fork
 
 [Luufen/nativ](https://github.com/Luufen/nativ) is a community fork of [Project Nativ](https://github.com/TheLostPantheon/nativ),
-not an official release; the original README follows [below](#project-nativ). It adds
-support for more games and a launcher and in-game menu you can use with a controller or a touch screen alone. Its
-releases are tagged `vX.Y.Z-fpN` (based on upstream `vX.Y.Z`), are built from this repository's source by GitHub
-Actions (`.github/workflows/release.yml`), are unsigned, and contain no game: as with upstream, you bring your own copy.
+not an official release; the original README follows [below](#project-nativ). It adds packs for more games, so
+Nativ can rebuild your own copy of them, and a launcher and in-game menu you can use with a controller or a touch
+screen alone. Its releases are tagged `vX.Y.Z-fpN` (based on upstream `vX.Y.Z`), are built from this repository's
+source by GitHub Actions (`.github/workflows/release.yml`) and are unsigned.
+
+**No game comes with this repository or its releases**, as with upstream: you need your own copy of each game, dumped
+from a Vita you own, and Sony's firmware update file.
 Generic fixes are also offered upstream as pull requests. Problems with these builds belong in
 [this fork's issues](https://github.com/Luufen/nativ/issues), not upstream's.
 
-## Games added in this fork
+## Games this fork has packs for
 
-Upstream's four games are unchanged. Frame rate is the highest the game offers in this fork, widescreen the widest
+A pack is a game's settings file: it tells Nativ how to rebuild that game from your copy, which it recognises by the
+SHA-256 of the game's main program. It holds no game code or data. Upstream's four games are unchanged. Frame rate is the highest the game offers in this fork, widescreen the widest
 picture it fills (16:9: wider screens get black bars at the sides).
 
 | Game | Title ID | Frame rate | Widescreen |
@@ -43,8 +47,8 @@ picture it fills (16:9: wider screens get black bars at the sides).
 | Rayman Legends (Chinese) | PCSH00118 | up to 120 | up to 21:9 |
 | Toukiden Kiwami (Chinese) | PCSH00110 | 60 | 16:9 |
 
-Most of the new packs were made with the fork's new-game tools (below): they hold what the game needs to build and
-boot, plus frame-rate and widescreen settings found automatically.
+Most of these packs were made with the fork's porting tools (below): they hold what Nativ needs to build and boot the
+game from your copy, plus frame-rate and widescreen settings found automatically.
 
 ## What's new compared with Project Nativ v0.1.5
 
@@ -82,7 +86,7 @@ boot, plus frame-rate and widescreen settings found automatically.
 **Compatibility**
 - Many fixes in the recompiler and the emulated system: more ARM and NEON instructions, game modules loaded while
   playing, threads that start again, fibers and timers, more GPU formats and shader forms. These are what get most of
-  the new games above to their menus.
+  the games in the table to their menus.
 
 **For people porting a game**
 - `vitarecomp pack-init` and `bootstrap` make a first pack for a new game and repeat analysis, build and test until
