@@ -173,6 +173,24 @@ static inline void hle_camera_take(uint64_t now, uint64_t *next, uint64_t *last,
 	if (!*next || now > *next + interval) *next = now;
 	*last = *next; *next += interval;
 }
+/* (PTW-VIS) a draw's visibility counter. sceGxmSetVisibilityBuffer takes an immediate context only (Vita3K SceGxm.cpp:
+ * a deferred one is SCE_GXM_ERROR_INVALID_VALUE); a deferred context sets the test's enable, index and op, and its command
+ * list's draws count into the buffer of the immediate context that executes the list. Resolved at record time from the
+ * draw's own context, a deferred draw had no buffer and was never counted: Tearaway's job workers draw a touch button
+ * through such a list behind an INCREMENT test, read 0 samples, take it as hidden every other frame, and it flickered.
+ * hle_vis_record: at the draw, 1 with *addr / *flags (bit 0 the SET op) when it carries a counter -- the address, or for a
+ * draw being recorded without a buffer of its own the offset 4*index and HLE_VIS_DEFERRED; hle_vis_execute: at
+ * ExecuteCommandList, a deferred counter against the executing context's buffer (none: not counted) */
+#define HLE_VIS_DEFERRED 0x80u
+static inline int hle_vis_record(int on, uint32_t own_buf, uint32_t index, int set, int recording, uint32_t *addr, uint8_t *flags) {
+	if (on && own_buf) { *addr = own_buf + 4u * index; *flags = set ? 1 : 0; return 1; }
+	if (on && recording) { *addr = 4u * index; *flags = (uint8_t)(HLE_VIS_DEFERRED | (set ? 1 : 0)); return 1; }
+	return 0;
+}
+static inline void hle_vis_execute(uint32_t exec_buf, uint32_t *addr, uint8_t *flags) {
+	if (!(*flags & HLE_VIS_DEFERRED)) return;
+	*addr = exec_buf ? exec_buf + *addr : 0; *flags = exec_buf ? (uint8_t)(*flags & 1) : 0;
+}
 /* HLE-LIB-03: an integer of a PARAM.SFO (little-endian: "\0PSF" +0, key table +8, data table +0xc, entry count +0x10;
  * 16-byte index entries from +0x14: key offset u16, format u16 (0x0404 = u32), length u32, max u32, data offset u32).
  * 1 and *v when the key holds an integer, else 0 */

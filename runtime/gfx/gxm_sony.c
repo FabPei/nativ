@@ -16,6 +16,7 @@
 #include <string.h>
 #include <time.h>
 #include "hle.h"
+#include "hle_small.h"
 #include "gfx.h"
 #include "gfx_coverage.h"
 #include "gaps.h"   /* GAPS-01 */
@@ -365,9 +366,22 @@ static void o_end_command_list(Cpu *c) {   /* (deferred context, list): the reco
 	if (l) { DrawList t = *l; *l = *r; l->key = A1; *r = t; r->key = 0; r->n = 0; }   /* (swap the buffers: no copy) */
 	else { static int warned; if (!warned++) fprintf(stderr, "    gxm: more than %d command lists: one dropped\n", MAX_LISTS); r->key = 0; r->n = 0; }
 }
+/* a draw's final counter: a SET test is written 1 here for every renderer unless RECOMP_VIS_SET=gpu|real (see draw), else
+ * the renderer counts it at its address */
+static void vis_resolve(GfxDraw *d) {
+	if (!d->vis_addr) { d->vis_set = 0; return; }
+	static int stub = -1; if (stub < 0) { const char *e = getenv("RECOMP_VIS_SET"); stub = !(e && (!strcmp(e, "gpu") || !strcmp(e, "real"))); }
+	if (d->vis_set && stub) { gfx_vis_write(d->vis_addr, 1); d->vis_addr = 0; d->vis_set = 0; }
+}
 static void o_execute_command_list(Cpu *c) {   /* (immediate context, list): its draws, in order, in this scene */
 	DrawList *l = dl_find(lists, MAX_LISTS, A1, 0);
-	for (int i = 0; l && i < l->n; i++) gfx_draw(&l->d[i]);
+	const uint32_t buf = vis[vis_slot(A0)].buf;
+	for (int i = 0; l && i < l->n; i++) {
+		if (!(l->d[i].vis_set & HLE_VIS_DEFERRED)) { gfx_draw(&l->d[i]); continue; }
+		GfxDraw d = l->d[i]; uint32_t a = d.vis_addr; uint8_t f = d.vis_set;   /* (PTW-VIS) its counter in this context's buffer; the recording stays relative for the next execute */
+		hle_vis_execute(buf, &a, &f); d.vis_addr = a; d.vis_set = f; vis_resolve(&d);
+		gfx_draw(&d);
+	}
 }
 static void draw(uint32_t cx, const uint32_t *stream, uint32_t prim, uint32_t index_format, uint32_t indices, uint32_t count) {
 	GfxDraw d;
@@ -473,11 +487,11 @@ static void draw(uint32_t cx, const uint32_t *stream, uint32_t prim, uint32_t in
 	 * counts aren't right yet -- with them on (6eecbdc, 2026-10-21) Killzone hid a door and other things in plain view, and
 	 * two consecutive frames of one view disagreed on ~20 of 73 boxes (a 1.12 capture, frame_4802: scenes 6 and 12). */
 	{ int i = dbias_slot(cx); d.depth_bias_factor = clamp8(dbias[i].factor); d.depth_bias_units = clamp8(dbias[i].units); }
-	{ int i = vis_slot(cx); if (vis[i].on && vis[i].buf) {
-		static int stub = -1; if (stub < 0) { const char *e = getenv("RECOMP_VIS_SET"); stub = !(e && (!strcmp(e, "gpu") || !strcmp(e, "real"))); }
-		if (vis[i].set && stub) gfx_vis_write(vis[i].buf + 4u * vis[i].index, 1);
-		else { d.vis_addr = vis[i].buf + 4u * vis[i].index; d.vis_set = (uint8_t)vis[i].set; } } }
 	DrawList *rec = dl_find(recording, MAX_RECORDING, cx, 0);
+	/* (PTW-VIS) a deferred context has no visibility buffer of its own: its recorded draws keep the counter's offset and
+	 * count into the executing immediate context's buffer (hle_small.h hle_vis_record / hle_vis_execute, vis_resolve) */
+	{ int i = vis_slot(cx); uint32_t a; uint8_t f;
+	  if (hle_vis_record(vis[i].on, vis[i].buf, vis[i].index, vis[i].set, rec != 0, &a, &f)) { d.vis_addr = a; d.vis_set = f; if (!(f & HLE_VIS_DEFERRED)) vis_resolve(&d); } }
 	if (rec) dl_push(rec, &d);   /* a deferred context's draw: its command list's, run when the list is executed */
 	else gfx_draw(&d);
 	vis_record(cx, front);

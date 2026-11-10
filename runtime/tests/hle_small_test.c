@@ -57,6 +57,19 @@ int main(void) {
 	  next = 5000000; hle_camera_take(9000000, &next, &last, iv);
 	  check("camera: a reader late by seconds starts the grid again (no burst)", last == 9000000 && next == 9000000 + iv);
 	  check("camera: a read 1 us before the frame is due waits for nothing", hle_camera_wait_us(999999, 1000000) == 0 && hle_camera_wait_us(900000, 1000000) == 100000); }
+	{ /* (PTW-VIS) a deferred context's visibility test counts into the executing immediate context's buffer */
+	  uint32_t a = 0; uint8_t f = 0;
+	  check("vis: an immediate draw with the test on counts at its own buffer + 4*index", hle_vis_record(1, 0x1b88b000, 3, 0, 0, &a, &f) && a == 0x1b88b00c && f == 0);
+	  a = 0; f = 0;
+	  check("vis: a deferred draw (no buffer of its own, recording) keeps its counter for the execute", hle_vis_record(1, 0, 0, 0, 1, &a, &f) == 1);
+	  hle_vis_execute(0x1b88b000, &a, &f);
+	  check("vis: executed on the immediate context, it counts at that buffer (Tearaway: index 0, INCREMENT)", a == 0x1b88b000 && f == 0);
+	  a = 0; f = 0; hle_vis_record(1, 0, 5, 1, 1, &a, &f); hle_vis_execute(0x1b889000, &a, &f);
+	  check("vis: a deferred SET test keeps its op and index", a == 0x1b889014 && f == 1);
+	  a = 0; f = 0; hle_vis_record(1, 0, 2, 0, 1, &a, &f); hle_vis_execute(0, &a, &f);
+	  check("vis: executed where no buffer is set: not counted", a == 0 && f == 0);
+	  a = 0; f = 0;
+	  check("vis: test off, or no buffer and not recording: no counter", !hle_vis_record(0, 0x1b88b000, 1, 0, 0, &a, &f) && !hle_vis_record(1, 0, 1, 0, 0, &a, &f) && a == 0); }
 	uint32_t len[HLE_AUDIO_PORTS] = {0};
 	int ok = 1;
 	for (int k = 0; k < HLE_AUDIO_PORTS; k++) { int s = hle_audio_port_free_slot(len); ok &= s == k; if (s >= 0) len[s] = 256; }
