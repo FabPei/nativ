@@ -7,7 +7,7 @@ body:
       value: |
         Thanks for reporting. Two files make a report reproducible: the launcher's `session.log` and an input
         recording (`.rec`) of the session where the problem happened
-        ([how to record one](https://github.com/FabPei/nativ/blob/fp/main/docs/input-recording.md)).
+        ([how to record one](https://github.com/Luufen/nativ/blob/fp/main/docs/input-recording.md)).
 
         **Never attach game files, firmware, keys, decrypted modules, or saves that contain personal data.**
         Logs, input recordings and hashes are enough.
@@ -24,7 +24,7 @@ body:
     attributes:
       label: Nativ release tag
       description: The release you ran (from the GitHub release page or the launcher's About view).
-      placeholder: v0.1.5-fp2
+      placeholder: v0.1.5-lf3
     validations:
       required: true
   - type: input

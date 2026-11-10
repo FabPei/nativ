@@ -3,7 +3,7 @@
 [Luufen/nativ](https://github.com/Luufen/nativ) is a community fork of [Project Nativ](https://github.com/TheLostPantheon/nativ),
 not an official release; the original README follows [below](#project-nativ). It adds packs for more games, so
 Nativ can rebuild your own copy of them, and a launcher and in-game menu you can use with a controller or a touch
-screen alone. Its releases are tagged `vX.Y.Z-fpN` (based on upstream `vX.Y.Z`), are built from this repository's
+screen alone. Its releases are tagged `vX.Y.Z-lfN` (based on upstream `vX.Y.Z`; `-fpN` before v0.1.5-lf3), are built from this repository's
 source by GitHub Actions (`.github/workflows/release.yml`) and are unsigned.
 
 **No game comes with this repository or its releases**, as with upstream: you need your own copy of each game, dumped
@@ -14,38 +14,40 @@ Generic fixes are also offered upstream as pull requests. Problems with these bu
 ## Games this fork has packs for
 
 A pack is a game's settings file: it tells Nativ how to rebuild that game from your copy, which it recognises by the
-SHA-256 of the game's main program. It holds no game code or data. Upstream's four games are unchanged. Frame rate is the highest the game offers in this fork, widescreen the widest
-picture it fills (16:9: wider screens get black bars at the sides).
+SHA-256 of the game's main program. It holds no game code or data. Upstream's four games are unchanged. Frame rate is the highest the game offers in this fork, widescreen the widest picture it fills (16:9: wider screens get black bars at the sides).
+Version is the game release the pack supports. Every game can render at up to 6× the Vita's 960×544; 4K (4×) was
+checked in the test runs of all of them except Tearaway, LittleBigPlanet and the two Persona Dancing games from
+PersonaDancingRecomp.
 
-| Game | Title ID | Frame rate | Widescreen |
-|---|---|---|---|
-| Soul Sacrifice Delta (EU) | PCSF00532 | up to 120 | up to 21:9 |
-| Persona 4: Dancing All Night (US) | PCSE00764 | 30 | up to 21:9 |
-| Persona 3: Dancing in Moonlight (US) | PCSE01274 | 60 | not tested |
-| Persona 5: Dancing in Starlight (US) | PCSE01275 | 60 | not tested |
-| Uncharted: Golden Abyss (EU) | PCSF00001 | up to 120 | up to 21:9 |
-| Tearaway | PCSF00476 | 30 | not checked yet |
-| Medieval Defenders | PCSB00672 | up to 120 | 16:9 |
-| Persona 4 Golden | PCSB00245 | 30 | up to 21:9 |
-| Invizimals: Hidden Challenges | PCSF00415 | up to 120 | up to 21:9 |
-| Invizimals: The Resistance | PCSF00510 | 30, slower in busy scenes | 16:9 |
-| Killzone: Mercenary (EU) | PCSF00243 | up to 120 | 16:9 |
-| WipEout 2048 | PCSD00005 | up to 120 | up to 21:9 |
-| LittleBigPlanet | PCSA00017 | 30 | not checked yet |
-| Gravity Rush | PCSF00024 | 30, slower in busy scenes | 16:9 |
-| Ratchet & Clank Trilogy | PCSF00482 | 30, slower in busy scenes | 16:9 |
-| PlayStation All-Stars Battle Royale | PCSF00153 | 60, slower in busy scenes | 16:9 |
-| Injustice: Gods Among Us Ultimate Edition | PCSB00356 | 60 | 16:9 |
-| Street Fighter X Tekken | PCSB00144 | 60 | 16:9 |
-| J-Stars Victory VS+ | PCSE00595 | 60 | 16:9 |
-| God Eater Resurrection | PCSB00874 | 30 | not checked yet |
-| God Eater 2 Rage Burst | PCSB00875 | 30 | 16:9 |
-| Call of Duty: Black Ops Declassified (Russian) | PCSB00232 | 30, slower in busy scenes | 16:9 |
-| LEGO Ninjago: Nindroids | PCSB00500 | up to 120 | 16:9 |
-| XCOM: Enemy Unknown Plus | PCSB00742 | 30 | 16:9 |
-| Batman: Arkham Origins Blackgate | PCSB00353 | up to 120 | 16:9 |
-| Rayman Legends (Chinese) | PCSH00118 | up to 120 | up to 21:9 |
-| Toukiden Kiwami (Chinese) | PCSH00110 | 60 | 16:9 |
+| Game | Title ID | Version | Frame rate | Widescreen | Max resolution |
+|---|---|---|---|---|---|
+| Soul Sacrifice Delta (EU) | PCSF00532 | 1.00 | up to 120 | up to 21:9 | 5760×3264 (6×) |
+| Persona 4: Dancing All Night (US) | PCSE00764 | 1.00, 1.01 | 30 | up to 21:9 | 5760×3264 (6×) |
+| Persona 3: Dancing in Moonlight (US) | PCSE01274 | 1.00 | 60 | not tested | 5760×3264 (6×) |
+| Persona 5: Dancing in Starlight (US) | PCSE01275 | 1.00 | 60 | not tested | 5760×3264 (6×) |
+| Uncharted: Golden Abyss (EU) | PCSF00001 | 1.00 | up to 120 | up to 21:9 | 5760×3264 (6×) |
+| Tearaway | PCSF00476 | 1.00 | 30 | not checked yet | 5760×3264 (6×) |
+| Medieval Defenders | PCSB00672 | 1.00 | up to 120 | 16:9 | 5760×3264 (6×) |
+| Persona 4 Golden | PCSB00245 | 1.00 | 30 | up to 21:9 | 5760×3264 (6×) |
+| Invizimals: Hidden Challenges | PCSF00415 | 1.00 | up to 120 | up to 21:9 | 5760×3264 (6×) |
+| Invizimals: The Resistance | PCSF00510 | 1.00 | 30, slower in busy scenes | 16:9 | 5760×3264 (6×) |
+| Killzone: Mercenary (EU) | PCSF00243 | 1.00 | up to 120 | 16:9 | 5760×3264 (6×) |
+| WipEout 2048 | PCSD00005 | 1.00 | up to 120 | up to 21:9 | 5760×3264 (6×) |
+| LittleBigPlanet | PCSA00017 | 1.00 | 30 | not checked yet | 5760×3264 (6×) |
+| Gravity Rush | PCSF00024 | 1.00 | 30, slower in busy scenes | 16:9 | 5760×3264 (6×) |
+| Ratchet & Clank Trilogy | PCSF00482 | 1.00 | 30, slower in busy scenes | 16:9 | 5760×3264 (6×) |
+| PlayStation All-Stars Battle Royale | PCSF00153 | 1.00 | 60, slower in busy scenes | 16:9 | 5760×3264 (6×) |
+| Injustice: Gods Among Us Ultimate Edition | PCSB00356 | 1.00 | 60 | 16:9 | 5760×3264 (6×) |
+| Street Fighter X Tekken | PCSB00144 | 1.00 | 60 | 16:9 | 5760×3264 (6×) |
+| J-Stars Victory VS+ | PCSE00595 | 1.00 | 60 | 16:9 | 5760×3264 (6×) |
+| God Eater Resurrection | PCSB00874 | 1.00 | 30 | not checked yet | 5760×3264 (6×) |
+| God Eater 2 Rage Burst | PCSB00875 | 1.00 | 30 | 16:9 | 5760×3264 (6×) |
+| Call of Duty: Black Ops Declassified (Russian) | PCSB00232 | 1.00 | 30, slower in busy scenes | 16:9 | 5760×3264 (6×) |
+| LEGO Ninjago: Nindroids | PCSB00500 | 1.00 | up to 120 | 16:9 | 5760×3264 (6×) |
+| XCOM: Enemy Unknown Plus | PCSB00742 | 1.00 | 30 | 16:9 | 5760×3264 (6×) |
+| Batman: Arkham Origins Blackgate | PCSB00353 | 1.00 | up to 120 | 16:9 | 5760×3264 (6×) |
+| Rayman Legends (Chinese) | PCSH00118 | 1.00 | up to 120 | up to 21:9 | 5760×3264 (6×) |
+| Toukiden Kiwami (Chinese) | PCSH00110 | 1.00 | 60 | 16:9 | 5760×3264 (6×) |
 
 Most of these packs were made with the fork's porting tools (below): they hold what Nativ needs to build and boot the
 game from your copy, plus frame-rate and widescreen settings found automatically.
