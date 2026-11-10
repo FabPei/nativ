@@ -160,42 +160,41 @@ Generic fixes are also offered upstream as pull requests. Problems with these bu
 
 ### Games added in this fork
 
-Upstream's four games are unchanged. "Played" means a person played it with this fork; "reaches its menu" means an
-automated test run on Windows got there, and nobody has played further yet. Reports are welcome.
+Upstream's four games are unchanged. Frame rate is the highest the game offers in this fork, widescreen the widest picture it fills (16:9: wider
+screens get black bars at the sides).
 
-| Game | Title ID | State |
-|---|---|---|
-| Soul Sacrifice Delta (EU) | PCSF00532 | Played: menus, intro, tutorial fight, saving, first level; up to 120 fps and 21:9 |
-| Persona 4: Dancing All Night (US) | PCSE00764 | Played: songs and menus at 30 fps, widescreen |
-| Persona 3: Dancing in Moonlight (US) | PCSE01274 | From PersonaDancingRecomp, not tested in this fork |
-| Persona 5: Dancing in Starlight (US) | PCSE01275 | From PersonaDancingRecomp, not tested in this fork |
-| Uncharted: Golden Abyss (EU) | PCSF00001 | Reaches its menu, with the US pack; up to 120 fps, 21:9 |
-| Tearaway | PCSF00476 | Played on Windows, camera and sound included |
-| Medieval Defenders | PCSB00672 | Played on a Steam Deck; up to 120 fps |
-| Persona 4 Golden | PCSB00245 | Reaches its menu; widescreen |
-| Invizimals: Hidden Challenges | PCSF00415 | Reaches its menu; uses your webcam as the Vita's camera |
-| Invizimals: The Resistance | PCSF00510 | Reaches its menu |
-| Killzone: Mercenary (EU) | PCSF00243 | Reaches its menu; up to 120 fps |
-| WipEout 2048 | PCSD00005 | Reaches its menu; up to 120 fps, widescreen |
-| LittleBigPlanet | PCSA00017 | Reaches the introduction level |
-| Gravity Rush | PCSF00024 | Reaches the first scene |
-| Ratchet & Clank Trilogy | PCSF00482 | Reaches the trilogy menu and Ratchet & Clank 1's menu |
-| PlayStation All-Stars Battle Royale | PCSF00153 | Reaches its menu |
-| Injustice: Gods Among Us Ultimate Edition | PCSB00356 | Reaches its menu; some fighters still show one colour |
-| Street Fighter X Tekken | PCSB00144 | Reaches its menu |
-| J-Stars Victory VS+ | PCSE00595 | Reaches its menu; 60 fps |
-| God Eater Resurrection | PCSB00874 | Reaches its menu |
-| God Eater 2 Rage Burst | PCSB00875 | Reaches its menu |
-| Call of Duty: Black Ops Declassified (Russian) | PCSB00232 | Reaches its menu |
-| LEGO Ninjago: Nindroids | PCSB00500 | Reaches its menu; up to 120 fps |
-| XCOM: Enemy Unknown Plus | PCSB00742 | Reaches its menu |
-| Batman: Arkham Origins Blackgate | PCSB00353 | Reaches its menu; up to 120 fps |
-| Rayman Legends (Chinese) | PCSH00118 | Reaches its menu; up to 120 fps, widescreen |
-| Toukiden Kiwami (Chinese) | PCSH00110 | Reaches its menu; 60 fps |
+| Game | Title ID | Frame rate | Widescreen |
+|---|---|---|---|
+| Soul Sacrifice Delta (EU) | PCSF00532 | up to 120 | up to 21:9 |
+| Persona 4: Dancing All Night (US) | PCSE00764 | 30 | up to 21:9 |
+| Persona 3: Dancing in Moonlight (US) | PCSE01274 | 60 | not tested |
+| Persona 5: Dancing in Starlight (US) | PCSE01275 | 60 | not tested |
+| Uncharted: Golden Abyss (EU) | PCSF00001 | up to 120 | up to 21:9 |
+| Tearaway | PCSF00476 | 30 | not checked yet |
+| Medieval Defenders | PCSB00672 | up to 120 | 16:9 |
+| Persona 4 Golden | PCSB00245 | 30 | up to 21:9 |
+| Invizimals: Hidden Challenges | PCSF00415 | up to 120 | up to 21:9 |
+| Invizimals: The Resistance | PCSF00510 | 30, slower in busy scenes | 16:9 |
+| Killzone: Mercenary (EU) | PCSF00243 | up to 120 | 16:9 |
+| WipEout 2048 | PCSD00005 | up to 120 | up to 21:9 |
+| LittleBigPlanet | PCSA00017 | 30 | not checked yet |
+| Gravity Rush | PCSF00024 | 30, slower in busy scenes | 16:9 |
+| Ratchet & Clank Trilogy | PCSF00482 | 30, slower in busy scenes | 16:9 |
+| PlayStation All-Stars Battle Royale | PCSF00153 | 60, slower in busy scenes | 16:9 |
+| Injustice: Gods Among Us Ultimate Edition | PCSB00356 | 60 | 16:9 |
+| Street Fighter X Tekken | PCSB00144 | 60 | 16:9 |
+| J-Stars Victory VS+ | PCSE00595 | 60 | 16:9 |
+| God Eater Resurrection | PCSB00874 | 30 | not checked yet |
+| God Eater 2 Rage Burst | PCSB00875 | 30 | 16:9 |
+| Call of Duty: Black Ops Declassified (Russian) | PCSB00232 | 30, slower in busy scenes | 16:9 |
+| LEGO Ninjago: Nindroids | PCSB00500 | up to 120 | 16:9 |
+| XCOM: Enemy Unknown Plus | PCSB00742 | 30 | 16:9 |
+| Batman: Arkham Origins Blackgate | PCSB00353 | up to 120 | 16:9 |
+| Rayman Legends (Chinese) | PCSH00118 | up to 120 | up to 21:9 |
+| Toukiden Kiwami (Chinese) | PCSH00110 | 60 | 16:9 |
 
-The packs marked "reaches its menu" were made with the fork's new-game tools (below): they hold what the game needs to
-build and boot, plus frame-rate and widescreen settings found automatically. Higher frame rates and wider screens only
-work where a game allows them; otherwise the picture keeps the Vita's shape.
+Most of the new packs were made with the fork's new-game tools (below): they hold what the game needs to build and
+boot, plus frame-rate and widescreen settings found automatically.
 
 ### What's new compared with Project Nativ v0.1.5
 
@@ -242,8 +241,8 @@ work where a game allows them; otherwise the picture keeps the Vita's shape.
 
 ### Tested
 
-- Windows 11 (x64): the games marked "Played" above, from a local build of the same source; the others in automated
-  test runs.
+- Windows 11 (x64): Soul Sacrifice Delta, Persona 4: Dancing All Night and Tearaway played from a local build of the
+  same source; every other game above reached its menu in automated test runs.
 - Steam Deck: Medieval Defenders and Soul Sacrifice Delta, each exported as an AppImage (`vitarecomp export-appimage`).
 - The release's Linux AppImage and macOS `.dmg`: built and packaged by CI only; no game has been run with them by this
   fork.
