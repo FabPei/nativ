@@ -5,7 +5,7 @@ AUTO_GENERATED = "pack-init"
 NAME = "J-STARS Victory VS+"
 ELF = "eboot.bin.elf"
 MODULES = "libc libgxm_es4 libgpu_es4 libfios2 libsceavplayer libscemp4"
-RUN_ENV = "RECOMP_ASPECT_HOOK=1 RECOMP_HUD_DRAWS=2d RECOMP_FRAME_RATES=30,60,120"   # FEAT-ALL-01 (local)
+RUN_ENV = "RECOMP_ASPECT_HOOK=1 RECOMP_HUD_DRAWS=2d RECOMP_FRAME_RATES=30,60"   # FEAT-ALL-01: 120 is left out, the game hangs at 120 (menu runs)
 IHOOKS = "0x8112328a:frame_dt 0x8112342a:frame_dt 0x81126858:frame_dt 0x81127680:frame_dt 0x81256a28:frame_dt"   # FEAT-ALL-01: hooks-scan candidates, tested by the menu runs
 TEST_FRAMES = 600         # bootstrap's headless run length (TEST_FRAMES=<n> for one run)
 # note: shipped in sce_module/ but not loaded: libface libsmart libult (add to MODULES if the run stubs their imports)
