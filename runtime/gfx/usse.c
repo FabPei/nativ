@@ -19,6 +19,7 @@
 #include "hle.h"     /* guest_alloc; brings in rt.h (G/RD32/.../recomp_mem) */
 #include "usse.h"
 #include "usse_internal.h"   /* UOp/UOperand + the enums below: shared with usse_spirv.c */
+#include "gaps.h"   /* GAPS-01 */
 
 /* ---------------------------------------------------------------- 1. bit helpers / tables */
 #define BITS(w, hi, lo) (uint32_t)(((w) >> (lo)) & ((((uint64_t)1) << ((hi) - (lo) + 1)) - 1))
@@ -551,8 +552,8 @@ static UOp decode_one(uint64_t w, int secondary) {
 	if (op1 == 0x13) { dec_i8mad(w, secondary, &op); return op; }
 	if (op1 == 0x14) { dec_i16mad(w, secondary, &op); return op; }
 	if (op1 == 0x15) { dec_i32mad(w, secondary, &op); return op; }
-	if (op1 == 0x16 || op1 == 0x17 || op1 == 0x18 || op1 == 0x1B) { op.op = OP_UNSUPPORTED; return op; }   /* illegal */
-	if (op1 == 0x19) { op.op = OP_NOP; return op; }   /* I8MAD2: unimplemented, no-op */
+	if (op1 == 0x16 || op1 == 0x17 || op1 == 0x18 || op1 == 0x1B) { gap(GAP_USSE_OP, op1 << 8, "usse: illegal op1 (unsupported)"); op.op = OP_UNSUPPORTED; return op; }   /* illegal */
+	if (op1 == 0x19) { gap(GAP_USSE_OP, op1 << 8, "usse: I8MAD2 run as a no-op"); op.op = OP_NOP; return op; }   /* I8MAD2: unimplemented, no-op */
 	if (op1 == 0x1A) { dec_i32mad2(w, secondary, &op); return op; }
 	if (op1 == 0x1C) { dec_smp(w, secondary, &op); return op; }
 	if (op1 == 0x1F) {
@@ -563,16 +564,17 @@ static UOp decode_one(uint64_t w, int secondary) {
 			if (fc == 5) { op.op = OP_NOP; return op; }               /* NOP */
 			if (fc == 0 || fc == 1) { dec_br(w, &op); return op; }    /* BR */
 			if (fc == 2) { op.op = OP_NOP; return op; }               /* return: treated as end-of-program (interpreter stops at instr_count) */
-			op.op = OP_UNSUPPORTED; return op;
+			gap(GAP_USSE_OP, op1 << 8 | 0x80 | fc, "usse: flow-control form not decoded (unsupported)"); op.op = OP_UNSUPPORTED; return op;
 		}
 		if (opcat == 1 && op2 == 2) { dec_smlsi(w, &op); return op; }
 		if (opcat == 1 && op2 == 3) { dec_smbo(w, &op); return op; }
 		if (opcat == 2 && op2 == 4) { dec_limm(w, secondary, &op); return op; }
 		if (opcat == 3 && op2 == 1) { dec_kill(w, &op); return op; }
 		if (opcat == 3 && op2 == 3) { dec_depthf(w, secondary, &op); return op; }
-		op.op = OP_NOP; return op;   /* SPEC catch-all: no-op per docs/usse-isa.md §3.21 */
+		gap(GAP_USSE_OP, op1 << 8 | opcat << 4 | op2, "usse: SPEC form run as a no-op"); op.op = OP_NOP; return op;   /* SPEC catch-all: no-op per docs/usse-isa.md §3.21 */
 	}
 	if (op1 == 0x1D || op1 == 0x1E) { dec_ldst(w, secondary, &op); return op; }
+	gap(GAP_USSE_OP, op1 << 8, "usse: op1 not decoded (unsupported)");
 	op.op = OP_UNSUPPORTED;
 	return op;
 }

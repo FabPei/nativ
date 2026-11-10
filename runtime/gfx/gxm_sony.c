@@ -18,6 +18,7 @@
 #include "hle.h"
 #include "gfx.h"
 #include "gfx_coverage.h"
+#include "gaps.h"   /* GAPS-01 */
 
 /* RECOMP_LOG_CLIP: each scene's valid region, every sceGxmSetRegionClip and the context clip at a scene's first draw */
 static int clip_log(void) { static int v = -1; if (v < 0) v = getenv("RECOMP_LOG_CLIP") != 0; return v; }
@@ -693,6 +694,7 @@ static uint32_t transfer_index(uint32_t x, uint32_t y, int32_t stride, int bytes
 	return y * (bytes ? (uint32_t)(stride / bytes) : 0) + x;   /* SCE_GXM_TRANSFER_LINEAR */
 }
 static void transfer_log_once(const char *op, uint32_t fmt, uint32_t type, uint32_t w, uint32_t h, int ok) {
+	if (!ok) gap(GAP_TRANSFER, fmt, op);   /* GAPS-01: key = the format */
 	struct Seen { const char *op; uint32_t fmt, type; }; static struct Seen seen[64]; static int nseen;
 	for (int i = 0; i < nseen; i++) if (!strcmp(seen[i].op, op) && seen[i].fmt == fmt && seen[i].type == type) return;
 	if (nseen < 64) { seen[nseen].op = op; seen[nseen].fmt = fmt; seen[nseen].type = type; nseen++; }

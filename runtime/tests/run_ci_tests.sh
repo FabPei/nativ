@@ -38,6 +38,7 @@ run audio_pace_test   -O1 -g -Wall audio_pace_test.c
 run hle_small_test    -O1 -g -Wall -I ../core hle_small_test.c
 run dump_fit_test     -O1 -g -Wall -I ../ui dump_fit_test.c
 run stick_curve_test  -O1 -g -Wall -I ../ui stick_curve_test.c -lm
+run gaps_test         -O1 -g -w -D_GNU_SOURCE $INC gaps_test.c -lm -lpthread -Wl,--unresolved-symbols=ignore-all   # GAPS-01 (usse.c's guest-memory helpers stay unresolved: decode_one never reaches them)
 run overlay_scale_test -O1 -g -Wall -I ../ui overlay_scale_test.c -lm
 run trophy_test       -O1 -g -Wall -I ../core trophy_test.c
 run ui_text_test      -O1 -g -Wall -I ../ui ui_text_test.c ../ui/ui_text.c

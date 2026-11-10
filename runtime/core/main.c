@@ -13,6 +13,7 @@
 #include <sys/prctl.h>
 #endif
 #include "stubret.h"
+#include "gaps.h"   /* GAPS-01 */
 #include "seedaddr.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -430,6 +431,7 @@ void recomp_call_external(Cpu *c, uint32_t addr) {
 	if (!fn) {
 		static int zero = -1; if (zero < 0) zero = getenv("RECOMP_STUB_ZERO") != 0;
 		stub_ret = stub_family_result(name, zero);
+		gap_str(gap_unnamed_nid(name) ? GAP_NID_UNKNOWN : GAP_HLE_STUB, name);   /* GAPS-01 (each call) */
 		/* said once per import, because a game feature that quietly does nothing (a ragdoll that freezes, a door that never opens, a silent gun) is usually one of these */
 		static const char *said[512]; static int nsaid; int seen = 0;
 		pthread_mutex_lock(&host_lock);
@@ -497,6 +499,7 @@ uint32_t recomp_unimpl_at;
 void recomp_unimplemented(Cpu *c, uint32_t addr) {
 	pthread_mutex_lock(&host_lock);
 	fprintf(stderr, "unimplemented instruction at %#x (lr %#x)\n", addr, c->r[14]);
+	gap(GAP_INSN, addr, "unimplemented instruction (run stops)");
 	ev_log("assert", "unimplemented instruction at %#x (lr %#x)", addr, c->r[14]);
 	if (*hle_last_format) fprintf(stderr, "last formatted string: %s\n", hle_last_format);
 	summary("stopped"); exit(2);
@@ -790,6 +793,7 @@ static void on_crash(const char *what, void *addr) {   /* (platform.h: the defau
 static void on_signal(int sig) {   /* a run stopped from outside still reports where it was */
 	(void)sig;
 	summary("interrupted");
+	gaps_report();
 	prof_report();
 	_exit(130);
 }
@@ -818,6 +822,7 @@ static void builtin_env(void) {
 }
 int main(int argc, char **argv) {
 	builtin_env();
+	atexit(gaps_report);   /* GAPS-01: the GAPS line + table and gaps.json at the end of every run */
 #ifdef __linux__
 	/* RECOMP_DEBUGGABLE=1: let any process attach a debugger (Yama ptrace_scope 1 only allows the
 	 * parent): `gdb -p` / `eu-stack -p` thread dumps of a stalled run without root */

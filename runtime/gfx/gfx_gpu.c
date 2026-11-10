@@ -19,6 +19,7 @@
  */
 #include <SDL3/SDL.h>
 #include "gpulock.h"   /* every SDL submit/fence call below is the locked one: Homebrew SDL 3.4.16's Metal fence race, see that header */
+#include "gaps.h"   /* GAPS-01 */
 #include "fsr/fsr.h"
 #include "view_swz.h"
 #include <stdio.h>
@@ -4808,6 +4809,7 @@ static void soft_fallback(const GfxDraw *d, const char *why) {
 	    && !(scene_target.ds_data && (scene_target.ds_force_load || scene_target.ds_force_store))
 	    && !stencil_passes(d->stencil_func, d->stencil_ref & d->stencil_cmask, (scene_target.ds_data ? scene_target.ds_background_stencil : 0) & d->stencil_cmask))
 		why = "stencil test can't pass on the software path: draw skipped", skip = 1;
+	gap_str(GAP_GPU_SOFT, why);   /* GAPS-01 (each draw, by reason) */
 	__atomic_add_fetch(&n_fallback, 1, __ATOMIC_RELAXED); disp_note(DISP_SOFT);
 	if (trace_sync()) fprintf(stderr, "gpu trace: software fallback (%s) after %u gpu draws, fprog %#x\n", why, n_gpu_draws, d->fprog);
 	{ int i; for (i = 0; i < n_fallback_why; i++) if (fallback_why[i].why == why) break;

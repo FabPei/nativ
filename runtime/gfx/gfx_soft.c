@@ -21,6 +21,7 @@
 #include "gfx.h"
 #include "usse.h"
 #include "platform.h"
+#include "gaps.h"   /* GAPS-01 */
 
 static GfxTarget target;
 /* depth buffers, one per depth/stencil surface address (ds_data; t->data, the COLOUR address, for
@@ -1220,7 +1221,7 @@ static void texel_raw(const GfxTexture *t, float u, float v, float out[4]) {
 	else {
 		static uint32_t warned[64]; static int nw;
 		int seen = 0; for (int i = 0; i < nw; i++) if (warned[i] == t->format) seen = 1;
-		if (!seen && nw < 64) { warned[nw++] = t->format; fprintf(stderr, "    soft: texture format %#x not handled\n", t->format); }
+		if (!seen && nw < 64) { warned[nw++] = t->format; fprintf(stderr, "    soft: texture format %#x not handled\n", t->format); gap(GAP_TEX_FORMAT, t->format, "texture format not decoded (sampled as magenta)"); }
 		out[0] = 1; out[1] = 0; out[2] = 1; out[3] = 1;
 	}
 }
@@ -2320,6 +2321,7 @@ static void dump(const GfxDraw *d, int k) {
 
 /* each program pair the stand-in shaders can't fully interpret, once: its parameter names */
 static void unhandled(const GfxDraw *d, const char *why) {
+	gap_str(GAP_SHADER_SOFT, why);   /* GAPS-01 (each draw) */
 	static uint64_t seen[256]; static int n;
 	uint64_t k = (uint64_t)d->vprog << 32 | d->fprog;
 	for (int i = 0; i < n; i++) if (seen[i] == k) return;

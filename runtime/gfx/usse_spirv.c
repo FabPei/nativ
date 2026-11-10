@@ -25,6 +25,7 @@
 #include <math.h>
 #include "usse_internal.h"
 #include "usse_spirv.h"
+#include "gaps.h"   /* GAPS-01 */
 
 /* ---------------------------------------------------------------- SPIR-V opcodes/constants used */
 enum {
@@ -2596,7 +2597,7 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 			default: ok = 0; break;
 			}
 			if (pred_merge) { INS(&s->func, SpvOpBranch, pred_merge); INS(&s->func, SpvOpLabel, pred_merge); }
-			if (!ok) snprintf(m.err, sizeof m.err, "unsupported at primary instruction %d (op %d)%s%s", i, op->op, g.why[0] ? ": " : "", g.why);
+			if (!ok) { snprintf(m.err, sizeof m.err, "unsupported at primary instruction %d (op %d)%s%s", i, op->op, g.why[0] ? ": " : "", g.why); gap(GAP_SPIRV, (uint32_t)op->op, "spirv: primary op not translated"); }
 			{	/* RECOMP_PROBE=t|p|o:<word>@<instr>: the register word as of this instruction, for emit_frag_epilogue */
 				const char *pr = probe_env(); const char *at = pr ? strchr(pr, '@') : 0;
 				int vmode = pr && pr[0] >= 'A' && pr[0] <= 'Z', bl = pr ? (pr[0] | 0x20) : 0;

@@ -22,6 +22,7 @@
  * RECOMP_AUDIODEC_LOG=1 logs the lifecycle.
  */
 #include "hle.h"
+#include "gaps.h"   /* GAPS-01 */
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -100,7 +101,7 @@ static void h_init(Cpu *c) {
 	uint32_t type = A0;
 	int *on = initialised(type);
 	if (!on) {
-		fprintf(stderr, "    audiodec: codec type %#x not implemented (ATRAC9%s) -- INVALID_TYPE\n", type, aac_supported() ? ", AAC" : " only");
+		fprintf(stderr, "    audiodec: codec type %#x not implemented (ATRAC9%s) -- INVALID_TYPE\n", type, aac_supported() ? ", AAC" : " only"); gap(GAP_AUDIO_CODEC, type, "audiodec codec type");
 		RET(SCE_AUDIODEC_ERROR_INVALID_TYPE); return;
 	}
 	pthread_mutex_lock(&mx); *on = 1; pthread_mutex_unlock(&mx);
@@ -174,7 +175,7 @@ static void create(Cpu *c, int external) {   /* External: the caller hands over 
 	}
 #endif
 	if (type != SCE_AUDIODEC_TYPE_AT9) {
-		fprintf(stderr, "    audiodec: CreateDecoder for codec type %#x not implemented (ATRAC9%s) -- INVALID_TYPE\n", type, aac_supported() ? ", AAC" : " only");
+		fprintf(stderr, "    audiodec: CreateDecoder for codec type %#x not implemented (ATRAC9%s) -- INVALID_TYPE\n", type, aac_supported() ? ", AAC" : " only"); gap(GAP_AUDIO_CODEC, type, "audiodec codec type");
 		RET(SCE_AUDIODEC_ERROR_INVALID_TYPE); return;
 	}
 	uint32_t info = RD32(ctrl + C_INFO);
@@ -336,7 +337,7 @@ static void h_context_size(Cpu *c) {
 	uint32_t ctrl = A0, type = A1, e = ctrl_check(ctrl);
 	if (e) { RET(e); return; }
 	if (type == SCE_AUDIODEC_TYPE_AAC && aac_supported()) { RET(SCE_AUDIODEC_AAC_CONTEXT_SIZE); return; }
-	fprintf(stderr, "    audiodec: GetContextSize for codec type %#x not implemented -- INVALID_TYPE\n", type);
+	fprintf(stderr, "    audiodec: GetContextSize for codec type %#x not implemented -- INVALID_TYPE\n", type); gap(GAP_AUDIO_CODEC, type, "audiodec codec type");
 	RET(SCE_AUDIODEC_ERROR_INVALID_TYPE);
 }
 /* (ctrl, type, context, size) / (ctrl, context): the host keeps the decoder's memory itself */

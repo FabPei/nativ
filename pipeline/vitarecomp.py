@@ -696,7 +696,7 @@ def fresh_fs(g, td):
     not on what a menu or F2 saved last time)"""
     os.makedirs(td, exist_ok=True)
     for f in glob.glob(os.path.join(glob.escape(td), "shot_*.ppm")): os.remove(f)
-    rmtree(os.path.join(td, "fs")); rmtree(os.path.join(td, "settings.ini"))
+    rmtree(os.path.join(td, "fs")); rmtree(os.path.join(td, "settings.ini")); rmtree(os.path.join(td, "gaps.json"))   # (GAPS-01: this run's only)
     os.makedirs(os.path.join(td, "fs"))
     link_dir(os.path.join(g.OUT, "fs", "app0"), os.path.join(td, "fs", "app0"), relative=os.path.join("..", "..", "fs", "app0"))
 
@@ -726,7 +726,7 @@ def cmd_test(g):
     e = game_env(g, g.TEST_ENV.split() + (ENV.get("EXTRA_ENV") or "").split(), [
         ("RECOMP_GFX_COVERAGE", "" if ENV.get("TEST_COVERAGE") == "0" else "gfxcov.json"), ("RECOMP_TITLE", g.TITLE_ID), ("RECOMP_GAME_NAME", g.NAME), ("RECOMP_TOOLS_VERSION", tools_version()), ("RECOMP_GAME_VERSION", g.VERSION or ""), ("RECOMP_INPUT", g.TEST_INPUT),
         ("RECOMP_TOUCH", g.TEST_TOUCH), ("RECOMP_HEADLESS", "1"), ("RECOMP_FS", "fs"), ("RECOMP_LOG", "0"), ("RECOMP_SHOT", every or frames),
-        ("RECOMP_SHOT_LAST", frames)])   # (a series too ends at the test frame: it ran on to the timeout, 15 minutes for shots it had long since taken)
+        ("RECOMP_SHOT_LAST", frames), ("RECOMP_GAPS_JSON", "gaps.json")])   # (GAPS-01: the gap counter next to test.png) (a series too ends at the test frame: it ran on to the timeout, 15 minutes for shots it had long since taken)
     with open(os.path.join(td, "test.log"), "wb") as log:
         t0 = time.time()
         rc = timed(g.exe_argv(os.path.join(OUT, g.EXE)) + [os.path.join("..", g.BASE + ".img"), g.entry(), "100000000000"], e, td, subprocess.DEVNULL, log,
@@ -752,11 +752,23 @@ def cmd_test(g):
     rmtree(missed)
     shot = os.path.join(td, "shot_%05d.ppm" % int(frames))
     if not os.path.isfile(shot):
-        say(f"no frame {frames} (see {os.path.join(td, 'test.log')})")
+        say(f"no frame {frames} (see {os.path.join(td, 'test.log')})"); say(gaps_summary(td))
         sys.stdout.write("".join(open(os.path.join(td, "test.log"), errors="replace").readlines()[-5:])); die()
     try: ppm_to_png(shot, os.path.join(td, "test.png"))
     except (OSError, ValueError): pass
     say(f"frame {frames}: {os.path.join(td, 'test.png')}")
+    say(gaps_summary(td))
+
+
+def gaps_summary(td):
+    """GAPS-01: the run's gap counter line (runtime/core/gaps.c) -- from test.log, else gaps.json (a run stopped at its
+    time limit never prints the line but keeps the file)"""
+    lines = [ln.strip() for ln in open(os.path.join(td, "test.log"), errors="replace") if ln.startswith("GAPS:")] if os.path.isfile(os.path.join(td, "test.log")) else []
+    if lines: return lines[-1]
+    try:
+        cats = json.load(open(os.path.join(td, "gaps.json")))["categories"]
+        return "GAPS: " + ", ".join(f"{k} {v['distinct']}" + (f" ({','.join(x['key'] for x in v['keys'][:4])}{',...' if len(v['keys']) > 4 else ''})" if v["keys"] else "") for k, v in cats.items()) + " (from gaps.json)"
+    except (OSError, ValueError, KeyError): return "GAPS: none recorded (a host without the gap counter)"
 
 
 def cmd_capture(g, n):

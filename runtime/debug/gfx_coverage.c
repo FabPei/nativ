@@ -26,6 +26,7 @@
 #include "usse.h"
 #include "usse_spirv.h"
 #include "gfx_coverage.h"
+#include "gaps.h"   /* GAPS-01 */
 
 static int enabled = -1;
 static const char *out_path;
@@ -346,6 +347,7 @@ void gfxcov_draw(const GfxDraw *d) {
 }
 
 void gfxcov_gap(const char *key, const char *value, int partial, const char *note) {
+	{ char k[96]; snprintf(k, sizeof k, "%s=%s", key, value); gap_str(GAP_GXM_STATE, k); }   /* GAPS-01: with or without the coverage record */
 	if (!gfxcov_on()) return;
 	pthread_mutex_lock(&lock);
 	feat(key, value, partial ? PARTIAL : NO, partial ? PARTIAL : NO, note);
