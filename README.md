@@ -1,49 +1,9 @@
-# PersonaDancingRecomp
-
-The Persona Dancing games for PS Vita, running natively on PC. This is a fork of
-[Project Nativ](https://github.com/TheLostPantheon/nativ), which does the recompiling; this fork adds the packs and
-the renderer fixes these games need. Everything below the line is Project Nativ's own README.
-
-| Game | Title ID | Status |
-|---|---|---|
-| Persona 4: Dancing All Night (US) | PCSE00764 | Playable: v0.9 |
-| Persona 3: Dancing in Moonlight (US) | PCSE01274 | Playable, in testing |
-| Persona 5: Dancing in Starlight (US) | PCSE01275 | Playable, in testing |
-
-**Persona 4: Dancing All Night** is playable: the opening movie, menus and Free Dance, music in sync, the DLC songs and
-costumes, at 4x the Vita's resolution (up to 6x) and 30 or 60 fps. Story mode hasn't had a full playthrough yet:
-reports welcome.
-
-- **Sharper than the Vita:** the close-up blur (the Vita draws those shots at quarter resolution and stretches them back)
-  is turned off by default.
-- **Texture packs:** packs made for Vita3K work unchanged (none are included).
-- **DLC:** the add-ons you own, decrypted from your own dump.
-
-### What you need
-
-Your own dumps, made from a Vita you own: the game, its update and any DLC (ux0:app, ux0:patch and ux0:addcont), and
-Sony's firmware update file. **No game code, game data or firmware is in this repository, and none ever will be.**
-Please don't open issues asking for them.
-
-Setup for P4D, its options and notes are in [packs/PCSE00764/README.md](packs/PCSE00764/README.md).
-
-**Persona 3: Dancing in Moonlight** boots, plays its songs and DLC, and runs at the right speed at 60 fps in songs and
-menus (it's Atlus's own engine, as in Persona 5, where P4D's was Dingo's). Its pack is `packs/PCSE01274`; Vita3K texture
-packs work, such as the PS4 texture pack for P3D.
-
-**Persona 5: Dancing in Starlight** is built from the same code as P3D and plays the same way, 60 fps included. Its pack
-is `packs/PCSE01275`.
-
-### Credits
-
-[Project Nativ](https://github.com/TheLostPantheon/nativ) by TheLostPantheon and its contributors: the recompiler,
-runtime and pipeline this all runs on. Atlus and Dingo made the games: support them by buying them.
-
----
-
 <p align="center"><img src="assets/brand/banner.svg" alt="Project Nativ: your PS Vita games, rebuilt natively" width="720"></p>
 
 # Project Nativ
+
+> **Unofficial fork** of [TheLostPantheon/nativ](https://github.com/TheLostPantheon/nativ): what this fork adds is
+> under [About this fork](#about-this-fork) at the end. Everything above that is Project Nativ's own README.
 
 Project Nativ turns PS Vita games into native programs for macOS, Linux and Windows. You bring your own copy of a
 game. The tools recompile it on your machine, and it runs like any other program, with extras the Vita never had:
@@ -74,7 +34,6 @@ copy of each game and Sony's firmware update file, and the tools decrypt and rec
 | Uncharted: Golden Abyss | US | PCSA00029 | 1.00 |
 | Unit 13 | US | PCSA00014 | 1.00 |
 | Shovel Knight | US | PCSE00640 | 1.00 |
-| Persona 4: Dancing All Night | US | PCSE00764 | 1.00, 1.01 |
 
 Each game's pack supports exact releases, recognised by the SHA-256 of the game's main program. Game-specific fixes,
 such as Killzone's physics fix or the widescreen cameras, patch code at fixed addresses, so they only fit the build
@@ -187,3 +146,111 @@ developer's direction, and tested on the games themselves.
 
 Nativ is free, and everything in it is for everyone. If you'd like to support its development, you can leave a tip on
 [Ko-fi](https://ko-fi.com/kingtorro).
+
+---
+
+## About this fork
+
+[Luufen/nativ](https://github.com/Luufen/nativ) is a community fork of Project Nativ, not an official release. It adds
+support for more games and a launcher and in-game menu you can use with a controller or a touch screen alone. Its
+releases are tagged `vX.Y.Z-fpN` (based on upstream `vX.Y.Z`), are built from this repository's source by GitHub
+Actions (`.github/workflows/release.yml`), are unsigned, and contain no game: as with upstream, you bring your own copy.
+Generic fixes are also offered upstream as pull requests. Problems with these builds belong in
+[this fork's issues](https://github.com/Luufen/nativ/issues), not upstream's.
+
+### Games added in this fork
+
+Upstream's four games are unchanged. "Played" means a person played it with this fork; "reaches its menu" means an
+automated test run on Windows got there, and nobody has played further yet. Reports are welcome.
+
+| Game | Title ID | State |
+|---|---|---|
+| Soul Sacrifice Delta (EU) | PCSF00532 | Played: menus, intro, tutorial fight, saving, first level; up to 120 fps and 21:9 |
+| Persona 4: Dancing All Night (US) | PCSE00764 | Played: songs and menus at 30 fps, widescreen |
+| Persona 3: Dancing in Moonlight (US) | PCSE01274 | From PersonaDancingRecomp, not tested in this fork |
+| Persona 5: Dancing in Starlight (US) | PCSE01275 | From PersonaDancingRecomp, not tested in this fork |
+| Uncharted: Golden Abyss (EU) | PCSF00001 | Reaches its menu, with the US pack; up to 120 fps, 21:9 |
+| Tearaway | PCSF00476 | Played on Windows, camera and sound included |
+| Medieval Defenders | PCSB00672 | Played on a Steam Deck; up to 120 fps |
+| Persona 4 Golden | PCSB00245 | Reaches its menu; widescreen |
+| Invizimals: Hidden Challenges | PCSF00415 | Reaches its menu; uses your webcam as the Vita's camera |
+| Invizimals: The Resistance | PCSF00510 | Reaches its menu |
+| Killzone: Mercenary (EU) | PCSF00243 | Reaches its menu; up to 120 fps |
+| WipEout 2048 | PCSD00005 | Reaches its menu; up to 120 fps, widescreen |
+| LittleBigPlanet | PCSA00017 | Reaches the introduction level |
+| Gravity Rush | PCSF00024 | Reaches the first scene |
+| Ratchet & Clank Trilogy | PCSF00482 | Reaches the trilogy menu and Ratchet & Clank 1's menu |
+| PlayStation All-Stars Battle Royale | PCSF00153 | Reaches its menu |
+| Injustice: Gods Among Us Ultimate Edition | PCSB00356 | Reaches its menu; some fighters still show one colour |
+| Street Fighter X Tekken | PCSB00144 | Reaches its menu |
+| J-Stars Victory VS+ | PCSE00595 | Reaches its menu; 60 fps |
+| God Eater Resurrection | PCSB00874 | Reaches its menu |
+| God Eater 2 Rage Burst | PCSB00875 | Reaches its menu |
+| Call of Duty: Black Ops Declassified (Russian) | PCSB00232 | Reaches its menu |
+| LEGO Ninjago: Nindroids | PCSB00500 | Reaches its menu; up to 120 fps |
+| XCOM: Enemy Unknown Plus | PCSB00742 | Reaches its menu |
+| Batman: Arkham Origins Blackgate | PCSB00353 | Reaches its menu; up to 120 fps |
+| Rayman Legends (Chinese) | PCSH00118 | Reaches its menu; up to 120 fps, widescreen |
+| Toukiden Kiwami (Chinese) | PCSH00110 | Reaches its menu; 60 fps |
+
+The packs marked "reaches its menu" were made with the fork's new-game tools (below): they hold what the game needs to
+build and boot, plus frame-rate and widescreen settings found automatically. Higher frame rates and wider screens only
+work where a game allows them; otherwise the picture keeps the Vita's shape.
+
+### What's new compared with Project Nativ v0.1.5
+
+**The launcher**
+- Works with a controller alone or a touch screen alone: D-pad and buttons reach everything, finger-sized targets,
+  swiping, its own file browser and on-screen keyboard.
+- A library page (sorted by state, play time and size, with real game names) and a page for each game.
+- Finds games in other folders and drives (including a Vita3K installation) and can play them where they are.
+- Add or remove a game in Steam, also from the Steam Deck's Game Mode.
+- Export a built game for your own use: a folder for another Windows PC, or an AppImage for your Steam Deck.
+- Fits any window size and fullscreen; menus in English and German.
+
+**In the game (F10, or Start + Select on a controller)**
+- The menu's sections are tabs along the top, and every setting works the same way with a controller: move with the
+  D-pad, Cross to change, Circle to cancel.
+- Button remapping on a drawn controller, stick sensitivity and dead zone, and a choice of which controller and which
+  camera to use.
+- On-screen buttons for playing by touch, and a badge that shows which of the Vita's touch panels the controller is
+  driving.
+- A start hint names every way to open the menu: keyboard, controller and touch.
+- A full performance overlay (F1): frame times, lows, CPU and GPU load, memory.
+
+**Picture and speed**
+- Up to 120 fps and widescreen (16:10, 21:9 and more) in more games, and 4K rendering.
+
+**Sound and movies**
+- ATRAC9 and AAC audio, movies that play their soundtrack, smoother sound with small audio buffers, and fixes for
+  games using FMOD.
+
+**The Vita's hardware, without a Vita**
+- Your webcam stands in for the Vita's camera (or a virtual lamp, F7); a controller's gyro for the motion sensor.
+- Trophies work offline, with a note when you earn one. Text input, messages and other system dialogs ask you on screen.
+- Games that expect a network see a Vita that is offline; nothing goes online.
+
+**Compatibility**
+- Many fixes in the recompiler and the emulated system: more ARM and NEON instructions, game modules loaded while
+  playing, threads that start again, fibers and timers, more GPU formats and shader forms. These are what get most of
+  the new games above to their menus.
+
+**For people porting a game**
+- `vitarecomp pack-init` and `bootstrap` make a first pack for a new game and repeat analysis, build and test until
+  no new code turns up; `hooks-scan` suggests frame-rate and widescreen settings.
+- Every test run ends with a list of what the game asked for that Nativ doesn't do yet.
+
+### Tested
+
+- Windows 11 (x64): the games marked "Played" above, from a local build of the same source; the others in automated
+  test runs.
+- Steam Deck: Medieval Defenders and Soul Sacrifice Delta, each exported as an AppImage (`vitarecomp export-appimage`).
+- The release's Linux AppImage and macOS `.dmg`: built and packaged by CI only; no game has been run with them by this
+  fork.
+
+### Credits
+
+The Persona Dancing packs, Vita3K-style texture packs and their renderer fixes come from
+[PersonaDancingRecomp](https://github.com/Ecstatic-Magician/PersonaDancingRecomp) by **Ecstatic-Magician**, merged
+with its full history (setup and notes: `packs/PCSE00764/README.md`). [Vita3K](https://github.com/Vita3K/Vita3K) is the
+reference for how many of the Vita's system functions behave.
