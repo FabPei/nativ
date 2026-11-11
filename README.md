@@ -71,6 +71,8 @@ game from your copy, plus frame-rate and widescreen settings found automatically
 - On-screen buttons for playing by touch, and a badge that shows which of the Vita's touch panels the controller is
   driving.
 - A start hint names every way to open the menu: keyboard, controller and touch.
+- **Game language:** Auto (your computer's language) or any of the Vita's 20 languages, also in the launcher's
+  Settings. Games that follow the Vita's system language show their text, and often their voices, in it.
 - A full performance overlay (F1): frame times, lows, CPU and GPU load, memory.
 
 **Picture and speed**
