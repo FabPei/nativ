@@ -1906,7 +1906,7 @@ static void shade_interp(const Tri *t, const DrawRec *r, int x, int y, float b0,
 	 * occlusion pass multiplies the lit HDR buffer by its half-res AO; without the preload it
 	 * multiplied by zero and the whole frame went black under the later passes) */
 	if (fl->frag_color_used) {
-		if (fl->native_color && target.data) {   /* NATIVECOLOR: the pixel's own bits, word by word (usse.h) */
+		if (fl->native_color && target.data && usse_native_bits(r->fprog, r->d.fprog)) {   /* NATIVECOLOR: the pixel's own bits, word by word (usse.h usse_native_bits) */
 			int bpp = target_bpp_of(&target); uint8_t px[16] = {0};
 			memcpy(px, G(target.data + (uint32_t)bpp * target_index(&target, x, y)), bpp <= 16 ? (size_t)bpp : 16);
 			for (int k = 0; k < (bpp + 3) / 4 && k < 4; k++) memcpy(&finst.o[k].u, px + 4 * k, 4);
@@ -1966,7 +1966,7 @@ static void shade_interp(const Tri *t, const DrawRec *r, int x, int y, float b0,
 		}
 	}
 	*nraw = 0;
-	if (!probed && fl->native_color && target_bpp_of(&target) <= 4 && usse_native_raw32(r->fprog, r->d.fprog)) {
+	if (!probed && fl->native_color && target_bpp_of(&target) <= 4 && usse_native_bits(r->fprog, r->d.fprog) && usse_native_raw32(r->fprog, r->d.fprog)) {
 		raw[0] = finst.o[0].u; *nraw = 1;   /* NATIVECOLOR in a 32-bit register format: O0 is the surface's word (usse.h) */
 	} else if (!probed && (fl->color_type == 8 /* TY_U32 */ || fl->color_type == 9 /* TY_S32 */)) {   /* a probe shows as floats even on a raw-word target */
 		const UWord *bank = fl->native_color ? finst.o : finst.pa;

@@ -1013,7 +1013,7 @@ static ShaderEntry *get_shader(uint32_t addr, const UsseProgram *prog, const Uss
 	const int target_kind_of_draw = kind;
 	usse_spirv_key(prog, fl, sa_tex_unit, &kind, &cube_mask, &snap_mask);   /* (only what changes the module: one shader for the variants that don't) */
 	static int native_off = -1; if (native_off < 0) native_off = getenv("RECOMP_NATIVE_OFF") != 0;   /* (diagnostic: the declared type, as before 779edd7) */
-	if (kind >= 0 && fl && fl->native_color && !native_off)   /* NATIVECOLOR: the surface's own bits in and out (usse.h) -- the target's kind and the variant's register format matter */
+	if (kind >= 0 && fl && fl->native_color && !native_off && usse_native_bits(prog, addr))   /* NATIVECOLOR: the surface's own bits in and out (usse.h) -- the target's kind and the variant's register format matter */
 	{	kind = USSE_KIND_NATIVE | (usse_native_raw32(prog, addr) ? USSE_KIND_RAW32 : 0) | (target_kind_of_draw & 0xff);
 		static int nl = -1; if (nl < 0) nl = getenv("RECOMP_NATIVE_LOG") != 0;
 		if (nl) { static uint32_t seen[256]; static int ns; int s = 0; for (int i = 0; i < ns; i++) s |= seen[i] == addr; if (!s && ns < 256) { seen[ns++] = addr; fprintf(stderr, "    gpu: NATIVECOLOR fragment %#x kind %#x%s\n", addr, kind, fl->frag_color_used ? " (reads the framebuffer)" : ""); } }

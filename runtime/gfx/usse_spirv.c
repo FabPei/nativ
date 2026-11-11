@@ -1894,8 +1894,8 @@ static void emit_frag_epilogue(Gen *g, int *ok) {
 		uint32_t w[4];
 		for (int k = 0; k < 4; k++) w[k] = k < n ? read_raw_comp(g, &o, 0, k, ok) : c_uint(s, 0);
 		for (int c = 0; c < 4; c++) {
-			if (g->color_kind == 2) comp[c] = result1(s, &s->func, SpvOpBitcast, t_float(s), w[c]);                 /* RGBA32F: a word a channel */
-			else if (g->color_kind == 1) comp[c] = half_to_float_spv(s, extract_lane_spv(s, w[c / 2], TY_F16, c & 1));   /* RGBA16F: halves */
+			if ((g->color_kind & 0xff) == 2) comp[c] = result1(s, &s->func, SpvOpBitcast, t_float(s), w[c]);                 /* RGBA32F: a word a channel */
+			else if ((g->color_kind & 0xff) == 1) comp[c] = half_to_float_spv(s, extract_lane_spv(s, w[c / 2], TY_F16, c & 1));   /* RGBA16F: halves */
 			else comp[c] = fop2(s, SpvOpFDiv, result1(s, &s->func, SpvOpConvertUToF, t_float(s), extract_lane_spv(s, w[0], TY_U8, c)), c_float(s, 255.0f));   /* RGBA8: bytes */
 		}
 		if (!*ok) return;

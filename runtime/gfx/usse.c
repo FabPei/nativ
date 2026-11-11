@@ -1725,6 +1725,7 @@ int usse_fragment_colour_packed8(const UsseProgram *cp) {
 	p->packed8 = (int8_t)(r + 1);
 	return r;
 }
+int usse_fp_output_format_recorded(uint32_t gxp);
 int usse_native_raw32(const UsseProgram *p, uint32_t gxp) {
 	static int env = -1; if (env < 0) env = getenv("RECOMP_FP_OUTFMT") != 0;
 	return env ? usse_output_format_raw32(usse_fp_output_format(gxp)) : usse_fragment_colour_packed8(p);
@@ -1850,7 +1851,13 @@ void usse_set_fp_output_format(uint32_t gxp, int fmt) {
 		if (!e || (uint32_t)(e >> 8) == gxp) { fp_outfmt[k] = (uint64_t)gxp << 8 | (uint64_t)(fmt & 0xff); return; }
 	}
 }
-int usse_fp_output_format(uint32_t gxp) {
+int usse_fp_output_format(uint32_t gxp) { int f = usse_fp_output_format_recorded(gxp); return f < 0 ? USSE_OUT_DECLARED : f; }
+int usse_native_bits(const UsseProgram *p, uint32_t gxp) {
+	if (!p || !p->fl.native_color) return 0;
+	int f = usse_fp_output_format_recorded(gxp);
+	return f < 0 ? 1 : usse_output_format_raw32(f);   /* (never recorded -- a replay: the surface's bits, as before REG-GREEN) */
+}
+int usse_fp_output_format_recorded(uint32_t gxp) {
 	static int env = -1; static uint32_t eg[64]; static int ef[64], ne, edef;
 	if (env < 0) {
 		const char *e = getenv("RECOMP_FP_OUTFMT"); env = e != 0;
@@ -1866,10 +1873,10 @@ int usse_fp_output_format(uint32_t gxp) {
 	if (env) { for (int i = 0; i < ne; i++) if (eg[i] == gxp) return ef[i]; if (edef) return edef; }
 	for (uint32_t i = 0, h = (gxp >> 2) * 2654435761u; i < FP_OUTFMT_SLOTS; i++) {
 		uint64_t e = fp_outfmt[(h + i) % FP_OUTFMT_SLOTS];
-		if (!e) return 0;
+		if (!e) return -1;
 		if ((uint32_t)(e >> 8) == gxp) return (int)(e & 0xff);
 	}
-	return 0;
+	return -1;
 }
 void usse_preload_color(UsseInst *inst, const UsseFragLayout *fl, const float in[4]) {
 	UOperand o; memset(&o, 0, sizeof o);

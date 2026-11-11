@@ -49,6 +49,19 @@ int main(int argc, char **argv) {
 	check("raw 32-bit register formats: UCHAR4 CHAR4 USHORT2 SHORT2 HALF2 FLOAT",
 	      usse_output_format_raw32(1) && usse_output_format_raw32(2) && usse_output_format_raw32(3) && usse_output_format_raw32(4) && usse_output_format_raw32(6) && usse_output_format_raw32(8));
 	check("not raw 32-bit: DECLARED HALF4 FLOAT2", !usse_output_format_raw32(0) && !usse_output_format_raw32(5) && !usse_output_format_raw32(7));
+	check("usse_fp_output_format_recorded: -1 for a GXP never recorded, the format (DECLARED too) once recorded",
+	      usse_fp_output_format_recorded(0x81235000u) == -1 && (usse_set_fp_output_format(0x81235000u, USSE_OUT_DECLARED), usse_fp_output_format_recorded(0x81235000u)) == USSE_OUT_DECLARED);
+	{	/* REG-GREEN: the surface's own bits only for a raw 32-bit variant (or an unrecorded one) */
+		UsseProgram q; memset(&q, 0, sizeof q); q.is_fragment = 1; q.fl.native_color = 1;
+		usse_set_fp_output_format(0x81236000u, USSE_OUT_UCHAR4); usse_set_fp_output_format(0x81237000u, USSE_OUT_HALF4);
+		usse_set_fp_output_format(0x81238000u, USSE_OUT_DECLARED);
+		check("native bits: a variant created UCHAR4 (Tearaway)", usse_native_bits(&q, 0x81236000u) == 1);
+		check("native bits: not for a variant created HALF4 (Killzone's framebuffer-reading UI programs)", usse_native_bits(&q, 0x81237000u) == 0);
+		check("native bits: not for a variant created DECLARED", usse_native_bits(&q, 0x81238000u) == 0);
+		check("native bits: a GXP never recorded (a replay) keeps the surface's bits", usse_native_bits(&q, 0x81239000u) == 1);
+		q.fl.native_color = 0;
+		check("native bits: never for a program without NATIVECOLOR", usse_native_bits(&q, 0x81236000u) == 0);
+	}
 	/* usse_fragment_colour_packed8: synthetic micro-op programs (NATIVECOLOR, colour at O0) */
 	{
 		static UOp code[4]; UsseProgram p;

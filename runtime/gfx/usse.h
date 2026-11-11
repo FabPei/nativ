@@ -177,6 +177,15 @@ int usse_fragment_colour_packed8(const UsseProgram *p);
 int usse_native_raw32(const UsseProgram *p, uint32_t gxp);
 void usse_set_fp_output_format(uint32_t gxp, int fmt);
 int usse_fp_output_format(uint32_t gxp);
+/* usse_fp_output_format_recorded: the same, -1 when no variant of gxp was recorded (and no override names it) */
+int usse_fp_output_format_recorded(uint32_t gxp);
+/* usse_native_bits: does this NATIVECOLOR program's colour register hold the surface's own bits (the FRAGCOLOR preload
+ * as the pixel's raw word(s), the RAW32 write)? Only when its variant was created with a raw 32-bit output register
+ * format (UCHAR4 ...: Tearaway, every variant), or none was recorded (a replay). A variant created DECLARED or HALF4
+ * gets the declared type both ways, as before 779edd7: Killzone Mercenary's framebuffer-reading UI programs are
+ * created HALF4 on an RGBA8 surface; given the surface's bytes in O0 its Valour card came out blank, framed in green at
+ * render scale 2, and its menus and first mission were miscoloured (REG-GREEN). */
+int usse_native_bits(const UsseProgram *p, uint32_t gxp);
 /* the GPU translator's colour kind for a NATIVECOLOR program (gfx_gpu.c get_shader -> usse_spirv_translate): the
  * target's kind (gfx_gpu.c TK_*: 0 RGBA8, 1 RGBA16F, 2 RGBA32F, 3 sRGB RGBA8, 4 R11G11B10) in the low byte, NATIVE set,
  * RAW32 when its output register format is one raw 32-bit word */
