@@ -20,6 +20,7 @@
 #include <SDL3/SDL.h>
 #include "gpulock.h"   /* every SDL submit/fence call below is the locked one: Homebrew SDL 3.4.16's Metal fence race, see that header */
 #include "gaps.h"   /* GAPS-01 */
+#include "target_scale.h"   /* RECOMP_TARGET_SCALE's rules (UC-LAMP: factor 0) */
 #include "fsr/fsr.h"
 #include "view_swz.h"
 #include <stdio.h>
@@ -1811,27 +1812,21 @@ static int rscale_x = 1;
  * world below the screen's resolution (Uncharted: 720x408, composited onto its 960x544 frame) gets the world at the
  * screen's texel density instead of three quarters of it. Every texel-addressed path takes the owner's scale (TargetEntry,
  * DepthEntry and view TexEntry sx, sy): the target's texture, its scenes' viewport, scissor, framebuffer copy and depth
- * surface, its views, uploads, downloads and readbacks, snap_fetch's block, the visibility counts' divisor. */
-static struct { uint32_t w, h; float f; } tscale[8]; static int ntscale = -1;
-static void tscale_init(void) {
-	if (ntscale >= 0) return;
-	ntscale = 0; const char *e = getenv("RECOMP_TARGET_SCALE");
-	while (e && *e && ntscale < 8) {
-		unsigned w, h; float f; int used = 0;
-		if (sscanf(e, "%ux%u:%f%n", &w, &h, &f, &used) == 3 && used > 0 && f >= 1.0f && f <= 4.0f) { tscale[ntscale].w = w; tscale[ntscale].h = h; tscale[ntscale].f = f; ntscale++; }
-		else break;
-		e += used; if (*e == ',') e++;
-	}
-}
+ * surface, its views, uploads, downloads and readbacks, snap_fetch's block, the visibility counts' divisor.
+ * UC-LAMP: <factor> 0 keeps that size at the game's own resolution whatever the render scale (only a wider aspect still
+ * widens it) -- a post-effect chain whose shaders step one guest texel at a time (Uncharted's 360x204 / 180x102 glow:
+ * a 2x2 downsample's four taps one guest texel apart caught a quarter of each 4x4 block at render scale 4, and the
+ * lamps' glow came out as a grid of squares; Vita3K, at the game's resolution, draws it smooth). */
+static TargetScaleRule tscale[TARGET_SCALE_RULES]; static int ntscale = -1;   /* (target_scale.h: the rules and their tests) */
+static void tscale_init(void) { if (ntscale < 0) ntscale = target_scale_parse(getenv("RECOMP_TARGET_SCALE"), tscale); }
 int gfx_gpu_target_scale_supported(void) { tscale_init(); return ntscale > 0; }   /* the game names targets to draw finer (the overlay's "Full-resolution world" row) */
 static void target_scale(uint32_t w, uint32_t h, uint8_t *sx, uint8_t *sy) {
 	tscale_init();
-	int x = rscale_x, y = rscale;
-	if (ntscale > 0 && settings_int("full_res_world", 1)) for (int k = 0; k < ntscale; k++) if (tscale[k].w == w && tscale[k].h == h) {   /* (settings "full_res_world" 0: the game's own resolution; read at each scene: a change applies at once -- targets at the other scale are new entries, the old ones age out) */
-		int a = (int)((float)rscale_x * tscale[k].f + 0.5f), b = (int)((float)rscale * tscale[k].f + 0.5f);
-		if (a > x) x = a; if (b > y) y = b; break;
-	}
-	*sx = (uint8_t)(x > 8 ? 8 : x); *sy = (uint8_t)(y > 8 ? 8 : y);   /* (8: a 2048-wide target within Metal's 16384 texels) */
+	/* (settings "full_res_world" 0: the game's own resolution for the finer rules; read at each scene: a change applies at
+	 * once -- targets at the other scale are new entries, the old ones age out; a factor-0 rule holds either way) */
+	int k = target_scale_of(tscale, ntscale, w, h, rscale, rscale_x, ntscale > 0 && settings_int("full_res_world", 1), sx, sy);
+	static uint8_t said[TARGET_SCALE_RULES];
+	if (k >= 0 && tscale[k].f == 0.0f && !said[k]) { said[k] = 1; fprintf(stderr, "    gpu: target %ux%u at the game's resolution (RECOMP_TARGET_SCALE %ux%u:0; render scale %dx)\n", w, h, w, h, rscale); }
 }
 static int any_scaled(void) { tscale_init(); return SCALED || ntscale > 0; }
 #define TSX(e, v) ((uint32_t)(v) * (uint32_t)(e)->sx)

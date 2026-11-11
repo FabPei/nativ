@@ -150,6 +150,15 @@ locale: 4, decided once; fail-before against the older apputil.c (`-DAPPUTIL_UND
     cc -O1 -g -Wall -I ../core game_lang_test.c -o /tmp/game_lang_test && /tmp/game_lang_test
     cc -O1 -g -Wall -D_GNU_SOURCE $INC -I $SDL3_INC system_lang_test.c -o /tmp/system_lang_test -lpthread && /tmp/system_lang_test
 
+## A render target's own scale: `target_scale_test.c`
+
+UC-LAMP. Checks `runtime/gfx/target_scale.h` (RECOMP_TARGET_SCALE, gfx_gpu.c): a 1..4 factor draws a size finer than the
+render scale (Uncharted's 720x408 world at 5x at 4x, only with full_res_world on); a 0 factor keeps a size at the game's
+own resolution at any render scale (Uncharted's glow chain), a wider aspect still widening it. Fail-before: the old
+parser took 1..4 only and stopped at the first 0, so the glow buffers drew at the render scale.
+
+    cc -O1 -g -Wall -I ../gfx target_scale_test.c -o /tmp/target_scale_test && /tmp/target_scale_test
+
 ## What the dialogs that finish at once answer: `dialog_result_test.c`
 
 Checks `runtime/core/apputil.c`'s results offline. `sceMsgDialogGetResult` fills SceMsgDialogResult as a console
