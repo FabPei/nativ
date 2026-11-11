@@ -31,6 +31,7 @@ run gesture_test      $CF $INC -I .. gesture_test.c -lm -lpthread
 run jpeg_test         $CF $INC jpeg_test.c
 run metrics_test      -O1 -g -Wall -Wno-unused-function -I ../core -I ../platform metrics_test.c ../platform/platform_posix.c -lpthread -ldl
 run stubret_test      -O1 -g -Wall $INC stubret_test.c
+run memblock_budget_test -O1 -g -Wall -I ../core memblock_budget_test.c
 run view_swz_test     -O1 -g -Wall -I ../gfx view_swz_test.c
 run audiodec_test     -O1 -g -Wall -D_GNU_SOURCE $INC audiodec_test.c ../../third_party/libatrac9/*.c -lpthread -lm
 run codec_engine_test $CF $INC codec_engine_test.c -lpthread

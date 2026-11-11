@@ -355,6 +355,16 @@ Header-only, no shims:
 
 `-DSTUBRET_UNDER_TEST='"<file>"'` compiles it against another copy of the policy for a fail-before run.
 
+## The console's memory-block budget: `memblock_budget_test.c`
+
+`sceKernelAllocMemBlock` gives a game no more user main memory than a console has (256 MiB, plus the param.sfo's
+expansion mode); CDRAM and physically contiguous memory are pools of their own, and a block over the budget fails with
+SCE_KERNEL_ERROR_NO_MEMORY. The test replays Silent Hill: Book of Memories' memory probe (512 / 768 / 896 MiB, each
+refused), then its downward probe of 1 MiB-aligned blocks it frees again (the freed memory must serve the next aligned
+block: `core/memblock_holes.h`). `-DMEMBLOCK_BUDGET_CONTROL -DMEMBLOCK_HOLES_CONTROL` builds the old behaviour and fails.
+
+    cc -O1 -g -Wall -I ../core memblock_budget_test.c -o /tmp/memblock_budget_test && /tmp/memblock_budget_test
+
 ## Render-target views of swizzled U8U8U8U8 targets: `view_swz_test.c`
 
 Checks `runtime/gfx/view_swz.h`, the component selectors gfx_gpu.c's view pass uses when a U8U8U8U8 texture
