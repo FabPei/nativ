@@ -5,7 +5,7 @@ AUTO_GENERATED = "pack-init"
 NAME = "Killzone™ Mercenary"
 ELF = "eboot.bin.elf"
 MODULES = "libc libgxm_es4 libgpu_es4 libfios2 libsceavplayer libscemp4"
-RUN_ENV = "RECOMP_ASPECT_HOOK=1 RECOMP_HUD_DRAWS=2d RECOMP_FRAME_RATES=30,60,120"   # FEAT-ALL-01 (local)
+RUN_ENV = "RECOMP_SRGB=1 RECOMP_SSAO=0x1000000:1:24 RECOMP_FSR_SUPPORTED=1 RECOMP_ASPECT_HOOK=1 RECOMP_HUD_DRAWS=2d RECOMP_FRAME_RATES=30,60,120"   # RECOMP_SRGB, RECOMP_SSAO, RECOMP_FSR_SUPPORTED as in the US pack (PCSA00107): without RECOMP_SRGB the level is several times too bright and washed out (owner-confirmed 2026-11-11); FEAT-ALL-01: aspect + frame rates
 IHOOKS = "0x810c1784:frame_dt 0x810c1b54:frame_dt 0x810c2ce4:frame_dt 0x810db7e4:frame_dt 0x810dd600:frame_dt 0x8112dc66:frame_dt 0x81216326:frame_dt 0x812245ce:frame_dt 0x8134bee4:frame_dt 0x8134c952:frame_dt 0x8139f64c:frame_dt 0x8153ef0c:frame_dt 0x8158bc72:frame_dt 0x815932cc:frame_dt 0x815953e6:frame_dt 0x815cb486:frame_dt 0x815e2556:frame_dt 0x816ebae2:frame_dt 0x8116be86:aspect 0x815b146c:aspect"   # FEAT-ALL-01: hooks-scan candidates, tested by the menu runs
 TEST_FRAMES = 600         # bootstrap's headless run length (TEST_FRAMES=<n> for one run)
 # note: shipped in sce_module/ but not loaded: libface libsmart libult (add to MODULES if the run stubs their imports)
