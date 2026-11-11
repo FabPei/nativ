@@ -62,6 +62,8 @@ game from your copy, plus frame-rate and widescreen settings found automatically
 - Add or remove a game in Steam, also from the Steam Deck's Game Mode.
 - Export a built game for your own use: a folder for another Windows PC, or an AppImage for your Steam Deck.
 - Fits any window size and fullscreen; menus in English and German.
+- A title with no pack gets a first one when you add it (the system modules it needs), instead of a build that stops
+  at once. Copied and saved logs, and bug reports, leave out your user folder and account IDs.
 
 **In the game (F10, or Start + Select on a controller)**
 - The menu's sections are tabs along the top, and every setting works the same way with a controller: move with the
