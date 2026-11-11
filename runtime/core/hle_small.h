@@ -38,6 +38,23 @@ static inline uint32_t hle_ctrl_v2_buttons(uint32_t b) {
  * reserved +24, timestamp (us, 32 bits) +36, counter +40, reserved +44, hostTimestamp (us) +48, reserved +56: 64 bytes.
  * Left unfilled (the import was a stub), Tearaway read an accelerometer of 0 -- no gravity direction -- and oriented its
  * world from it: its whole picture degenerated into contour rings (AUTO-01 TW-6) */
+/* sceTouchPeek / sceTouchRead samples (Vita3K touch.cpp touch_vsync_update + touch_get): the panels are sampled once per
+ * vblank edge and a report carries the time of ITS edge, not of the call; Peek's newest report is the current edge's,
+ * Read returns the edges since this reader's last read of the port -- at least 1, at most nBufs -- oldest first, so its
+ * last report is the one Peek shows. Stamped with the call's time, every Peek was newer than everything read: a game
+ * that drains the buffer until Peek's newest equals the last report read (Sonic & All-Stars Racing Transformed's input
+ * update) never left the loop. prev_edge 0: this reader's first read (one report, not nBufs copies of one edge). */
+static inline uint32_t hle_touch_read_count(uint64_t prev_edge, uint64_t edge, uint32_t nbufs) {
+	if (!nbufs) return 0;
+	if (!prev_edge || edge <= prev_edge) return 1;
+	return edge - prev_edge < nbufs ? (uint32_t)(edge - prev_edge) : nbufs;
+}
+/* the edge report i (0 = oldest) of n stands for, the newest being `edge` */
+static inline uint64_t hle_touch_report_edge(uint64_t edge, uint32_t n, uint32_t i) {
+	const uint64_t back = (uint64_t)(n - 1 - i);
+	return edge > back ? edge - back : 0;
+}
+
 #define HLE_MOTION_SENSOR_SIZE 64u
 static inline void hle_motion_sensor_record(uint8_t out[64], const float acc[3], const float gyro[3], uint32_t ts, uint32_t counter, uint64_t host_ts) {
 	memset(out, 0, 64);

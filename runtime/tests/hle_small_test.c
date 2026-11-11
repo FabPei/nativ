@@ -31,6 +31,23 @@ int main(void) {
 	check("ctrl v2: every other button unchanged", hle_ctrl_v2_buttons(0xf0f9) == 0xf0f9);
 	check("ctrl v2: L1/R1 already set stay set", hle_ctrl_v2_buttons(0xc00) == 0xc00);
 	check("model: PS TV is SCE_KERNEL_MODEL_VITATV 0x20000", hle_kernel_model(1) == 0x20000u);
+	/* touch samples: one per vblank edge, stamped with the edge (Vita3K touch_get) */
+	check("touch: first Read gives one report", hle_touch_read_count(0, 100, 16) == 1);
+	check("touch: Read again on the same edge gives one (the waited-for edge)", hle_touch_read_count(100, 100, 16) == 1);
+	check("touch: Read 3 edges later gives 3", hle_touch_read_count(100, 103, 16) == 3);
+	check("touch: Read 40 edges later is capped at nBufs 16", hle_touch_read_count(100, 140, 16) == 16);
+	check("touch: nBufs 0 gives none", hle_touch_read_count(100, 103, 0) == 0);
+	check("touch: reports oldest first, the last one the current edge", hle_touch_report_edge(103, 3, 0) == 101 && hle_touch_report_edge(103, 3, 2) == 103);
+	/* the game's drain loop: peek(1); while (peek.edge != last read) { n = Read(16); last = report[n-1].edge; peek } --
+	 * on one edge it ends after one Read (before: a stamp per call, never equal) */
+	{ uint64_t edge = 500, prev = 0, last = 0; int reads = 0;
+	  for (int guard = 0; guard < 100; guard++) {
+		const uint64_t peek = hle_touch_report_edge(edge, 1, 0);
+		if (peek == last) break;
+		const uint32_t n = hle_touch_read_count(prev, edge, 16); prev = edge; reads++;
+		last = hle_touch_report_edge(edge, n, n - 1);
+	  }
+	  check("touch: a drain-until-Peek loop ends after one Read", reads == 1 && last == edge); }
 
 	{ int playing = 0;   /* NGS-PLAY-01: Play every update must not restart the voice */
 	  check("ngs: Play on a voice at rest starts it (0, playing)", hle_ngs_voice_play(&playing) == 0 && playing == 1);

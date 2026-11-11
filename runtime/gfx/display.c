@@ -991,7 +991,12 @@ static void h_ctrl_peek2(Cpu *c) { if (!pstv_port_ok(A0)) { RET(SCE_CTRL_ERROR_I
  * tracks), as the panels give each touch its own; not a fixed one: gesture.c follows a touch by its id and,
  * like the firmware, won't restart a DRAG for an id whose drag already ended -- with every touch
  * reported as id 1, Killzone: Mercenary's second drag would never have begun. */
-static void h_touch_peek(Cpu *c) {   /* (port, SceTouchData *, count) */
+/* a sample's timeStamp: the time of the vblank edge it was taken on (hle_small.h hle_touch_read_count), on the clock the
+ * game reads -- the fixed clock's grid, or the wall grid's edge */
+static uint64_t touch_edge_us(uint64_t e) { return clock_fixed() || unpaced() ? (1ull << 32) + e * 16667ull : vb_edge_time(e); }
+/* (port, SceTouchData *, count): nrep reports; read: the last nrep edges up to `edge`, oldest first; else (Peek) each
+ * one the current edge's sample */
+static void touch_sample(Cpu *c, uint32_t nrep, int read, uint64_t edge) {
 	/* the contacts on this panel now: the replay's, else the window's (mouse, gamepad touchpad, the
 	 * bumper cursor: window_touch_contacts), else the script's (front only, one). A contact keeps its
 	 * report id while held; each new one takes the next (one contact at a time -- every recorded and
@@ -1046,18 +1051,25 @@ static void h_touch_peek(Cpu *c) {   /* (port, SceTouchData *, count) */
 		for (int i = 0; i < n && o < (int)sizeof cur; i++) o += snprintf(cur + o, sizeof cur - (size_t)o, " %u@%d,%d", ids[i], xs[i], ys[i]);
 		if (strcmp(cur, last[port])) { fprintf(stderr, "    touch: frame %llu port %u: %s%s\n", (unsigned long long)frames, port, cur, played ? " (replay)" : ""); snprintf(last[port], sizeof last[port], "%s", cur); }
 	}
-	for (uint32_t i = 0; i < A2; i++) {
+	for (uint32_t i = 0; i < nrep; i++) {
 		uint32_t p = A1 + 0x90 * i;
-		memset(G(p), 0, 0x90); WR64(p, guest_time_us());
+		memset(G(p), 0, 0x90); WR64(p, touch_edge_us(read ? hle_touch_report_edge(edge, nrep, i) : edge));   /* (the edge's time: a stamp of the call's time made every Peek newer than every Read) */
 		WR32(p + 12, (uint32_t)n);
 		for (int k = 0; k < n; k++) {
 			uint32_t r = p + 16 + 0x10 * (uint32_t)k;
 			WR8(r, ids[k]); WR8(r + 1, 128); WR16(r + 2, (uint16_t)xs[k]); WR16(r + 4, (uint16_t)ys[k]);
 		}
 	}
-	RET(A2);
+	RET(nrep);
 }
-static void h_touch_read(Cpu *c) { read_wait(&touch_read_edge[A0 & 1]); h_touch_peek(c); }
+static void h_touch_peek(Cpu *c) { touch_sample(c, A2, 0, vb_now()); }
+/* Read: the edges since this thread's last read of the port (at least the one it waited for, at most nBufs) */
+static void h_touch_read(Cpu *c) {
+	uint64_t *last = &touch_read_edge[A0 & 1]; const uint64_t prev = *last;
+	read_wait(last);
+	const uint64_t edge = vb_now();
+	touch_sample(c, hle_touch_read_count(prev, edge, A2), 1, edge);
+}
 static void h_touch_panel_info(Cpu *c) {   /* front panel 0..1919 x 0..1087; back 0..1919 x 108..889 (its 1920x782 rows sit inside the front's range) */
 	memset(G(A1), 0, 0x30);
 	WR16(A1, 0); WR16(A1 + 2, A0 ? 108 : 0); WR16(A1 + 4, 1919); WR16(A1 + 6, A0 ? 889 : 1087);
