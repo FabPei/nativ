@@ -44,6 +44,7 @@ run overlay_scale_test -O1 -g -Wall -I ../ui overlay_scale_test.c -lm
 run trophy_test       -O1 -g -Wall -I ../core trophy_test.c
 run game_lang_test    -O1 -g -Wall -I ../core game_lang_test.c
 run target_scale_test -O1 -g -Wall -I ../gfx target_scale_test.c
+run log_redact_test   -O1 -g -Wall -I ../ui log_redact_test.c
 run ui_text_test      -O1 -g -Wall -I ../ui ui_text_test.c ../ui/ui_text.c
 run settings_reset_test -O1 -g -Wall -I ../core settings_reset_test.c ../core/settings.c -lpthread
 run settings_save_test -O1 -g -Wall -I ../core settings_save_test.c ../core/settings.c -lpthread

@@ -43,6 +43,7 @@
 #include "pad_diagram.h"
 #include "device_pick.h"   /* (UI-02b) the chosen controller / camera by name, the "not connected" mark */   /* (UI-02c) the drawn controller of Controls > Mapping */   /* (EXPORT-01a) what the AppImage export prints, read back */
 #include "pad_family.h"   /* (UI-01e) the controller in use and its buttons' names, shared with the in-game menu */
+#include "log_redact.h"   /* (LOG-REDACT) Copy log / Save log take the user folders and identity values out */
 #include <ctime>
 #include <SDL3/SDL.h>
 #include <algorithm>
@@ -3285,7 +3286,12 @@ static std::mutex g_log_note_lock;
 static std::string g_log_note, g_log_note_key; static Uint64 g_log_note_until;   /* "Copied" / "Saved" on its button for a moment */
 static std::string g_log_to_save;                                 /* the log as it was when Save log was pressed */
 static void log_note(const char *key, const std::string &n) { std::lock_guard<std::mutex> l(g_log_note_lock); g_log_note_key = key; g_log_note = n; g_log_note_until = SDL_GetTicks() + 2500; }
-static std::string log_copy(void) { std::lock_guard<std::mutex> l(g_log_lock); return g_log; }
+static std::string log_copy(void) {   /* (LOG-REDACT: as it leaves the computer -- user folders as ~, identity values removed; log_redact.h) */
+	std::string s; { std::lock_guard<std::mutex> l(g_log_lock); s = g_log; }
+	size_t n = 0; char *r = log_redact(s.data(), s.size(), &n);
+	if (!r) return std::string("(the log could not be prepared: out of memory)\n");
+	std::string red(r, n); free(r); return red;
+}
 static void SDLCALL log_saved(void *, const char *const *files, int) {   /* (the dialog's callback: on its own thread) */
 	if (!files || !files[0]) return;   /* (cancelled, or the dialog failed) */
 	std::string path = files[0];

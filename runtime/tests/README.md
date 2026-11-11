@@ -150,6 +150,16 @@ locale: 4, decided once; fail-before against the older apputil.c (`-DAPPUTIL_UND
     cc -O1 -g -Wall -I ../core game_lang_test.c -o /tmp/game_lang_test && /tmp/game_lang_test
     cc -O1 -g -Wall -D_GNU_SOURCE $INC -I $SDL3_INC system_lang_test.c -o /tmp/system_lang_test -lpthread && /tmp/system_lang_test
 
+## What a log says about the person: `log_redact_test.c`
+
+LOG-REDACT. Checks `runtime/ui/log_redact.h` (the launcher's Copy log / Save log...): user folders in any spelling
+(C:\Users\<name>, c:/users/<name>, /home/<name>, /Users/<name>) become ~, Windows' shared Public folder stays, a
+/home inside another path stays, and the identity keys at a line's start (open_psid, online_id, np_*) lose their
+values. `dev/test_redact.py` runs the same cases on `pipeline/redact.py` (vitarecomp report). Fail-before: Save log
+wrote the log as it was.
+
+    cc -O1 -g -Wall -I ../ui log_redact_test.c -o /tmp/log_redact_test && /tmp/log_redact_test
+
 ## A render target's own scale: `target_scale_test.c`
 
 UC-LAMP. Checks `runtime/gfx/target_scale.h` (RECOMP_TARGET_SCALE, gfx_gpu.c): a 1..4 factor draws a size finer than the

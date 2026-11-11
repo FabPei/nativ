@@ -330,7 +330,11 @@ def cmd_add(T, rest):
     # (--no-build: kept, not imported -- the game alone may be a version the pack refuses that its update makes one it plays)
     if nobuild: die(f"{tid}: kept; the next add (its update) or vitarecomp import {tid} imports it", 0)
     run(SELF + ["import", tid])
-    if not packconf.pack_for(PACKS, tid): die(f"{tid}: imported; there's no game pack for it yet (packs/{tid}/pack.toml) -- `vitarecomp bootstrap {tid}` writes a first one and builds and runs it as far as it goes", 0)
+    if not packconf.pack_for(PACKS, tid):   # (AUTO-PACK: a game nobody wrote a pack for gets a first one, as pack-init writes it -- the system
+        # modules it imports, the program a launcher-only eboot starts; built without one it had no libc or libgxm and stopped at once)
+        say(f"{tid}: there's no game pack for it yet -- writing a first one (vitarecomp pack-init; unverified: the game may not get far)")
+        if run(SELF + ["pack-init", tid], check=False).returncode or not packconf.pack_for(PACKS, tid):
+            die(f"{tid}: imported, but no game pack could be written for it (packs/{tid}/pack.toml) -- `vitarecomp bootstrap {tid}` tries further", 0)
     for c in ("analyze", "recompile", "build"): run(SELF + [c, tid])
 
 
@@ -972,7 +976,8 @@ def _machine():   # about.txt's lines on the computer: what the logs don't say
 def cmd_report(T):
     """a bug report: one zip of what a problem needs and nothing private: the game's last two session logs, the launcher's
     log, both settings files, the newest F5 frame history, and about.txt (versions, the computer). No game files, saves,
-    F12 captures (they hold the game's memory) or online key. The home folder's path is written as ~ in the text files"""
+    F12 captures (they hold the game's memory) or online key. The home folder's path is written as ~ in the text files, as is
+    any other user folder, and the identity keys (open_psid, online_id, np_*) lose their values (pipeline/redact.py)"""
     import time
     import zipfile
     from datadir import prefs_dir
@@ -984,7 +989,8 @@ def cmd_report(T):
     nativ = open(ver, encoding="utf-8").read().strip() if os.path.isfile(ver) else \
         subprocess.run(["git", "-C", ROOT, "describe", "--always", "--dirty"], capture_output=True, text=True).stdout.strip() or "unknown"
     home = os.path.expanduser("~")
-    def private(b): return b.replace(home.encode(), b"~").replace(home.replace("\\", "/").encode(), b"~")
+    from redact import redact   # (LOG-REDACT: every user folder as ~, the identity keys' values removed -- the launcher's Copy log the same)
+    def private(b): return redact(b.replace(home.encode(), b"~").replace(home.replace("\\", "/").encode(), b"~"))
     files = [(os.path.join(OUT, "session.log"), "session.log"), (os.path.join(OUT, "session.prev.log"), "session.prev.log"),
              (os.path.join(prefs_dir(), "launcher.log"), "launcher.log"), (os.path.join(prefs_dir(), "launcher.prev.log"), "launcher.prev.log"),
              (os.path.join(OUT, "settings.ini"), "settings-game.ini"), (os.path.join(prefs_dir(), "settings.ini"), "settings.ini")]
