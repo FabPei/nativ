@@ -3,6 +3,11 @@
 
   vitarecomp firmware  <PSP2UPDAT.PUP>      Sony's firmware update file (any recent one; 3.74 is what
                                             Sony serves) decrypted here -> dump/firmware/<version>/
+  vitarecomp fonts     <folder>             the console's system fonts (sa0:data/font/pvf/*.pvf: Sony's font package,
+                                            not in the firmware update file) from a folder that holds them -- a Vita3K
+                                            install (its sa0), an sa0 folder, or the pvf folder itself -- copied once
+                                            -> dump/firmware/sa0/; every game's sa0: is then that folder (ScePvf's
+                                            system fonts: without them a game's text in those fonts stays empty)
   vitarecomp scan      <folder> [--import-licences] [--out <file>]   every game, update, add-on and firmware file
                                             under it, at any depth (a copied ux0:, a downloads folder): pipeline/
                                             packs.py's rows, each with what the game's pack says of that version (and
@@ -269,6 +274,38 @@ def cmd_firmware(T):
     rmtree(os.path.join(FW, v)); os.rename(tmp, os.path.join(FW, v)); say(f"firmware {v} -> {os.path.join(FW, v)}")
 
 
+SA0_FONTS = os.path.join("data", "font", "pvf")   # where the console keeps its system fonts (sa0:data/font/pvf/ltn0.pvf, ...)
+
+
+def font_dir_of(T):
+    """the folder under T that holds the system fonts (*.pvf): T itself, T/data/font/pvf (an sa0 folder) or
+    T/sa0/data/font/pvf (a Vita3K install); None if none of them has any"""
+    for d in (T, os.path.join(T, SA0_FONTS), os.path.join(T, "sa0", SA0_FONTS)):
+        if os.path.isdir(d) and any(n.lower().endswith(".pvf") for n in os.listdir(d)): return d
+    return None
+
+
+def cmd_fonts(T):
+    src = font_dir_of(os.path.realpath(T)) if T else None
+    if not src: die(f"{T}: no system fonts (*.pvf) in it, its data/font/pvf or its sa0/data/font/pvf -- a Vita3K install's folder, or its sa0")
+    FW = os.path.join(DUMP, "firmware"); tmp = os.path.join(FW, f".sa0.{os.getpid()}")
+    rmtree(tmp); os.makedirs(os.path.join(tmp, SA0_FONTS))
+    names = sorted(n for n in os.listdir(src) if n.lower().endswith(".pvf") and os.path.isfile(os.path.join(src, n)))
+    for n in names: shutil.copyfile(os.path.join(src, n), os.path.join(tmp, SA0_FONTS, n))   # (a copy: the folder it came from may go)
+    rmtree(os.path.join(FW, "sa0")); os.rename(tmp, os.path.join(FW, "sa0"))
+    say(f"system fonts: {len(names)} -> {os.path.join(FW, 'sa0', SA0_FONTS)}")
+
+
+def link_system_fonts(fs):
+    """<fs>/sa0 -> the library's system fonts (dump/firmware/sa0, vitarecomp fonts) when it has them; a link left from
+    before goes when they are gone. A real sa0 folder in <fs> (put there by hand) is kept as it is."""
+    fonts, link = os.path.join(DUMP, "firmware", "sa0"), os.path.join(fs, "sa0")
+    is_link = os.path.islink(link) or _is_junction(link)
+    if os.path.lexists(link) and not is_link: return
+    if os.path.isdir(os.path.join(fonts, SA0_FONTS)): link_dir(fonts, link)
+    elif is_link: rmtree(link)
+
+
 def cmd_scan(T, rest):
     out = None
     if "--out" in rest:   # (the hub's: the rows into its file, no shell to redirect them)
@@ -492,6 +529,7 @@ def cmd_import(g, src):
         run([PY, os.path.join(DECRYPT, "fself2elf.py"), src, os.path.join(W, "elf")])
         if os.path.isdir(os.path.join(src, "sce_module")): run([PY, os.path.join(DECRYPT, "fself2elf.py"), os.path.join(src, "sce_module"), os.path.join(W, "elf")])
         if os.path.isdir(os.path.join(src, "data")): shutil.copytree(os.path.join(src, "data"), os.path.join(app0, "data"), symlinks=True, dirs_exist_ok=True)
+    link_system_fonts(os.path.join(OUT, "fs"))   # sa0: the console's system fonts, when the library has them
     # VERSIONS (packs/<title>/pack.toml): the builds the pack's hooks and addresses were made for -- another version or region
     # would mis-hook, so say so here rather than crash later; which one this is goes to $W/version, for the pack's per-version settings
     if g.VERSIONS:
@@ -694,6 +732,7 @@ def cmd_run(g, frames):
         if rc: sys.exit(rc)
     try:
         if os.path.isfile(os.path.join(OUT, "session.log")): os.replace(os.path.join(OUT, "session.log"), os.path.join(OUT, "session.prev.log"))
+        link_system_fonts(os.path.join(OUT, "fs"))   # (fonts added after the build count too)
         e = game_env(g, g.RUN_ENV.split() + (ENV.get("EXTRA_ENV") or "").split(), fixed)
         rc = tee_run(g.exe_argv(os.path.join(OUT, g.EXE)) + [g.BASE + ".img", g.entry(), frames or "100000000000"], e, OUT, os.path.join(OUT, "session.log"))
     finally:
@@ -709,6 +748,7 @@ def fresh_fs(g, td):
     rmtree(os.path.join(td, "fs")); rmtree(os.path.join(td, "settings.ini")); rmtree(os.path.join(td, "gaps.json"))   # (GAPS-01: this run's only)
     os.makedirs(os.path.join(td, "fs"))
     link_dir(os.path.join(g.OUT, "fs", "app0"), os.path.join(td, "fs", "app0"), relative=os.path.join("..", "..", "fs", "app0"))
+    link_system_fonts(os.path.join(td, "fs"))
 
 
 def test_timeout(g):   # a scripted run's limit in seconds: TIMEOUT for one run, else the pack's TEST_TIMEOUT, else 300
@@ -1270,6 +1310,7 @@ def main(argv):
     if cmd == "update-check": cmd_update_check(); return 0
     if not cmd or (not T and cmd not in ("licenses", "folders", "steam")): usage(); return 1
     if cmd == "firmware": cmd_firmware(T); return 0
+    if cmd == "fonts": cmd_fonts(T); return 0
     if cmd == "scan": cmd_scan(T, argv[2:]); return 0
     if cmd == "folders": return run([PY, os.path.join(R, "folders.py")] + argv[1:], env=env_with(TOOLS_ENV, {"ATIV_DUMP": DUMP}), check=False).returncode
     if cmd == "steam": return run([PY, os.path.join(R, "steam.py")] + argv[1:], check=False).returncode
