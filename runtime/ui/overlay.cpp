@@ -752,8 +752,9 @@ static void page_controls(void) {
 			const int i = window_pad_order(k);
 			if (!k || strcmp(window_pad_group(i), window_pad_group(window_pad_order(k - 1)))) {
 				ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::TextColored(ui::accent, "%s", ui_tr(window_pad_group(i)));
-				if (!strcmp(window_pad_group(i), "grp.pstv")) {   /* (what the PS TV's own buttons are for in a handheld game) */
-					ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::PushStyleColor(ImGuiCol_Text, ui::muted); ImGui::TextWrapped("%s", ui_tr("grp.pstv_help")); ImGui::PopStyleColor();
+				const char *note = !strcmp(window_pad_group(i), "grp.pstv") ? "grp.pstv_help" : !strcmp(window_pad_group(i), "grp.touch") ? "grp.touch_help" : nullptr;
+				if (note) {   /* (what the touch cursor's and the PS TV's own rows are for -- MAP-TOUCH) */
+					ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::PushStyleColor(ImGuiCol_Text, ui::muted); ImGui::TextWrapped("%s", ui_tr(note)); ImGui::PopStyleColor();
 				}
 			}
 			ImGui::TableNextRow();

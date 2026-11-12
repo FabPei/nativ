@@ -61,6 +61,10 @@ int main(void) {
 	expect_label(PAD_FAM_PS, "start", "Options"); expect_label(PAD_FAM_XBOX, "back", "View");
 	/* the PS TV group says what it is for */
 	CHECK(in_catalog("grp.pstv_help"), "the PS TV group's note");
+	/* (MAP-TOUCH) the touch cursor's two rows in a group of their own, with a note; the PS TV group keeps L3 and R3 */
+	CHECK(!strcmp(pad_rows[PADB_L2].group, "grp.touch") && !strcmp(pad_rows[PADB_R2].group, "grp.touch"), "L2 / R2 rows: the touch group");
+	CHECK(in_catalog("grp.touch") && in_catalog("grp.touch_help"), "the touch group and its note");
+	CHECK(!strcmp(pad_rows[PADB_L3].group, "grp.pstv") && !strcmp(pad_rows[PADB_R3].group, "grp.pstv"), "L3 / R3: PS TV only");
 	/* the keyboard's labels and groups are translated too */
 	for (int i = 0; i < KB_N; i++) {
 		CHECK(in_catalog(kb_defs[i].label), "%s: label id %s not in the catalog", kb_defs[i].key, kb_defs[i].label);

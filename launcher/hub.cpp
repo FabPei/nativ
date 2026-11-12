@@ -1952,7 +1952,7 @@ static void vita_symbol(ImDrawList *dl, ImVec2 c, float r, int row, ImU32 ink) {
 	case 8: dl->AddTriangleFilled(ImVec2(c.x - s, c.y), ImVec2(c.x + s * 0.6f, c.y + s), ImVec2(c.x + s * 0.6f, c.y - s), ink); return;
 	case 9: dl->AddTriangleFilled(ImVec2(c.x + s, c.y), ImVec2(c.x - s * 0.6f, c.y - s), ImVec2(c.x - s * 0.6f, c.y + s), ink); return;
 	default: {
-		static const char *const t[] = {"", "", "", "", "Start", "Select", "", "", "", "", "L3", "R3", "L", "R", "L2", "R2", "PS"};
+		static const char *const t[] = {"", "", "", "", "Start", "Select", "", "", "", "", "L3", "R3", "L", "R", "Touch F", "Touch R", "PS"};   /* (MAP-TOUCH: L2 / R2 hold the touch cursor) */
 		const char *txt = row >= 0 && row < (int)(sizeof t / sizeof t[0]) && t[row][0] ? t[row] : "?";
 		ImFont *f = ImGui::GetFont(); float fs = ImGui::GetFontSize() * 0.8f; ImVec2 ts = f->CalcTextSizeA(fs, FLT_MAX, 0, txt);
 		if (ts.x > r * 1.8f) { fs *= r * 1.8f / ts.x; ts = f->CalcTextSizeA(fs, FLT_MAX, 0, txt); }   /* (fits the button) */
@@ -2074,7 +2074,7 @@ static void mapping_rows(const SetTarget &t) {   /* (Controls tab, after its row
 		}
 		ImGui::Dummy(ImVec2(0, em * 0.2f));
 		ImGui::PushTextWrapPos(0);
-		ui::muted_wrapped("Where they sit: L and R in the top corners, the D-pad and the left stick on the left, the face buttons and the right stick on the right, Select and Start at the bottom. A touch anywhere else is the Vita's front touch screen; the rear touch pad: hold the shoulder pair that isn't L and R and move a stick, or Alt and the mouse (see Touch cursor speed above).");
+		ui::muted_wrapped("Where they sit: L and R in the top corners, the D-pad and the left stick on the left, the face buttons and the right stick on the right, Select and Start at the bottom. A touch anywhere else is the Vita's front touch screen. With a controller: hold a touch screen button (the Controller tab, Touch screen) and move a stick; with a mouse: hold Alt.");
 		ImGui::PopTextWrapPos();
 		ui::rows_begin("map_rest");
 		return;
@@ -2088,7 +2088,8 @@ static void mapping_rows(const SetTarget &t) {   /* (Controls tab, after its row
 			const char *grp = pad ? pad_rows[i].group : kb_defs[i].group, *prev = !k ? "" : pad ? pad_rows[pad_row_order[k - 1]].group : kb_defs[k - 1].group;
 			if (strcmp(grp, prev)) {   /* (KB-MAP) a heading per group: Left stick, Right stick, D-pad, ... */
 				ui::row_finish(); ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::TextColored(ui::accent, "%s", ui_tr(grp));
-				if (pad && !strcmp(grp, "grp.pstv")) { ImGui::TableNextRow(); ImGui::TableNextColumn(); ui::muted_wrapped(ui_tr("grp.pstv_help")); }
+				const char *note = !pad ? nullptr : !strcmp(grp, "grp.pstv") ? "grp.pstv_help" : !strcmp(grp, "grp.touch") ? "grp.touch_help" : nullptr;
+				if (note) { ImGui::TableNextRow(); ImGui::TableNextColumn(); ui::muted_wrapped(ui_tr(note)); }   /* (MAP-TOUCH) */
 			}
 			const std::string v = bind_value(t, rows[i], pad);
 			ui::row(rows[i].label, nullptr, v == rows[i].def ? "default" : nullptr);
@@ -2164,7 +2165,7 @@ static void settings_modal(void) {
 			slider_row(t, "Mouse sensitivity", nullptr, "mouse_sens", 1.0, 0.1f, 5.0f, "%.2f×", 1, ImGuiSliderFlags_Logarithmic);
 			toggle_row(t, "Invert vertical look", nullptr, "mouse_invert", false);
 			seg_row(t, "L and R by default on", "Which pair of shoulder buttons is the Vita's L and R by default (aim and fire in shooters). The other pair moves the touch cursor, or is L2 and R2 in PS TV games. You can also set each button under Button mapping.", "shoulder_buttons", "triggers", {{"triggers", "Triggers"}, {"bumpers", "Bumpers"}});
-			slider_row(t, "Touch cursor speed", "Hold L2 or R2 (see Button mapping) and move a stick: a cursor touches the front or rear touch screen.", "touch_cursor_speed", 1.0, 0.25f, 3.0f, "%.2f×");
+			slider_row(t, "Touch cursor speed", "How fast the touch cursor moves: hold the touch screen button (Button mapping, Controller, Touch screen) and move a stick.", "touch_cursor_speed", 1.0, 0.25f, 3.0f, "%.2f×");
 			toggle_row(t, "Gyro", "Use the controller's gyro as the Vita's motion sensor.", "gyro", true);
 			seg_row(t, "Controller's resting position", "Upright: held in your hands. Flat: lying on a table.", "gyro_pose", "upright", {{"upright", "Upright"}, {"flat", "Flat"}});
 			slider_row(t, "Gyro sensitivity", nullptr, "gyro_sens", 1.0, 0.25f, 3.0f, "%.2f×");

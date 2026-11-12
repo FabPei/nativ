@@ -29,17 +29,19 @@ static const PadRow pad_rows[PADB_N] = {
 	[PADB_R3] = {"pad_bind_r3", "vb.r3", "grp.pstv", "right_stick"},
 	[PADB_L] = {"pad_bind_l", "vb.l", "grp.shoulder", "left_trigger"},
 	[PADB_R] = {"pad_bind_r", "vb.r", "grp.shoulder", "right_trigger"},
-	[PADB_L2] = {"pad_bind_l2", "vb.l2", "grp.pstv", "left_shoulder"},
-	[PADB_R2] = {"pad_bind_r2", "vb.r2", "grp.pstv", "right_shoulder"},
+	[PADB_L2] = {"pad_bind_l2", "vb.touch_front", "grp.touch", "left_shoulder"},   /* (MAP-TOUCH) held: the touch cursor; a PS TV game: L2 */
+	[PADB_R2] = {"pad_bind_r2", "vb.touch_rear", "grp.touch", "right_shoulder"},
 	[PADB_PS] = {"pad_bind_ps", "vb.ps", "grp.system", "guide"},
 };
-/* the order shown: face buttons, D-pad, shoulders, Start / Select / PS, then the PS TV's own (L2 R2 L3 R3) */
+/* the order shown: face buttons, D-pad, shoulders, the touch screen (L2 R2: the touch cursor), Start / Select / PS, then
+ * the PS TV's own L3 R3 */
 static const int pad_row_order[PADB_N] = {
 	PADB_CROSS, PADB_CIRCLE, PADB_SQUARE, PADB_TRIANGLE,
 	PADB_UP, PADB_DOWN, PADB_LEFT, PADB_RIGHT,
 	PADB_L, PADB_R,
+	PADB_L2, PADB_R2,
 	PADB_START, PADB_SELECT, PADB_PS,
-	PADB_L2, PADB_R2, PADB_L3, PADB_R3,
+	PADB_L3, PADB_R3,
 };
 /* the controller buttons the mapping uses (pad_bind.c's names) */
 enum { PAD_PHYS_N = 17 };
