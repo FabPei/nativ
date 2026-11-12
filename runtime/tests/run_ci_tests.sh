@@ -39,6 +39,7 @@ run hle_small_test    -O1 -g -Wall -I ../core hle_small_test.c
 run dump_fit_test     -O1 -g -Wall -I ../ui dump_fit_test.c
 run intro_skip_test   -O1 -g -Wall -I ../ui intro_skip_test.c
 run kb_bind_test      -O1 -g -Wall -I ../ui kb_bind_test.c -lm
+run pad_rows_test     -O1 -g -Wall -I ../ui pad_rows_test.c ../ui/ui_text.c -lm
 run stick_curve_test  -O1 -g -Wall -I ../ui stick_curve_test.c -lm
 run gaps_test         -O1 -g -w -D_GNU_SOURCE $INC gaps_test.c -lm -lpthread -Wl,--unresolved-symbols=ignore-all   # GAPS-01 (usse.c's guest-memory helpers stay unresolved: decode_one never reaches them)
 run overlay_scale_test -O1 -g -Wall -I ../ui overlay_scale_test.c -lm

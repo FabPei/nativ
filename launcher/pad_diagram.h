@@ -25,7 +25,7 @@ struct PadSpot { float x, y, r; };   /* centre and radius, in the diagram box (x
  * side below; Xbox and Switch pads have the left stick above the D-pad and the right stick low on the right; the Deck has
  * the D-pad and the face buttons high, the sticks under them, Menu / View at the top inside */
 static inline PadSpot pad_spot(int fam, int b) {
-	const float face_r = 0.034f, dpad_r = 0.032f, stick_r = 0.055f, small_r = 0.026f;
+	const float face_r = 0.034f, dpad_r = 0.032f, stick_r = 0.055f, small_r = 0.030f, top_r = 0.036f;   /* (MAP-UI: big enough for the pad's own name and the Vita button under it) */
 	float fx = 0.76f, fy = 0.24f, dx = 0.24f, dy = 0.24f, lsx = 0.36f, lsy = 0.44f, rsx = 0.64f, rsy = 0.44f, sy = 0.15f, ssx = 0.06f;
 	if (fam == PAD_FAM_XBOX || fam == PAD_FAM_SWITCH) { dx = 0.36f; dy = 0.42f; lsx = 0.24f; lsy = 0.24f; rsx = 0.64f; rsy = 0.42f; sy = 0.24f; }
 	if (fam == PAD_FAM_DECK) { fx = 0.84f; fy = 0.22f; dx = 0.16f; dy = 0.22f; lsx = 0.30f; lsy = 0.44f; rsx = 0.70f; rsy = 0.44f; sy = 0.12f; ssx = 0.20f; }
@@ -45,11 +45,11 @@ static inline PadSpot pad_spot(int fam, int b) {
 	case PD_START: return {0.5f + ssx, sy, small_r};
 	/* along the top edge, outside in: trigger, bumper | bumper, trigger; Guide in the middle (a PlayStation pad's below
 	 * Share / Options, an Xbox / Switch pad's above View / Menu, the Deck's under its menu buttons) */
-	case PD_LT: return {0.17f, 0.036f, small_r};
-	case PD_LB: return {0.28f, 0.036f, small_r};
-	case PD_RB: return {0.72f, 0.036f, small_r};
-	case PD_RT: return {0.83f, 0.036f, small_r};
-	case PD_GUIDE: return {0.5f, fam == PAD_FAM_XBOX || fam == PAD_FAM_SWITCH ? 0.13f : fam == PAD_FAM_DECK ? 0.30f : 0.26f, small_r};
+	case PD_LT: return {0.16f, 0.040f, top_r};
+	case PD_LB: return {0.28f, 0.040f, top_r};
+	case PD_RB: return {0.72f, 0.040f, top_r};
+	case PD_RT: return {0.84f, 0.040f, top_r};
+	case PD_GUIDE: return {0.5f, fam == PAD_FAM_XBOX || fam == PAD_FAM_SWITCH ? 0.13f : fam == PAD_FAM_DECK ? 0.30f : 0.26f, top_r};
 	default: return {0.5f, 0.3f, 0.0f};
 	}
 }

@@ -43,7 +43,9 @@
 #include "pad_diagram.h"
 #include "device_pick.h"   /* (UI-02b) the chosen controller / camera by name, the "not connected" mark */   /* (UI-02c) the drawn controller of Controls > Mapping */   /* (EXPORT-01a) what the AppImage export prints, read back */
 #include "pad_family.h"   /* (UI-01e) the controller in use and its buttons' names, shared with the in-game menu */
-#include "kb_bind.h"   /* (KB-MAP) the keyboard's bindings, shared with the game (window.c) */
+#include "kb_bind.h"
+#include "pad_rows.h"   /* (MAP-UI) the controller rows, groups and button names, shared with the game's menu */
+#include "ui_text.h"   /* (MAP-UI) their labels (the launcher: English) */   /* (KB-MAP) the keyboard's bindings, shared with the game (window.c) */
 #include "log_redact.h"   /* (LOG-REDACT) Copy log / Save log take the user folders and identity values out */
 #include <ctime>
 #include <SDL3/SDL.h>
@@ -1833,30 +1835,18 @@ static void about_tab(void) {   /* (UI-01i) the version, the launcher's own wind
  * 6 seconds; Esc leaves a key as it was), or pick it from the list (touch and a mouse can map a controller too).
  * Touch: the on-screen buttons (UI-01n: "osb", "osb_size", the same keys as the game's menu) and the game's touch rules */
 struct BindRow { const char *key, *label, *def; };
-static const BindRow k_pad_rows[] = {   /* (window.c pad_binds, in its order; def: pad_bind.c's defaults) */
-	{"pad_bind_cross", "Cross", "south"}, {"pad_bind_circle", "Circle", "east"}, {"pad_bind_square", "Square", "west"}, {"pad_bind_triangle", "Triangle", "north"},
-	{"pad_bind_start", "Start", "start"}, {"pad_bind_select", "Select", "back"}, {"pad_bind_up", "D-pad up", "dpad_up"}, {"pad_bind_down", "D-pad down", "dpad_down"},
-	{"pad_bind_left", "D-pad left", "dpad_left"}, {"pad_bind_right", "D-pad right", "dpad_right"}, {"pad_bind_l3", "L3", "left_stick"}, {"pad_bind_r3", "R3", "right_stick"},
-	{"pad_bind_l", "L (PS TV: L1)", "left_trigger"}, {"pad_bind_r", "R (PS TV: R1)", "right_trigger"},   /* (PAD-MAP: every Vita and PS TV button) */
-	{"pad_bind_l2", "L2 (PS TV) / front touch cursor", "left_shoulder"}, {"pad_bind_r2", "R2 (PS TV) / rear touch cursor", "right_shoulder"},
-	{"pad_bind_ps", "PS button (the menu)", "guide"}};
-enum { K_PAD_N = (int)(sizeof k_pad_rows / sizeof k_pad_rows[0]) };
+static const std::vector<BindRow> k_pad_vec = [] {   /* (MAP-UI) the controller's: pad_rows.h, shared with the game's menu (labels in English) */
+	std::vector<BindRow> v; for (const PadRow &r : pad_rows) v.push_back({r.key, ui_tr(r.label), r.def}); return v; }();
+static const BindRow *const k_pad_rows = k_pad_vec.data();
+enum { K_PAD_N = PADB_N };
 static const std::vector<BindRow> k_key_vec = [] {   /* (KB-MAP) the keyboard's: kb_bind.h's table, shared with window.c */
-	std::vector<BindRow> v; for (const KbDef &d : kb_defs) v.push_back({d.key, d.label, d.def}); return v; }();
+	std::vector<BindRow> v; for (const KbDef &d : kb_defs) v.push_back({d.key, ui_tr(d.label), d.def}); return v; }();
 static const BindRow *const k_key_rows = k_key_vec.data();
 static const char *const k_pad_names[] = {"south", "east", "west", "north", "start", "back", "dpad_up", "dpad_down", "dpad_left", "dpad_right", "left_stick", "right_stick",
 	"left_shoulder", "right_shoulder", "left_trigger", "right_trigger", "guide"};
-static std::string pad_button_label(const std::string &name) {   /* "south" -> the pad's own name (Cross / A / B on a Switch pad) */
-	const PadNames *n = pad_names_of(g_pad_fam);
-	if (name == "south") return n->select; if (name == "east") return n->back; if (name == "west") return n->west; if (name == "north") return n->north;
-	if (name == "start") return n->menu; if (name == "back") return n->view;
-	if (name == "dpad_up") return "D-pad up"; if (name == "dpad_down") return "D-pad down"; if (name == "dpad_left") return "D-pad left"; if (name == "dpad_right") return "D-pad right";
-	if (name == "left_stick") return "Left stick (press)"; if (name == "right_stick") return "Right stick (press)";
-	const bool xb = g_pad_fam == PAD_FAM_XBOX, sw = g_pad_fam == PAD_FAM_SWITCH;   /* (PAD-MAP: the shoulders, the triggers, Guide by the pad's own names) */
-	if (name == "left_shoulder") return n->l; if (name == "right_shoulder") return n->r;
-	if (name == "left_trigger") return xb ? "LT" : sw ? "ZL" : "L2"; if (name == "right_trigger") return xb ? "RT" : sw ? "ZR" : "R2";
-	if (name == "guide") return xb ? "Xbox button" : sw ? "Home" : g_pad_fam == PAD_FAM_DECK ? "Steam button" : "PS button";
-	return "(none)";
+static std::string pad_button_label(const std::string &name) {   /* "south" -> the name on this pad (Cross / A / B on a Switch pad; MAP-UI: pad_rows.h) */
+	const char *l = pad_phys_label(g_pad_fam, name.c_str());
+	return !strncmp(l, "btn.", 4) ? ui_tr(l) : l;
 }
 static std::string bind_value(const SetTarget &t, const BindRow &r, bool pad) {   /* what the game reads for this row */
 	const std::string v = tget(t, r.key, "");
@@ -1900,13 +1890,13 @@ static void bind_modal(const SetTarget &t) {   /* (inside Settings) */
 	if (!ImGui::BeginPopupModal("##bind", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove)) { ImGui::PopStyleVar(2); return; }
 	ImGui::PopStyleVar(2);
 	const BindRow &r = (g_bind.pad ? k_pad_rows : k_key_rows)[g_bind.row];
-	ui::heading((std::string(r.label) + (g_bind.pad ? ": which button?" : ": which key?")).c_str(), em * 1.3f);
+	ui::heading((std::string(r.label) + (g_bind.pad ? ": which controller button?" : ": which key?")).c_str(), em * 1.3f);
 	const double left = g_bind.until - ImGui::GetTime();
 	ImGui::PushTextWrapPos(0);
-	if (g_bind.pad) { char s[96]; snprintf(s, sizeof s, "Press the button on the controller now (%d s), or pick it below.", (int)ceil(left > 0 ? left : 0)); ImGui::TextUnformatted(s); }
-	else ImGui::TextUnformatted("Press the key now, or pick it below. Esc leaves it as it was.");
+	if (g_bind.pad) { char s[96]; snprintf(s, sizeof s, "Press it on the controller now (%d s left), or pick it below.", (int)ceil(left > 0 ? left : 0)); ImGui::TextUnformatted(s); }
+	else ImGui::TextUnformatted("Press the key now, or pick it below. Esc keeps the current one.");
 	ui::muted_wrapped(("Now: " + (g_bind.pad ? pad_button_label(bind_value(t, r, true)) : bind_value(t, r, false))).c_str());
-	ui::muted_wrapped(g_bind.pad ? "A button another action had is taken from it." : "A key another action had is taken from it.");
+	ui::muted_wrapped(g_bind.pad ? "If another Vita button was on it, that one is cleared." : "If another Vita button was on this key, that one is cleared.");
 	ImGui::PopTextWrapPos();
 	std::string chosen; bool cancel = false;
 	/* the pick list: by touch or with a mouse (no controller focus: a controller's press is the answer) */
@@ -1962,7 +1952,7 @@ static void vita_symbol(ImDrawList *dl, ImVec2 c, float r, int row, ImU32 ink) {
 	case 8: dl->AddTriangleFilled(ImVec2(c.x - s, c.y), ImVec2(c.x + s * 0.6f, c.y + s), ImVec2(c.x + s * 0.6f, c.y - s), ink); return;
 	case 9: dl->AddTriangleFilled(ImVec2(c.x + s, c.y), ImVec2(c.x - s * 0.6f, c.y - s), ImVec2(c.x - s * 0.6f, c.y + s), ink); return;
 	default: {
-		static const char *const t[] = {"", "", "", "", "Start", "Sel", "", "", "", "", "L3", "R3", "L", "R", "L2", "R2", "PS"};
+		static const char *const t[] = {"", "", "", "", "Start", "Select", "", "", "", "", "L3", "R3", "L", "R", "L2", "R2", "PS"};
 		const char *txt = row >= 0 && row < (int)(sizeof t / sizeof t[0]) && t[row][0] ? t[row] : "?";
 		ImFont *f = ImGui::GetFont(); float fs = ImGui::GetFontSize() * 0.8f; ImVec2 ts = f->CalcTextSizeA(fs, FLT_MAX, 0, txt);
 		if (ts.x > r * 1.8f) { fs *= r * 1.8f / ts.x; ts = f->CalcTextSizeA(fs, FLT_MAX, 0, txt); }   /* (fits the button) */
@@ -1972,7 +1962,7 @@ static void vita_symbol(ImDrawList *dl, ImVec2 c, float r, int row, ImU32 ink) {
 }
 static void pad_diagram(const SetTarget &t) {
 	const float em = ImGui::GetFontSize();
-	std::vector<std::string> values; for (const BindRow &r : k_pad_rows) values.push_back(bind_value(t, r, true));
+	std::vector<std::string> values; for (const BindRow &r : k_pad_vec) values.push_back(bind_value(t, r, true));
 	const auto on = pad_diag_on(values); const auto unplaced = pad_diag_unplaced(values);
 	const float W = std::min(ImGui::GetContentRegionAvail().x, em * 30), H = W * PAD_DIAG_H;
 	const ImVec2 o = ImGui::GetCursorScreenPos();
@@ -2003,18 +1993,28 @@ static void pad_diagram(const SetTarget &t) {
 		const bool clash = on[bi].size() > 1, empty = on[bi].empty();
 		dl->AddCircleFilled(c, r, ui::u32(hot ? ui::card_hi : ui::surface));
 		dl->AddCircle(c, r, clash ? ui::u32(ui::error) : hot ? ui::u32(ui::accent) : edge, 0, clash || hot ? 2.5f : 1.0f);
-		if (!empty) vita_symbol(dl, c, r, on[bi][0], ui::u32(ui::text));
-		else dl->AddLine(ImVec2(c.x - r * 0.35f, c.y), ImVec2(c.x + r * 0.35f, c.y), ui::u32(ui::muted), 1.5f);   /* (nothing on it) */
+		/* (MAP-UI) the button's own name (LT, A, Cross ...) on top, the Vita button it presses below, in the accent colour;
+		 * the D-pad's arrows are their own name: only the Vita button */
+		const char *own = pad_phys_label(g_pad_fam, pd_names[bi]);
+		const bool named = strncmp(own, "btn.", 4) != 0;
+		if (named) {
+			ImFont *f = ImGui::GetFont(); float fs = ImGui::GetFontSize() * 0.62f; ImVec2 ts = f->CalcTextSizeA(fs, FLT_MAX, 0, own);
+			if (ts.x > r * 1.7f) { fs *= r * 1.7f / ts.x; ts = f->CalcTextSizeA(fs, FLT_MAX, 0, own); }
+			dl->AddText(f, fs, ImVec2(c.x - ts.x * 0.5f, c.y - r * 0.42f - ts.y * 0.5f), ui::u32(ui::muted), own);
+		}
+		const ImVec2 vc = named ? ImVec2(c.x, c.y + r * 0.30f) : c; const float vr = named ? r * 0.62f : r;
+		if (!empty) vita_symbol(dl, vc, vr, on[bi][0], ui::u32(ui::accent));
+		else dl->AddLine(ImVec2(vc.x - vr * 0.35f, vc.y), ImVec2(vc.x + vr * 0.35f, vc.y), ui::u32(ui::muted), 1.5f);   /* (nothing on it) */
 		if (clash) { const char *two = on[bi].size() > 2 ? "3+" : "2"; dl->AddText(ImVec2(c.x + r * 0.7f, c.y - r * 1.3f), ui::u32(ui::error), two); }
 	}
 	ImGui::SetCursorScreenPos(ImVec2(o.x, o.y + H));
 	ImGui::Dummy(ImVec2(W, 0));
 	ImGui::PushTextWrapPos(0);
-	ui::muted_wrapped("Each button shows the Vita button it is. Select one on the drawing to change it.");
+	ui::muted_wrapped("Each button shows its own name and, below it in colour, the Vita button it presses. Select a button to change it.");
 	bool any_clash = false; for (int bi = 0; bi < PD_N; bi++) any_clash |= on[bi].size() > 1;
 	if (any_clash) { ImGui::PushStyleColor(ImGuiCol_Text, ui::error); ImGui::TextWrapped("Red: two Vita buttons on one button -- the game keeps only one of them."); ImGui::PopStyleColor(); }
 	if (!unplaced.empty()) {
-		std::string l = "Not on any button: ";
+		std::string l = "Not on any controller button: ";
 		for (size_t i = 0; i < unplaced.size(); i++) l += (i ? ", " : "") + std::string(k_pad_rows[unplaced[i]].label);
 		ImGui::PushStyleColor(ImGuiCol_Text, ui::warn); ImGui::TextWrapped("%s", l.c_str()); ImGui::PopStyleColor();
 	}
@@ -2032,21 +2032,24 @@ static void spot_modal(const SetTarget &t) {   /* "What does <button> do?" (insi
 	if (!ImGui::BeginPopupModal("##spot", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove)) { ImGui::PopStyleVar(2); return; }
 	ImGui::PopStyleVar(2);
 	const char *phys = pd_names[g_spot.spot];
-	ui::heading(("What does " + pad_button_label(phys) + " do?").c_str(), em * 1.3f);
-	std::vector<std::string> values; for (const BindRow &r : k_pad_rows) values.push_back(bind_value(t, r, true));
+	ui::heading(("What should " + pad_button_label(phys) + " press?").c_str(), em * 1.3f);
+	std::vector<std::string> values; for (const BindRow &r : k_pad_vec) values.push_back(bind_value(t, r, true));
 	const auto on = pad_diag_on(values)[g_spot.spot];
 	dialog_body_begin();
 	ImGui::PushTextWrapPos(0);
-	ui::muted_wrapped("The Vita button it is in the game. One that was on another button moves here.");
+	ui::muted_wrapped("Pick a Vita button. If it was on another controller button, it moves here.");
 	ImGui::PopTextWrapPos();
 	int chosen = -2;   /* -2 nothing chosen, -1 "Nothing", else the row */
-	for (int i = 0; i < K_PAD_N; i++) {
+	for (int k = 0; k < K_PAD_N; k++) {   /* (MAP-UI) in the groups the lists show */
+		const int i = pad_row_order[k];
+		if (!k || strcmp(pad_rows[i].group, pad_rows[pad_row_order[k - 1]].group)) { ImGui::Dummy(ImVec2(0, em * 0.15f)); ImGui::TextColored(ui::accent, "%s", ui_tr(pad_rows[i].group)); }
 		const bool here = std::find(on.begin(), on.end(), i) != on.end();
 		std::string l = std::string(k_pad_rows[i].label) + (here ? "  (now)" : "") + "##vita" + std::to_string(i);
 		if ((here ? ui::primary_button(l.c_str(), ImVec2(-FLT_MIN, 0)) : ImGui::Button(l.c_str(), ImVec2(-FLT_MIN, 0)))) chosen = i;
-		if (i == 0 && ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere(-1);
+		if (k == 0 && ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere(-1);
 	}
-	if (ImGui::Button("Nothing##vita", ImVec2(-FLT_MIN, 0))) chosen = -1;
+	ImGui::Dummy(ImVec2(0, em * 0.15f));
+	if (ImGui::Button("Nothing (clear this button)##vita", ImVec2(-FLT_MIN, 0))) chosen = -1;
 	dialog_body_end();
 	bool close = false;
 	if (ImGui::Button("Cancel##spot") || dialog_back()) close = true;
@@ -2058,7 +2061,7 @@ static void spot_modal(const SetTarget &t) {   /* "What does <button> do?" (insi
 }
 static void mapping_rows(const SetTarget &t) {   /* (Controls tab, after its rows) */
 	const float em = ImGui::GetFontSize();
-	ui::row("Mapping for", "Each way of playing has its own mapping; the game's own menu (F10, Controls) changes the same.");
+	ui::row("Button mapping", "Which key or controller button presses which Vita button. The same as in the game's menu (F10, Controls).");
 	{	static const char *const types[] = {"Controller##mt", "Keyboard & mouse##mt", "Touch##mt"}; ui::tabs_row(types, 3, &g_map_type); }
 	ui::rows_end();
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
@@ -2080,9 +2083,12 @@ static void mapping_rows(const SetTarget &t) {   /* (Controls tab, after its row
 	const BindRow *rows = pad ? k_pad_rows : k_key_rows; const int n = pad ? K_PAD_N : KB_N;
 	if (pad) pad_diagram(t);   /* (UI-02c) the drawing first, the list under it */
 	if (ui::rows_begin(pad ? "map_pad" : "map_keys")) {
-		for (int i = 0; i < n; i++) {
-			if (!pad && (!i || strcmp(kb_defs[i].group, kb_defs[i - 1].group))) {   /* (KB-MAP) a heading per group: Left stick, Right stick, D-pad, ... */
-				ui::row_finish(); ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::TextColored(ui::muted, "%s", kb_defs[i].group);
+		for (int k = 0; k < n; k++) {
+			const int i = pad ? pad_row_order[k] : k;   /* (MAP-UI) the controller's rows in their groups' order */
+			const char *grp = pad ? pad_rows[i].group : kb_defs[i].group, *prev = !k ? "" : pad ? pad_rows[pad_row_order[k - 1]].group : kb_defs[k - 1].group;
+			if (strcmp(grp, prev)) {   /* (KB-MAP) a heading per group: Left stick, Right stick, D-pad, ... */
+				ui::row_finish(); ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::TextColored(ui::accent, "%s", ui_tr(grp));
+				if (pad && !strcmp(grp, "grp.pstv")) { ImGui::TableNextRow(); ImGui::TableNextColumn(); ui::muted_wrapped(ui_tr("grp.pstv_help")); }
 			}
 			const std::string v = bind_value(t, rows[i], pad);
 			ui::row(rows[i].label, nullptr, v == rows[i].def ? "default" : nullptr);
@@ -2119,48 +2125,48 @@ static void settings_modal(void) {
 	ui::tabs_down_enters(tabs_had_focus);   /* (UI-03: down from the tabs: the rows' first control) */
 	if (g_settings_tab <= 2) {   /* (what these settings are: at the top of the rows, scrolling with them -- a small window has no room for it above) */
 		ImGui::PushTextWrapPos(0);
-		ui::muted_wrapped("For every game. A game reads them when it starts; its own menu (F10) changes them too, for every game. A game's own options, and any value it keeps for itself, are on its page (its card's ...).");
+		ui::muted_wrapped("These settings apply to every game, from its next start. The game's menu (F10) changes the same settings. Options for one game only are on its page (the ... on its card).");
 		ImGui::PopTextWrapPos(); ImGui::Dummy(ImVec2(0, em * 0.2f));
 	}
 	if (g_settings_tab == 3) library_tab();
 	else if (g_settings_tab == 4) about_tab();
 	else if (ui::rows_begin("shared")) {
 		if (g_settings_tab == 0) {
-			ui::row("Resolution", "The game drawn at a multiple of the Vita's 960 × 544. Higher is sharper; 4× and up want a fast GPU.");
+			ui::row("Resolution", "Draws the game at a multiple of the Vita's 960 × 544. Higher is sharper; 4× and above need a fast GPU.");
 			{	ImGui::PushID("render_scale");
 				const char *const names[6] = {"1×", "2×", "3×", "4×", "5×", "6×"}; int v = atoi(tget(t, "render_scale", "1").c_str()) - 1; if (v < 0) v = 0; if (v > 5) v = 5;
 				if (ui::segmented(names, 6, &v)) target_write(t, "render_scale", std::to_string(v + 1));
 				int r = recommended_scale(); if (r != v + 1) { char l[48]; snprintf(l, sizeof l, "%d× suits this display", r); if (link_button(l)) target_write(t, "render_scale", std::to_string(r)); }
 				ImGui::PopID(); }
-			toggle_row(t, "Fullscreen", "Also kept when you use the window's own fullscreen button.", "fullscreen", false);
+			toggle_row(t, "Fullscreen", "Also remembered when you use the window's own fullscreen button.", "fullscreen", false);
 			seg_row(t, "Widescreen", "Shows more of the game at the sides, in games that support it.", "aspect_ratio", "native", {{"native", "Off"}, {"16:10", "16:10"}, {"3:2", "3:2"}, {"21:9", "21:9"}, {"32:9", "32:9"}, {"window", "Window"}});
-			seg_row(t, "HUD", "With widescreen on: the HUD at the screen's edges, in a 16:9 frame in the middle, or stretched.", "hud_layout", "edges", {{"edges", "Edges"}, {"16:9", "16:9"}, {"stretch", "Stretched"}});
+			seg_row(t, "HUD", "With widescreen: the HUD at the screen's edges, in a 16:9 frame in the middle, or stretched to the full width.", "hud_layout", "edges", {{"edges", "Edges"}, {"16:9", "16:9"}, {"stretch", "Stretched"}});
 			seg_row(t, "Picture fit", "How the picture fills the window.", "aspect", "fit", {{"fit", "Fit"}, {"stretch", "Stretch"}, {"fill", "Fill"}});
-			seg_row(t, "Frame rate", "Above 30 is experimental: parts of a game timed in fixed 1/30 s steps can run fast. A game runs at the highest rate it allows up to this one (its Game settings show which).", "frame_rate", "30", {{"30", "30"}, {"60", "60"}, {"120", "120"}});
+			seg_row(t, "Frame rate", "Above 30 is experimental: parts of a game made for 30 fps may run too fast. Each game runs at the highest rate it supports, up to this one (its own page shows which).", "frame_rate", "30", {{"30", "30"}, {"60", "60"}, {"120", "120"}});
 			toggle_row(t, "Anti-aliasing", "Smooths jagged edges (FXAA).", "post_aa", true);
 			slider_row(t, "Sharpening", "Brings back detail lost to scaling and anti-aliasing.", "sharpen", 0.35, 0.0f, 100.0f, "%.0f%%", 100.0f);
-			seg_row(t, "Texture filtering", "Keeps textures crisp when seen at an angle.", "anisotropy", "16", {{"1", "Off"}, {"2", "2×"}, {"4", "4×"}, {"8", "8×"}, {"16", "16×"}});
+			seg_row(t, "Texture filtering", "Keeps textures sharp when seen at an angle.", "anisotropy", "16", {{"1", "Off"}, {"2", "2×"}, {"4", "4×"}, {"8", "8×"}, {"16", "16×"}});
 			seg_row(t, "Shadow edges", "How soft the edges of shadows are.", "shadow_filter", "1", {{"0", "Original"}, {"1", "Soft"}, {"2", "Softer"}});
-			toggle_row(t, "Full-resolution world", "Games that draw their 3D world below the screen's resolution draw it at the full one. Sharper, at a GPU cost.", "full_res_world", true);
+			toggle_row(t, "Full-resolution world", "Games that draw their 3D world below the screen resolution draw it at full resolution. Sharper, but costs GPU power.", "full_res_world", true);
 			toggle_row(t, "Ambient occlusion", "Soft shadows where surfaces meet, in games that support it.", "ssao", true);
 			slider_row(t, "Occlusion strength", nullptr, "ssao_strength", 1.0, 0.0f, 200.0f, "%.0f%%", 100.0f);
-			seg_row(t, "On-screen stats", "Frame rate and timings over the game. F1 cycles them.", "osd", "0", {{"0", "Off"}, {"1", "FPS"}, {"2", "Full"}});
+			seg_row(t, "On-screen stats", "Frame rate and timings shown over the game. F1 switches through them.", "osd", "0", {{"0", "Off"}, {"1", "FPS"}, {"2", "All"}});
 		} else if (g_settings_tab == 1) {
-			seg_row(t, "Play with", "Automatic follows the last device you touch.", "input_mode", "auto", {{"auto", "Automatic"}, {"pad", "Controller"}, {"kbm", "Keyboard & mouse"}});
+			seg_row(t, "Play with", "Automatic switches to whatever you used last.", "input_mode", "auto", {{"auto", "Automatic"}, {"pad", "Controller"}, {"kbm", "Keyboard & mouse"}});
 			controller_row(t);   /* (UI-02b) */
 			/* (UI-04b) each stick: how far the game sees it pushed, and a dead zone around its centre (window.c: stick_curve.h) */
-			slider_row(t, "Left stick sensitivity", "How far the game sees the stick pushed: above 1× it reaches full tilt sooner, below 1× never quite.", "stick_l_sens", 1.0, 0.5f, 2.0f, "%.2f×");
-			slider_row(t, "Left stick dead zone", "A stick this close to its centre counts as let go: against a drifting stick. 0 % is the stick as it is.", "stick_l_dead", 0.0, 0.0f, 30.0f, "%.0f%%", 100.0f);
+			slider_row(t, "Left stick sensitivity", "How strongly the game sees the stick: above 1× it reaches full tilt sooner, below 1× never fully.", "stick_l_sens", 1.0, 0.5f, 2.0f, "%.2f×");
+			slider_row(t, "Left stick dead zone", "Movement this close to the centre is ignored (helps against stick drift). 0 % uses the stick as it is.", "stick_l_dead", 0.0, 0.0f, 30.0f, "%.0f%%", 100.0f);
 			slider_row(t, "Right stick sensitivity", nullptr, "stick_r_sens", 1.0, 0.5f, 2.0f, "%.2f×");
 			slider_row(t, "Right stick dead zone", nullptr, "stick_r_dead", 0.0, 0.0f, 30.0f, "%.0f%%", 100.0f);
-			toggle_row(t, "Mouse look", "The mouse turns the camera and aims; left button R, right button L.", "mouse_look", true);
-			seg_row(t, "Mouse aim", "Direct: the game turns exactly as far as the mouse moves (Uncharted, Unit 13, Killzone). Stick: the mouse moves the right stick. F8 switches in a game.", "raw_look", "1", {{"1", "Direct"}, {"0", "Stick"}});
+			toggle_row(t, "Mouse look", "The mouse turns the camera and aims. Left button: R, right button: L.", "mouse_look", true);
+			seg_row(t, "Mouse aim", "Direct: the camera turns exactly as far as you move the mouse (Uncharted, Unit 13, Killzone). Stick: the mouse works like the right stick. F8 switches in a game.", "raw_look", "1", {{"1", "Direct"}, {"0", "Stick"}});
 			slider_row(t, "Mouse sensitivity", nullptr, "mouse_sens", 1.0, 0.1f, 5.0f, "%.2f×", 1, ImGuiSliderFlags_Logarithmic);
 			toggle_row(t, "Invert vertical look", nullptr, "mouse_invert", false);
-			seg_row(t, "L and R buttons", "The shoulder pair that is the game's L and R (aim and fire in a shooter). The other pair holds the touch cursor, or is L2 and R2 in a PS TV layout.", "shoulder_buttons", "triggers", {{"triggers", "Triggers (L2 / R2)"}, {"bumpers", "Bumpers (L1 / R1)"}});
-			slider_row(t, "Touch cursor speed", "Hold the shoulder pair that isn't L and R, and move a stick: the cursor is a finger on the touch screen.", "touch_cursor_speed", 1.0, 0.25f, 3.0f, "%.2f×");
-			toggle_row(t, "Gyro", "A controller's gyro as the Vita's motion sensor.", "gyro", true);
-			seg_row(t, "A level controller is a Vita held", "Upright, as in your hands, or flat on a table.", "gyro_pose", "upright", {{"upright", "Upright"}, {"flat", "Flat"}});
+			seg_row(t, "L and R by default on", "Which pair of shoulder buttons is the Vita's L and R by default (aim and fire in shooters). The other pair moves the touch cursor, or is L2 and R2 in PS TV games. You can also set each button under Button mapping.", "shoulder_buttons", "triggers", {{"triggers", "Triggers"}, {"bumpers", "Bumpers"}});
+			slider_row(t, "Touch cursor speed", "Hold L2 or R2 (see Button mapping) and move a stick: a cursor touches the front or rear touch screen.", "touch_cursor_speed", 1.0, 0.25f, 3.0f, "%.2f×");
+			toggle_row(t, "Gyro", "Use the controller's gyro as the Vita's motion sensor.", "gyro", true);
+			seg_row(t, "Controller's resting position", "Upright: held in your hands. Flat: lying on a table.", "gyro_pose", "upright", {{"upright", "Upright"}, {"flat", "Flat"}});
 			slider_row(t, "Gyro sensitivity", nullptr, "gyro_sens", 1.0, 0.25f, 3.0f, "%.2f×");
 			camera_row(t);   /* (UI-02b) */
 			mapping_rows(t);
@@ -2169,22 +2175,22 @@ static void settings_modal(void) {
 			slider_row(t, "Volume", nullptr, "volume", 1.0, 0.0f, 100.0f, "%.0f%%", 100.0f);
 			toggle_row(t, "Play online", ONLINE_EXPL, "online", true);
 			{ const std::string st = online_status_line(); if (!st.empty()) ui::muted_wrapped(st.c_str()); }
-			ui::row("Online name", "Others see ntv_ and your name, so players know you're on PC: up to 10 letters, digits, '-' or '_'.");
+			ui::row("Online name", "Others see ntv_ plus your name, so they know you play on a PC: up to 10 letters, digits, '-' or '_'.");
 			{	static std::string oid; static bool init; if (!init || !ImGui::IsPopupOpen("Settings")) { oid = online_name(*t.x); init = true; }
 				ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted("ntv_"); ImGui::SameLine(0, ImGui::GetFontSize() * 0.3f);   /* (room for the field's focus frame: it covered the "_") */
 				input_text("##oid", oid, -FLT_MIN);
 				const bool ok = online_name_ok(oid);
 				if (input_done(oid) && ok) target_write(t, "online_id", oid);
 				if (!ok) ui::muted_wrapped("Not saved: up to 10 letters, digits, '-' or '_'");
-				else if (oid.empty()) ui::muted_wrapped(("Empty: you play as ntv_" + online_tag(*t.x) + ", a tag made for this computer.").c_str());
+				else if (oid.empty()) ui::muted_wrapped(("Empty: you play as ntv_" + online_tag(*t.x) + ", a name made for this computer.").c_str());
 			}
 		}
 		ui::rows_end();
 	}
 	ui::nav_keep_visible();   /* (UI-03) */
 	ImGui::EndChild();
-	if (ImGui::Button("Use the recommended set")) { Ini r; recommended_into(r); for (auto &e : r.kv) target_write(t, e.first, e.second); }
-	if (g_touch || GImGui->NavCursorVisible) { char rs[160]; snprintf(rs, sizeof rs, "Fullscreen, %d× resolution, widescreen to the window, 60 fps, direct mouse aim, softer shadows", recommended_scale()); ImGui::SameLine(); info_text("##recinfo", ui::muted, "What it sets", rs); }
+	if (ImGui::Button("Apply recommended settings")) { Ini r; recommended_into(r); for (auto &e : r.kv) target_write(t, e.first, e.second); }
+	if (g_touch || GImGui->NavCursorVisible) { char rs[160]; snprintf(rs, sizeof rs, "Fullscreen, %d× resolution, widescreen to the window, 60 fps, direct mouse aim, softer shadows", recommended_scale()); ImGui::SameLine(); info_text("##recinfo", ui::muted, "Details", rs); }
 	if (ImGui::IsItemHovered()) ImGui::SetTooltip("Fullscreen, %d× resolution, widescreen to the window, 60 fps, direct mouse aim, softer shadows", recommended_scale());
 	ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize("Done").x - ImGui::GetStyle().FramePadding.x * 2);
 	{	/* (UI-03) B goes up one level: from the rows to the tab in use, from the tabs out of Settings */

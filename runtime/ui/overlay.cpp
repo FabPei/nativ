@@ -44,6 +44,7 @@
 #include "imgui.h"
 #include "kb_bind.h"   /* (KB-MAP) KB_PS */
 #include "pad_bind.h"   /* (PAD-MAP) PAD_TRIGGER_* */
+#include "pad_rows.h"   /* (MAP-UI) the controller buttons by the pad's own names */
 #include "imgui_internal.h"   /* ClosePopupsExceptModals (Escape with a bar menu open: overlay_bar_dismiss below); ImFontAtlasTextureBlockConvert (prompts_load) */
 #include "backends/imgui_impl_sdl3.h"
 #include "backends/imgui_impl_sdlgpu3.h"
@@ -294,7 +295,8 @@ int overlay_wants_capture(void) { return g_want_capture.exchange(false); }
 extern "C" { int window_kb_count(void); const char *window_kb_label(int i); const char *window_kb_group(int i); const char *window_kb_key_name(int i);
              void window_kb_bind(int i, SDL_Keycode k); void window_kb_reset(void); int window_kbm_active(void); SDL_Keycode window_kb_key(int i); }
 extern "C" { int window_pad_count(void); const char *window_pad_label(int i); const char *window_pad_button_name(int i);
-             int window_pad_bind(int i, int button); void window_pad_reset(void); }
+             int window_pad_bind(int i, int button); void window_pad_reset(void);
+             const char *window_pad_group(int i); int window_pad_order(int k); }
 static int g_rebind = -1;   /* the Controls page's Rebind: the next key pressed goes to this action */
 static int g_pad_rebind = -1;   /* (U11) the Controller buttons' Change: the next pad button goes to this action */
 int overlay_pad_capturing(void) { return g_pad_rebind >= 0; }   /* (PAD-MAP: window.c leaves the PS button's press to the capture) */
@@ -636,6 +638,8 @@ static void reference_table(const char *id, int (*count)(void), void (*row)(int,
 }
 static int shortcuts_count(void) { return (int)(sizeof g_shortcuts / sizeof g_shortcuts[0]); }
 static void shortcuts_row(int i, const char **a, const char **k, const char **p) { *a = ui_tr(g_shortcuts[i][0]); *k = ui_tr(g_shortcuts[i][1]); *p = ui_tr(g_shortcuts[i][2]); }   /* (U12b) key names fall through ui_tr */
+static void controls_row_tr(int i, const char **a, const char **k, const char **p) { window_controls_row(i, a, k, p); *a = ui_tr(*a); *k = ui_tr(*k); *p = ui_tr(*p); }   /* (MAP-UI: catalog ids) */
+static int player_pad_type(void); static bool steam_deck(void);   /* (below: the pad in hand, for its own button names) */
 static void page_controls(void) {
 	prefs_load();
 	section_label(ui_tr("ctrl.input"));
@@ -721,14 +725,14 @@ static void page_controls(void) {
 	}
 	section_label(ui_tr("ctrl.keys"));
 	if (ImGui::BeginTable("kbbinds", 3, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
-		ImGui::TableSetupColumn(ui_tr("ctrl.action")); ImGui::TableSetupColumn(ui_tr("ctrl.key")); ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
+		ImGui::TableSetupColumn(ui_tr("ctrl.vita_button")); ImGui::TableSetupColumn(ui_tr("ctrl.key")); ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
 		ImGui::PushStyleColor(ImGuiCol_Text, ui::muted); ImGui::TableHeadersRow(); ImGui::PopStyleColor();
 		for (int i = 0, n = window_kb_count(); i < n; i++) {
 			if (!i || strcmp(window_kb_group(i), window_kb_group(i - 1))) {   /* (KB-MAP) a heading per group: Left stick, Right stick, D-pad, ... */
-				ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::TextColored(ui::muted, "%s", window_kb_group(i));
+				ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::TextColored(ui::accent, "%s", ui_tr(window_kb_group(i)));
 			}
 			ImGui::TableNextRow();
-			ImGui::TableNextColumn(); ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted(window_kb_label(i));
+			ImGui::TableNextColumn(); ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted(ui_tr(window_kb_label(i)));
 			ImGui::TableNextColumn(); ImGui::AlignTextToFramePadding();
 			const char *k = window_kb_key_name(i);
 			if (g_rebind == i) ImGui::TextColored(ui::accent, "%s", ui_tr("ctrl.press_key")); else ui::chip(k && *k ? k : ui_tr("ctrl.none"), ui::text);
@@ -739,21 +743,32 @@ static void page_controls(void) {
 	if (ImGui::Button(ui_tr("ctrl.reset_keys"))) { window_kb_reset(); g_rebind = -1; }
 	section_label(ui_tr("ctrl.pad"));   /* (U11) the pad -> Vita bindings, a Change/Reset like the keys */
 	if (ImGui::BeginTable("padbinds", 3, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
-		ImGui::TableSetupColumn(ui_tr("ctrl.action")); ImGui::TableSetupColumn(ui_tr("ctrl.button")); ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
+		ImGui::TableSetupColumn(ui_tr("ctrl.vita_button")); ImGui::TableSetupColumn(ui_tr("ctrl.button")); ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
 		ImGui::PushStyleColor(ImGuiCol_Text, ui::muted); ImGui::TableHeadersRow(); ImGui::PopStyleColor();
-		for (int i = 0, n = window_pad_count(); i < n; i++) {
+		/* (MAP-UI) "Vita button -> the button on your controller", grouped (pad_rows.h), each controller button by the name
+		 * printed on this pad (LT, LB, A -- or L2, L1, Cross on a PlayStation pad) */
+		const int fam = pad_family(SDL_HasGamepad() ? player_pad_type() : -1, steam_deck());
+		for (int k = 0, n = window_pad_count(); k < n; k++) {
+			const int i = window_pad_order(k);
+			if (!k || strcmp(window_pad_group(i), window_pad_group(window_pad_order(k - 1)))) {
+				ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::TextColored(ui::accent, "%s", ui_tr(window_pad_group(i)));
+				if (!strcmp(window_pad_group(i), "grp.pstv")) {   /* (what the PS TV's own buttons are for in a handheld game) */
+					ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::PushStyleColor(ImGuiCol_Text, ui::muted); ImGui::TextWrapped("%s", ui_tr("grp.pstv_help")); ImGui::PopStyleColor();
+				}
+			}
 			ImGui::TableNextRow();
-			ImGui::TableNextColumn(); ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted(window_pad_label(i));
+			ImGui::TableNextColumn(); ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted(ui_tr(window_pad_label(i)));
 			ImGui::TableNextColumn(); ImGui::AlignTextToFramePadding();
-			const char *k = window_pad_button_name(i);
-			if (g_pad_rebind == i) ImGui::TextColored(ui::accent, "%s", ui_tr("ctrl.press_pad")); else ui::chip(k && *k ? k : ui_tr("ctrl.none"), ui::text);
+			const char *nm = pad_phys_label(fam, window_pad_button_name(i));
+			const char *k2 = !strncmp(nm, "btn.", 4) ? ui_tr(nm) : nm;
+			if (g_pad_rebind == i) ImGui::TextColored(ui::accent, "%s", ui_tr("ctrl.press_pad")); else ui::chip(k2, ui::text);
 			ImGui::TableNextColumn(); ImGui::PushID(1000 + i); if (ImGui::Button(ui_tr("ctrl.change"))) g_pad_rebind = i; ImGui::PopID();
 		}
 		ImGui::EndTable();
 	}
 	if (ImGui::Button(ui_tr("ctrl.reset_pad"))) { window_pad_reset(); g_pad_rebind = -1; }
 	section_label(ui_tr("ctrl.game_controls"));
-	reference_table("controls", window_controls_count, window_controls_row);
+	reference_table("controls", window_controls_count, controls_row_tr);
 	section_label(ui_tr("ctrl.shortcuts"));
 	reference_table("shortcuts", shortcuts_count, shortcuts_row);
 }

@@ -22,21 +22,21 @@ enum {
 	KB_L2, KB_R2, KB_L3, KB_R3,                              /* a PS TV layout's (a handheld game never sees them) */
 	KB_N
 };
-typedef struct { const char *key, *label, *group, *def; } KbDef;
+typedef struct { const char *key, *label, *group, *def; } KbDef;   /* label, group: catalog ids (ui_text.c: English and German; MAP-UI) */
 static const KbDef kb_defs[KB_N] = {
-	{"bind_move_up", "Left stick up", "Left stick", "W"}, {"bind_move_down", "Left stick down", "Left stick", "S"},
-	{"bind_move_left", "Left stick left", "Left stick", "A"}, {"bind_move_right", "Left stick right", "Left stick", "D"},
-	{"bind_look_up", "Right stick up", "Right stick", "I"}, {"bind_look_down", "Right stick down", "Right stick", "K"},
-	{"bind_look_left", "Right stick left", "Right stick", "J"}, {"bind_look_right", "Right stick right", "Right stick", "L"},
-	{"bind_up", "D-pad up", "D-pad", "Up"}, {"bind_down", "D-pad down", "D-pad", "Down"},
-	{"bind_left", "D-pad left", "D-pad", "Left"}, {"bind_right", "D-pad right", "D-pad", "Right"},
-	{"bind_cross", "Cross", "Face buttons", "X"}, {"bind_circle", "Circle", "Face buttons", "C"},
-	{"bind_square", "Square", "Face buttons", "Z"}, {"bind_triangle", "Triangle", "Face buttons", "V"},
-	{"bind_l", "L (also the right mouse button)", "Shoulders", "Q"}, {"bind_r", "R (also the left mouse button)", "Shoulders", "E"},
-	{"bind_start", "Start", "System", "Return"}, {"bind_select", "Select", "System", "Right Shift"},
-	{"bind_ps", "PS button (the menu)", "System", "P"},
-	{"bind_l2", "L2", "PS TV layout", "U"}, {"bind_r2", "R2", "PS TV layout", "O"},
-	{"bind_l3", "L3", "PS TV layout", "F"}, {"bind_r3", "R3", "PS TV layout", "H"},
+	{"bind_move_up", "kb.move_up", "grp.lstick", "W"}, {"bind_move_down", "kb.move_down", "grp.lstick", "S"},
+	{"bind_move_left", "kb.move_left", "grp.lstick", "A"}, {"bind_move_right", "kb.move_right", "grp.lstick", "D"},
+	{"bind_look_up", "kb.look_up", "grp.rstick", "I"}, {"bind_look_down", "kb.look_down", "grp.rstick", "K"},
+	{"bind_look_left", "kb.look_left", "grp.rstick", "J"}, {"bind_look_right", "kb.look_right", "grp.rstick", "L"},
+	{"bind_up", "vb.up", "grp.dpad", "Up"}, {"bind_down", "vb.down", "grp.dpad", "Down"},
+	{"bind_left", "vb.left", "grp.dpad", "Left"}, {"bind_right", "vb.right", "grp.dpad", "Right"},
+	{"bind_cross", "vb.cross", "grp.face", "X"}, {"bind_circle", "vb.circle", "grp.face", "C"},
+	{"bind_square", "vb.square", "grp.face", "Z"}, {"bind_triangle", "vb.triangle", "grp.face", "V"},
+	{"bind_l", "vb.l_mouse", "grp.shoulder", "Q"}, {"bind_r", "vb.r_mouse", "grp.shoulder", "E"},
+	{"bind_start", "vb.start", "grp.system", "Return"}, {"bind_select", "vb.select", "grp.system", "Right Shift"},
+	{"bind_ps", "vb.ps", "grp.system", "P"},
+	{"bind_l2", "vb.l2", "grp.pstv", "U"}, {"bind_r2", "vb.r2", "grp.pstv", "O"},
+	{"bind_l3", "vb.l3", "grp.pstv", "F"}, {"bind_r3", "vb.r3", "grp.pstv", "H"},
 };
 /* a stick from its four keys (1 = held): the bytes a Vita stick reads (0 up / left, 255 down / right, 128 centre), a
  * diagonal at the circle's edge; opposite keys cancel. Returns whether any direction is held. */

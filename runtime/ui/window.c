@@ -50,6 +50,7 @@
 #include "device_pick.h"   /* (UI-02b) the chosen controller by name, else the first */
 #include "intro_skip.h"   /* (INTRO-01) which press ends the first-start touch card */
 #include "kb_bind.h"   /* (KB-MAP) the keyboard's bindings: the table, Vita3K's default keys */
+#include "pad_rows.h"   /* (MAP-UI) the controller rows as the menus show them */
 #include "stick_curve.h"   /* (UI-04b) each stick's sensitivity and dead zone */
 
 enum { SELECT = 0x1, START = 0x8, UP = 0x10, RIGHT = 0x20, DOWN = 0x40, LEFT = 0x80, LTRIG = 0x100, RTRIG = 0x200,
@@ -276,7 +277,9 @@ static void pad_reload(void) {   /* the bindings from settings (at start, and as
 	}
 }
 int window_pad_count(void) { return PAD_N; }
-const char *window_pad_label(int i) { return i >= 0 && i < PAD_N ? pad_binds[i].label : ""; }
+const char *window_pad_label(int i) { return i >= 0 && i < PAD_N ? pad_rows[i].label : ""; }   /* (MAP-UI: catalog ids, pad_rows.h) */
+const char *window_pad_group(int i) { return i >= 0 && i < PAD_N ? pad_rows[i].group : ""; }
+int window_pad_order(int k) { return k >= 0 && k < PAD_N ? pad_row_order[k] : -1; }   /* the k-th row shown */
 const char *window_pad_button_name(int i) {
 	if (i < 0 || i >= PAD_N) return "";
 	if (pad_map[i] < 0) return "none";
@@ -441,36 +444,20 @@ static void touch_to_point(int tx, int ty, float *x, float *y) {
 	*x = dx + (tx * 0.5f - sx) / sw * dw; *y = dy + (ty * 0.5f - sy) / sh * dh;
 }
 
-/* ---- the Controls page (read-only): the GAME's controls -- the mappings kb_binds (the defaults; rebindable)/pad_bit (below) and
- * mouse_to_touch (above) actually implement, kept here as one small table so the overlay can show them
- * without reaching into this file's own logic. Keep in sync with those if a binding changes. The host's
+/* ---- the Controls page (read-only): what the mapping tables (kb_bind.h, pad_rows.h) don't show -- the look, the touch
+ * panels (mouse_to_touch above, the touch cursor) and the motion sensor. Keep in sync with those if one changes. The host's
  * own hotkeys (F1, F2, F10, F12, Guide, R3, the menu bar) are overlay.cpp's shortcuts table: keep that in
  * sync with the event loop below. */
-static const char *const ctrl_rows[][3] = {
-	{"D-pad", "Arrow keys", "D-pad"},
-	{"Cross / Circle / Square / Triangle", "X / C / Z / V", "Cross / Circle / Square / Triangle (Xbox: A / B / X / Y)"},
-	{"Start / Select", "Enter / Right Shift", "Options / Share or Create (Xbox: Menu / View)"},
-	{"L / R", "Right mouse / left mouse (or Q / E)", "L2 / R2 (Xbox: LT / RT)"},
-	{"Left / right stick", "W A S D / the mouse (or I J K L)", "Left / right stick"},
-	{"Front touch panel", "Left mouse button (click, drag); hold Alt first while the mouse looks; a swipe prompt: just drag; a two-finger turn: hold and drag down / up; a touchscreen: touch the picture", "Touchpad; or hold L1: a stick + Cross / L2 / R2 (both sticks: two fingers); a two-finger turn: both sticks out, rolled"},
-	{"Rear touch panel", "Right mouse button (click, drag); hold Alt first while the mouse looks; a touchscreen: touch with R1 held", "Touchpad with R1 held; or hold R1: a stick + Cross / L2 / R2 (both sticks: two fingers)"},
-	{"PS button (the menu)", "P (or F10)", "Guide / PS (Xbox: the Xbox button)"},
-	{"Motion sensor (tilt, aim)", "--", "Gyro (DS4/DualSense); R3 recentres"},
-	{"A PS TV layout's L2 / R2 / L3 / R3", "U / O / F / H", "L1 / R1 / L3 / R3"},
+static const char *const ctrl_rows[][3] = {   /* (MAP-UI) catalog ids: what the mapping tables don't show -- the buttons are there */
+	{"cr.look", "cr.look_kbm", "cr.look_pad"},
+	{"cr.front", "cr.front_kbm", "cr.front_pad"},
+	{"cr.rear", "cr.rear_kbm", "cr.rear_pad"},
+	{"cr.motion", "cr.motion_kbm", "cr.motion_pad"},
 };
-/* the pad column with "shoulder_buttons" = bumpers (the bumpers are L and R, the triggers hold the touch cursor) */
-static const char *const ctrl_rows_swapped[][2] = {
-	{"L / R", "L1 / R1 (Xbox: LB / RB)"},
-	{"Front touch panel", "Touchpad; or hold L2: a stick + Cross / L1 / R1 (both sticks: two fingers); a two-finger turn: both sticks out, rolled"},
-	{"Rear touch panel", "Touchpad with R2 held; or hold R2: a stick + Cross / L1 / R1 (both sticks: two fingers)"},
-	{"A PS TV layout's L2 / R2 / L3 / R3", "L2 / R2 / L3 / R3"},
-};
-extern int display_pstv_looked(void);
-int window_controls_count(void) { return (int)(sizeof ctrl_rows / sizeof ctrl_rows[0]) - !display_pstv_looked(); }   /* (the last row: a PS TV layout's, only in a game that has one) */
-void window_controls_row(int i, const char **action, const char **key, const char **pad) {
+int window_controls_count(void) { return (int)(sizeof ctrl_rows / sizeof ctrl_rows[0]); }
+void window_controls_row(int i, const char **action, const char **key, const char **pad) {   /* (catalog ids: the menu translates them) */
 	if (i < 0 || i >= window_controls_count()) { *action = *key = *pad = ""; return; }
 	*action = ctrl_rows[i][0]; *key = ctrl_rows[i][1]; *pad = ctrl_rows[i][2];
-	if (shoulders_swapped) for (size_t j = 0; j < sizeof ctrl_rows_swapped / sizeof ctrl_rows_swapped[0]; j++) if (!strcmp(*action, ctrl_rows_swapped[j][0])) *pad = ctrl_rows_swapped[j][1];
 }
 int window_touch(int *x, int *y) { *x = touch_x; *y = touch_y; return touch_down; }
 /* (UI-02d) the controller is the touch screen now: 1 the front panel, 2 the rear (the touch cursor's shoulder held), 0 not */
