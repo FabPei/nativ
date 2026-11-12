@@ -70,6 +70,9 @@ game from your copy, plus frame-rate and widescreen settings found automatically
   D-pad, Cross to change, Circle to cancel.
 - Button remapping on a drawn controller, stick sensitivity and dead zone, and a choice of which controller and which
   camera to use.
+- **Every Vita and PS TV button on the keyboard and the controller**, with Vita3K's default keys (right stick on
+  I J K L, the PS button on P). The mapping reads "Vita button -> your controller's button" with the names printed on
+  your pad (LT / LB / A or L2 / L1 / Cross), in groups, and the touch screen buttons have a group of their own.
 - On-screen buttons for playing by touch, and a badge that shows which of the Vita's touch panels the controller is
   driving.
 - A start hint names every way to open the menu: keyboard, controller and touch.
