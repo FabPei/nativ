@@ -43,6 +43,7 @@
 #include "pad_diagram.h"
 #include "device_pick.h"   /* (UI-02b) the chosen controller / camera by name, the "not connected" mark */   /* (UI-02c) the drawn controller of Controls > Mapping */   /* (EXPORT-01a) what the AppImage export prints, read back */
 #include "pad_family.h"   /* (UI-01e) the controller in use and its buttons' names, shared with the in-game menu */
+#include "kb_bind.h"   /* (KB-MAP) the keyboard's bindings, shared with the game (window.c) */
 #include "log_redact.h"   /* (LOG-REDACT) Copy log / Save log take the user folders and identity values out */
 #include <ctime>
 #include <SDL3/SDL.h>
@@ -1835,29 +1836,43 @@ struct BindRow { const char *key, *label, *def; };
 static const BindRow k_pad_rows[] = {   /* (window.c pad_binds, in its order; def: pad_bind.c's defaults) */
 	{"pad_bind_cross", "Cross", "south"}, {"pad_bind_circle", "Circle", "east"}, {"pad_bind_square", "Square", "west"}, {"pad_bind_triangle", "Triangle", "north"},
 	{"pad_bind_start", "Start", "start"}, {"pad_bind_select", "Select", "back"}, {"pad_bind_up", "D-pad up", "dpad_up"}, {"pad_bind_down", "D-pad down", "dpad_down"},
-	{"pad_bind_left", "D-pad left", "dpad_left"}, {"pad_bind_right", "D-pad right", "dpad_right"}, {"pad_bind_l3", "L3", "left_stick"}, {"pad_bind_r3", "R3", "right_stick"}};
-static const BindRow k_key_rows[] = {   /* (window.c kb_binds, in its order, with its defaults) */
-	{"bind_move_up", "Move forward (left stick)", "W"}, {"bind_move_down", "Move back", "S"}, {"bind_move_left", "Move left", "A"}, {"bind_move_right", "Move right", "D"},
-	{"bind_cross", "Cross", "Space"}, {"bind_circle", "Circle", "C"}, {"bind_square", "Square", "F"}, {"bind_triangle", "Triangle", "E"},
-	{"bind_l", "L (also the right mouse button)", "Q"}, {"bind_r", "R (also the left mouse button)", "R"}, {"bind_start", "Start", "Return"}, {"bind_select", "Select", "Tab"},
-	{"bind_up", "D-pad up", "Up"}, {"bind_down", "D-pad down", "Down"}, {"bind_left", "D-pad left", "Left"}, {"bind_right", "D-pad right", "Right"}};
-static const char *const k_pad_names[] = {"south", "east", "west", "north", "start", "back", "dpad_up", "dpad_down", "dpad_left", "dpad_right", "left_stick", "right_stick"};
+	{"pad_bind_left", "D-pad left", "dpad_left"}, {"pad_bind_right", "D-pad right", "dpad_right"}, {"pad_bind_l3", "L3", "left_stick"}, {"pad_bind_r3", "R3", "right_stick"},
+	{"pad_bind_l", "L (PS TV: L1)", "left_trigger"}, {"pad_bind_r", "R (PS TV: R1)", "right_trigger"},   /* (PAD-MAP: every Vita and PS TV button) */
+	{"pad_bind_l2", "L2 (PS TV) / front touch cursor", "left_shoulder"}, {"pad_bind_r2", "R2 (PS TV) / rear touch cursor", "right_shoulder"},
+	{"pad_bind_ps", "PS button (the menu)", "guide"}};
+enum { K_PAD_N = (int)(sizeof k_pad_rows / sizeof k_pad_rows[0]) };
+static const std::vector<BindRow> k_key_vec = [] {   /* (KB-MAP) the keyboard's: kb_bind.h's table, shared with window.c */
+	std::vector<BindRow> v; for (const KbDef &d : kb_defs) v.push_back({d.key, d.label, d.def}); return v; }();
+static const BindRow *const k_key_rows = k_key_vec.data();
+static const char *const k_pad_names[] = {"south", "east", "west", "north", "start", "back", "dpad_up", "dpad_down", "dpad_left", "dpad_right", "left_stick", "right_stick",
+	"left_shoulder", "right_shoulder", "left_trigger", "right_trigger", "guide"};
 static std::string pad_button_label(const std::string &name) {   /* "south" -> the pad's own name (Cross / A / B on a Switch pad) */
 	const PadNames *n = pad_names_of(g_pad_fam);
 	if (name == "south") return n->select; if (name == "east") return n->back; if (name == "west") return n->west; if (name == "north") return n->north;
 	if (name == "start") return n->menu; if (name == "back") return n->view;
 	if (name == "dpad_up") return "D-pad up"; if (name == "dpad_down") return "D-pad down"; if (name == "dpad_left") return "D-pad left"; if (name == "dpad_right") return "D-pad right";
 	if (name == "left_stick") return "Left stick (press)"; if (name == "right_stick") return "Right stick (press)";
+	const bool xb = g_pad_fam == PAD_FAM_XBOX, sw = g_pad_fam == PAD_FAM_SWITCH;   /* (PAD-MAP: the shoulders, the triggers, Guide by the pad's own names) */
+	if (name == "left_shoulder") return n->l; if (name == "right_shoulder") return n->r;
+	if (name == "left_trigger") return xb ? "LT" : sw ? "ZL" : "L2"; if (name == "right_trigger") return xb ? "RT" : sw ? "ZR" : "R2";
+	if (name == "guide") return xb ? "Xbox button" : sw ? "Home" : g_pad_fam == PAD_FAM_DECK ? "Steam button" : "PS button";
 	return "(none)";
 }
 static std::string bind_value(const SetTarget &t, const BindRow &r, bool pad) {   /* what the game reads for this row */
 	const std::string v = tget(t, r.key, "");
-	if (pad) return v.empty() ? r.def : v;
-	return v.empty() ? r.def : v;
+	if (pad && v.empty()) {   /* the default; "L and R buttons" = bumpers swaps the shoulder pairs' (window.c pad_reload, PAD-MAP) */
+		const std::string k = r.key;
+		if (tget(t, "shoulder_buttons", "triggers") == "bumpers") {
+			if (k == "pad_bind_l") return "left_shoulder"; if (k == "pad_bind_r") return "right_shoulder";
+			if (k == "pad_bind_l2") return "left_trigger"; if (k == "pad_bind_r2") return "right_trigger";
+		}
+		return r.def;
+	}
+	return v.empty() ? r.def : v;   /* ("none": unbound -- its key went to another action; window.c reads it so) */
 }
 static void bind_write(const SetTarget &t, bool pad, int row, const std::string &value) {   /* the game's rule: the button or key another row had is taken from it */
-	const BindRow *rows = pad ? k_pad_rows : k_key_rows; const int n = pad ? 12 : 16;
-	for (int j = 0; j < n; j++) if (j != row && bind_value(t, rows[j], pad) == value) target_write(t, rows[j].key, pad ? "none" : "");
+	const BindRow *rows = pad ? k_pad_rows : k_key_rows; const int n = pad ? K_PAD_N : KB_N;
+	for (int j = 0; j < n; j++) if (j != row && bind_value(t, rows[j], pad) == value) target_write(t, rows[j].key, "none");
 	target_write(t, rows[row].key, value);
 }
 static struct { bool open = false, pad = true; int row = 0; double until = 0; } g_bind;   /* the Change dialog */
@@ -1900,7 +1915,8 @@ static void bind_modal(const SetTarget &t) {   /* (inside Settings) */
 	if (g_bind.pad) {
 		for (const char *nm : k_pad_names) { const std::string l = pad_button_label(nm) + "##pick" + nm; same_line_fits(button_w(l.c_str())); if (ImGui::Button(l.c_str())) chosen = nm; }
 	} else {
-		static const char *const keys[] = {"W", "A", "S", "D", "Q", "E", "R", "F", "C", "Space", "Return", "Tab", "Up", "Down", "Left", "Right", "Left Shift", "Left Ctrl", "1", "2", "3", "4"};
+		static const char *const keys[] = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
+			"1", "2", "3", "4", "Space", "Return", "Tab", "Up", "Down", "Left", "Right", "Left Shift", "Right Shift", "Left Ctrl", "Right Ctrl"};
 		for (const char *k : keys) { const std::string l = std::string(k) + "##pick"; same_line_fits(button_w(l.c_str())); if (ImGui::Button(l.c_str())) chosen = k; }
 	}
 	ImGui::PopStyleVar();
@@ -1912,7 +1928,8 @@ static void bind_modal(const SetTarget &t) {   /* (inside Settings) */
 		static const std::pair<ImGuiKey, const char *> pads[] = {{ImGuiKey_GamepadFaceDown, "south"}, {ImGuiKey_GamepadFaceRight, "east"}, {ImGuiKey_GamepadFaceLeft, "west"},
 			{ImGuiKey_GamepadFaceUp, "north"}, {ImGuiKey_GamepadStart, "start"}, {ImGuiKey_GamepadBack, "back"}, {ImGuiKey_GamepadDpadUp, "dpad_up"},
 			{ImGuiKey_GamepadDpadDown, "dpad_down"}, {ImGuiKey_GamepadDpadLeft, "dpad_left"}, {ImGuiKey_GamepadDpadRight, "dpad_right"},
-			{ImGuiKey_GamepadL3, "left_stick"}, {ImGuiKey_GamepadR3, "right_stick"}};
+			{ImGuiKey_GamepadL3, "left_stick"}, {ImGuiKey_GamepadR3, "right_stick"},
+			{ImGuiKey_GamepadL1, "left_shoulder"}, {ImGuiKey_GamepadR1, "right_shoulder"}, {ImGuiKey_GamepadL2, "left_trigger"}, {ImGuiKey_GamepadR2, "right_trigger"}};   /* (Guide: ImGui has no key for it -- the list) */
 		for (auto &pk : pads) if (ImGui::IsKeyPressed(pk.first, false)) chosen = pk.second;
 		if (left <= 0) cancel = true;
 	} else {
@@ -1945,7 +1962,8 @@ static void vita_symbol(ImDrawList *dl, ImVec2 c, float r, int row, ImU32 ink) {
 	case 8: dl->AddTriangleFilled(ImVec2(c.x - s, c.y), ImVec2(c.x + s * 0.6f, c.y + s), ImVec2(c.x + s * 0.6f, c.y - s), ink); return;
 	case 9: dl->AddTriangleFilled(ImVec2(c.x + s, c.y), ImVec2(c.x - s * 0.6f, c.y - s), ImVec2(c.x - s * 0.6f, c.y + s), ink); return;
 	default: {
-		const char *txt = row == 4 ? "Start" : row == 5 ? "Sel" : row == 10 ? "L3" : row == 11 ? "R3" : "?";
+		static const char *const t[] = {"", "", "", "", "Start", "Sel", "", "", "", "", "L3", "R3", "L", "R", "L2", "R2", "PS"};
+		const char *txt = row >= 0 && row < (int)(sizeof t / sizeof t[0]) && t[row][0] ? t[row] : "?";
 		ImFont *f = ImGui::GetFont(); float fs = ImGui::GetFontSize() * 0.8f; ImVec2 ts = f->CalcTextSizeA(fs, FLT_MAX, 0, txt);
 		if (ts.x > r * 1.8f) { fs *= r * 1.8f / ts.x; ts = f->CalcTextSizeA(fs, FLT_MAX, 0, txt); }   /* (fits the button) */
 		dl->AddText(f, fs, ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), ink, txt);
@@ -1969,17 +1987,7 @@ static void pad_diagram(const SetTarget &t) {
 		for (float gx : {0.20f, 0.80f}) { dl->AddCircleFilled(P(gx, 0.42f), W * 0.15f, body); }
 		dl->AddRectFilled(P(0.12f, 0.08f), P(0.88f, 0.38f), body, W * 0.09f);   /* (the grips merged into the slab) */
 	}
-	/* the shoulders: not on this map (the game's L and R, and the touch cursor's pair: Controls above) */
-	{	const PadNames *n = pad_names_of(g_pad_fam);
-		for (int k = 0; k < 2; k++) {
-			const float x0 = k ? 0.70f : 0.14f;
-			dl->AddRectFilled(P(x0, 0.025f), P(x0 + 0.16f, 0.062f), ui::u32(ui::surface), W * 0.015f); dl->AddRect(P(x0, 0.025f), P(x0 + 0.16f, 0.062f), edge, W * 0.015f);
-			const char *nm = k ? n->r : n->l; const ImVec2 ts = ImGui::CalcTextSize(nm);
-			ImFont *f = ImGui::GetFont(); const float fs = std::min(ImGui::GetFontSize(), W * 0.03f);
-			const ImVec2 ts2 = f->CalcTextSizeA(fs, FLT_MAX, 0, nm); (void)ts;
-			dl->AddText(f, fs, ImVec2(o.x + (x0 + 0.08f) * W - ts2.x * 0.5f, o.y + 0.0435f * W - ts2.y * 0.5f), ui::u32(ui::muted), nm);
-		}
-	}
+	/* (PAD-MAP) the shoulders and triggers are buttons of the drawing too (pad_spot: along the top edge), and Guide */
 	/* the buttons: each a button of its own */
 	for (int bi = 0; bi < PD_N; bi++) {
 		const PadSpot s = pad_spot(g_pad_fam, bi);
@@ -2032,7 +2040,7 @@ static void spot_modal(const SetTarget &t) {   /* "What does <button> do?" (insi
 	ui::muted_wrapped("The Vita button it is in the game. One that was on another button moves here.");
 	ImGui::PopTextWrapPos();
 	int chosen = -2;   /* -2 nothing chosen, -1 "Nothing", else the row */
-	for (int i = 0; i < 12; i++) {
+	for (int i = 0; i < K_PAD_N; i++) {
 		const bool here = std::find(on.begin(), on.end(), i) != on.end();
 		std::string l = std::string(k_pad_rows[i].label) + (here ? "  (now)" : "") + "##vita" + std::to_string(i);
 		if ((here ? ui::primary_button(l.c_str(), ImVec2(-FLT_MIN, 0)) : ImGui::Button(l.c_str(), ImVec2(-FLT_MIN, 0)))) chosen = i;
@@ -2069,13 +2077,16 @@ static void mapping_rows(const SetTarget &t) {   /* (Controls tab, after its row
 		return;
 	}
 	const bool pad = g_map_type == 0;
-	const BindRow *rows = pad ? k_pad_rows : k_key_rows; const int n = pad ? 12 : 16;
+	const BindRow *rows = pad ? k_pad_rows : k_key_rows; const int n = pad ? K_PAD_N : KB_N;
 	if (pad) pad_diagram(t);   /* (UI-02c) the drawing first, the list under it */
 	if (ui::rows_begin(pad ? "map_pad" : "map_keys")) {
 		for (int i = 0; i < n; i++) {
+			if (!pad && (!i || strcmp(kb_defs[i].group, kb_defs[i - 1].group))) {   /* (KB-MAP) a heading per group: Left stick, Right stick, D-pad, ... */
+				ui::row_finish(); ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::TextColored(ui::muted, "%s", kb_defs[i].group);
+			}
 			const std::string v = bind_value(t, rows[i], pad);
 			ui::row(rows[i].label, nullptr, v == rows[i].def ? "default" : nullptr);
-			const std::string shown = (pad ? pad_button_label(v) : (v.empty() ? std::string("(none)") : v)) + "##map" + rows[i].key;
+			const std::string shown = (pad ? pad_button_label(v) : (v.empty() || v == "none" ? std::string("(none)") : v)) + "##map" + rows[i].key;
 			if (ImGui::Button(shown.c_str(), ImVec2(-FLT_MIN, 0))) { g_bind.open = true; g_bind.pad = pad; g_bind.row = i; g_bind.until = ImGui::GetTime() + 6.0; }
 		}
 		ui::rows_end();

@@ -32,6 +32,9 @@ void overlay_input_lost(void);
 /* overlay_modal_open: one of our modal dialogs is up (the menu's "Reset all settings…"): window.c must leave Esc
  * to it, so the dialog cancels instead of the whole menu closing */
 int overlay_modal_open(void);
+/* overlay_pad_capturing: the Controls page's "Change" waits for a controller button (PAD-MAP): window.c then leaves the
+ * PS button's press (Guide, by default) to it, so the PS button can be bound too */
+int overlay_pad_capturing(void);
 
 /* once, after the SDL_GPUDevice (and, in windowed mode, the SDL_Window) exist. `window` is the real
  * window in interactive mode, or NULL for a headless one-shot render (RECOMP_OVERLAY_DUMP below) --

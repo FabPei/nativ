@@ -14,8 +14,10 @@
 #define PAD_DIAG_H 0.62f
 
 /* the physical buttons the mapping can use, by their settings names (window.c's pad_bind_* values) */
-enum { PD_SOUTH, PD_EAST, PD_WEST, PD_NORTH, PD_START, PD_BACK, PD_UP, PD_DOWN, PD_LEFT, PD_RIGHT, PD_LSTICK, PD_RSTICK, PD_N };
-static const char *const pd_names[PD_N] = {"south", "east", "west", "north", "start", "back", "dpad_up", "dpad_down", "dpad_left", "dpad_right", "left_stick", "right_stick"};
+enum { PD_SOUTH, PD_EAST, PD_WEST, PD_NORTH, PD_START, PD_BACK, PD_UP, PD_DOWN, PD_LEFT, PD_RIGHT, PD_LSTICK, PD_RSTICK,
+       PD_LB, PD_RB, PD_LT, PD_RT, PD_GUIDE, PD_N };   /* (PAD-MAP: the bumpers, the triggers and Guide too) */
+static const char *const pd_names[PD_N] = {"south", "east", "west", "north", "start", "back", "dpad_up", "dpad_down", "dpad_left", "dpad_right", "left_stick", "right_stick",
+	"left_shoulder", "right_shoulder", "left_trigger", "right_trigger", "guide"};
 
 struct PadSpot { float x, y, r; };   /* centre and radius, in the diagram box (x 0..1, y 0..PAD_DIAG_H) */
 
@@ -41,6 +43,13 @@ static inline PadSpot pad_spot(int fam, int b) {
 	case PD_RSTICK: return {rsx, rsy, stick_r};
 	case PD_BACK: return {0.5f - ssx, sy, small_r};
 	case PD_START: return {0.5f + ssx, sy, small_r};
+	/* along the top edge, outside in: trigger, bumper | bumper, trigger; Guide in the middle (a PlayStation pad's below
+	 * Share / Options, an Xbox / Switch pad's above View / Menu, the Deck's under its menu buttons) */
+	case PD_LT: return {0.17f, 0.036f, small_r};
+	case PD_LB: return {0.28f, 0.036f, small_r};
+	case PD_RB: return {0.72f, 0.036f, small_r};
+	case PD_RT: return {0.83f, 0.036f, small_r};
+	case PD_GUIDE: return {0.5f, fam == PAD_FAM_XBOX || fam == PAD_FAM_SWITCH ? 0.13f : fam == PAD_FAM_DECK ? 0.30f : 0.26f, small_r};
 	default: return {0.5f, 0.3f, 0.0f};
 	}
 }

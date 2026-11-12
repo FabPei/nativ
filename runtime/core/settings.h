@@ -33,8 +33,9 @@
  *   mouse_look    window.c    0 | 1 (default 1)          keyboard+mouse: the mouse captured as the look (Alt frees it)
  *   mouse_sens    window.c    0.1..5 (default 1.0)       the look's sensitivity (a raw-look hook's, or the right-stick stand-in's)
  *   mouse_invert  window.c    0 | 1 (default 0)          the look's y inverted
- *   bind_<action> window.c    an SDL key name           keyboard+mouse bindings (kb_binds: move_up/down/left/right,
- *                                                       cross, circle, square, triangle, l, r, start, select, up/down/left/right)
+ *   bind_<action> window.c    an SDL key name, "none"   keyboard+mouse bindings (kb_bind.h: move_up/down/left/right,
+ *                                                       look_up/down/left/right, up/down/left/right, cross, circle, square,
+ *                                                       triangle, l, r, start, select, ps, l2, r2, l3, r3; Vita3K's keys)
  *   camera        camera.c    light | webcam | dark (default light)   what the Vita's camera sees: a lamp toggled with F7, the computer's camera, or a dark room (RECOMP_CAMERA wins)
  *   raw_look      window.c    0 | 1 (default 1; 0 in a scripted run)   Mouse aim: Direct, a game's raw mouse-look hook (hooks.c),
  *                             or Stick, the right-stick stand-in (a game without the hook gets it either way); F8 switches

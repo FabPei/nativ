@@ -42,6 +42,8 @@
  *     pointer, and RECOMP_OVERLAY_DUMP_UI picks what to force on screen (see overlay.h).
  */
 #include "imgui.h"
+#include "kb_bind.h"   /* (KB-MAP) KB_PS */
+#include "pad_bind.h"   /* (PAD-MAP) PAD_TRIGGER_* */
 #include "imgui_internal.h"   /* ClosePopupsExceptModals (Escape with a bar menu open: overlay_bar_dismiss below); ImFontAtlasTextureBlockConvert (prompts_load) */
 #include "backends/imgui_impl_sdl3.h"
 #include "backends/imgui_impl_sdlgpu3.h"
@@ -289,23 +291,33 @@ int overlay_quit_confirm(void) {   /* (window.c, on a request to close the windo
 static const char *quit_label(void) { return std::getenv("ATIV_LAUNCHER") ? ui_tr("foot.quit_launcher") : ui_tr("foot.quit_game"); }
 int overlay_wants_capture(void) { return g_want_capture.exchange(false); }
 
-extern "C" { int window_kb_count(void); const char *window_kb_label(int i); const char *window_kb_key_name(int i);
-             void window_kb_bind(int i, SDL_Keycode k); void window_kb_reset(void); int window_kbm_active(void); }
+extern "C" { int window_kb_count(void); const char *window_kb_label(int i); const char *window_kb_group(int i); const char *window_kb_key_name(int i);
+             void window_kb_bind(int i, SDL_Keycode k); void window_kb_reset(void); int window_kbm_active(void); SDL_Keycode window_kb_key(int i); }
 extern "C" { int window_pad_count(void); const char *window_pad_label(int i); const char *window_pad_button_name(int i);
              int window_pad_bind(int i, int button); void window_pad_reset(void); }
 static int g_rebind = -1;   /* the Controls page's Rebind: the next key pressed goes to this action */
 static int g_pad_rebind = -1;   /* (U11) the Controller buttons' Change: the next pad button goes to this action */
+int overlay_pad_capturing(void) { return g_pad_rebind >= 0; }   /* (PAD-MAP: window.c leaves the PS button's press to the capture) */
 void overlay_process_event(const SDL_Event *event) {
 	if (!g_ctx || !g_has_window) return;
 	if (g_rebind >= 0 && event->type == SDL_EVENT_KEY_DOWN && !event->key.repeat) { window_kb_bind(g_rebind, event->key.key); g_rebind = -1; return; }   /* (Escape and F10 close the menu first: window.c) */
 	if (g_pad_rebind >= 0) {   /* (U11) the pad capture: the next pad button becomes the binding and reaches nothing;
-	                            * a nameless button (Guide, the shoulders) is refused and keeps the capture; Escape
-	                            * or B cancels (a gamepad press would be a binding, so cancel is the keyboard's) */
+	                            * a nameless button (a paddle, Misc) is refused and keeps the capture; a trigger pulled
+	                            * past ~37% is a button too, and Guide (PAD-MAP); Escape or B cancels (a gamepad press
+	                            * would be a binding, so cancel is the keyboard's) */
 		if (event->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) { if (window_pad_bind(g_pad_rebind, event->gbutton.button)) g_pad_rebind = -1; return; }
 		if (event->type == SDL_EVENT_GAMEPAD_BUTTON_UP) return;
+		if (event->type == SDL_EVENT_GAMEPAD_AXIS_MOTION && (event->gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER || event->gaxis.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)) {
+			if (event->gaxis.value > 12000 && window_pad_bind(g_pad_rebind, event->gaxis.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER ? PAD_TRIGGER_RIGHT : PAD_TRIGGER_LEFT)) g_pad_rebind = -1;
+			return;
+		}
 		if (event->type == SDL_EVENT_KEY_DOWN && !event->key.repeat && (event->key.key == SDLK_ESCAPE || event->key.key == SDLK_B)) { g_pad_rebind = -1; return; }
 	}
 	ImGui::SetCurrentContext(g_ctx);
+	/* (KB-MAP) the PS button's key closes the menu it opened (window.c), as a pad's Guide does -- not while a key or a
+	 * button is being bound, a text field has the keys, or a dialog is up */
+	if (event->type == SDL_EVENT_KEY_DOWN && !event->key.repeat && g_pad_rebind < 0 && !ImGui::GetIO().WantTextInput && !overlay_modal_open()
+	    && event->key.key == window_kb_key(KB_PS) && event->key.key != SDLK_UNKNOWN) { overlay_close(); return; }
 	/* the save dialog's pad (SAVE-DLG-01): the pad events routed here become the dialog's ImGui keys --
 	 * the SDL3 backend's own gamepad list goes stale when a pad connects after the overlay's first frame,
 	 * so the dialog cannot rely on it for key state (savedlg_ui.cpp's header comment) */
@@ -712,6 +724,9 @@ static void page_controls(void) {
 		ImGui::TableSetupColumn(ui_tr("ctrl.action")); ImGui::TableSetupColumn(ui_tr("ctrl.key")); ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
 		ImGui::PushStyleColor(ImGuiCol_Text, ui::muted); ImGui::TableHeadersRow(); ImGui::PopStyleColor();
 		for (int i = 0, n = window_kb_count(); i < n; i++) {
+			if (!i || strcmp(window_kb_group(i), window_kb_group(i - 1))) {   /* (KB-MAP) a heading per group: Left stick, Right stick, D-pad, ... */
+				ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::TextColored(ui::muted, "%s", window_kb_group(i));
+			}
 			ImGui::TableNextRow();
 			ImGui::TableNextColumn(); ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted(window_kb_label(i));
 			ImGui::TableNextColumn(); ImGui::AlignTextToFramePadding();

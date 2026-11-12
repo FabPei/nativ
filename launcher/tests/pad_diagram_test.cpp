@@ -36,6 +36,12 @@ int main(void) {
 	auto un = pad_diag_unplaced(v);
 	CHECK(un.size() == 1 && un[0] == 5);
 	CHECK(pad_diag_index("nonsense") == -1 && pad_diag_index("dpad_left") == PD_LEFT);
+	/* (PAD-MAP) the shoulders, the triggers and Guide are spots too: the triggers outside the bumpers, all on the top edge */
+	CHECK(pad_diag_index("left_trigger") == PD_LT && pad_diag_index("right_shoulder") == PD_RB && pad_diag_index("guide") == PD_GUIDE);
+	for (int fam = 0; fam < PAD_FAM_N; fam++) {
+		CHECK(pad_spot(fam, PD_LT).x < pad_spot(fam, PD_LB).x && pad_spot(fam, PD_RB).x < pad_spot(fam, PD_RT).x);
+		CHECK(pad_spot(fam, PD_LB).y < pad_spot(fam, PD_UP).y && pad_spot(fam, PD_RB).y < pad_spot(fam, PD_NORTH).y);
+	}
 	printf("pad_diagram: %d checks, %d failed\n", checks, fails);
 	return fails != 0;
 }

@@ -79,10 +79,12 @@ quick. The card comes back only when there's something new to build, such as aft
 | Vita | Keyboard and mouse | Gamepad |
 |---|---|---|
 | D-pad | Arrow keys | D-pad |
-| Cross, Circle, Square, Triangle | Space, C, F, E | Cross, Circle, Square, Triangle (Xbox: A, B, X, Y) |
-| Start, Select | Enter, Tab | Options, Share or Create (Xbox: Menu, View) |
-| L, R | Right and left mouse buttons (or Q and R) | L2, R2 (Xbox: LT, RT) |
-| Sticks | WASD, and the mouse | Sticks |
+| Cross, Circle, Square, Triangle | X, C, Z, V | Cross, Circle, Square, Triangle (Xbox: A, B, X, Y) |
+| Start, Select | Enter, Right Shift | Options, Share or Create (Xbox: Menu, View) |
+| L, R | Right and left mouse buttons (or Q and E) | L2, R2 (Xbox: LT, RT) |
+| Sticks | W A S D, and the mouse (or I J K L) | Sticks |
+| PS button (the menu) | P (or F10) | PS / Guide |
+| A PS TV layout's L2, R2, L3, R3 | U, O, F, H | L1, R1, L3, R3 |
 | Front touch panel | Hold Alt (Option on a Mac) and click or drag. Where the mouse doesn't aim, a plain click works too. | The touchpad, or hold L1 and steer a cursor with a stick, touching with Cross |
 | Rear touch panel | Right mouse button, the same way | The touchpad with R1 held, or hold R1 and use a stick and Cross |
 | Motion sensor | | A gamepad's gyro, such as a DualShock 4's or DualSense's; R3 recentres it |
