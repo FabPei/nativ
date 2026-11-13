@@ -17,6 +17,7 @@
 #include <time.h>
 #include "hle.h"
 #include "hle_small.h"
+#include "gxm_instance.h"
 #include "gfx.h"
 #include "gfx_coverage.h"
 #include "gaps.h"   /* GAPS-01 */
@@ -383,7 +384,8 @@ static void o_execute_command_list(Cpu *c) {   /* (immediate context, list): its
 		gfx_draw(&d);
 	}
 }
-static void draw(uint32_t cx, const uint32_t *stream, uint32_t prim, uint32_t index_format, uint32_t indices, uint32_t count) {
+/* zero_stride: streams (bit per stream) read as one record for every vertex -- an instanced draw's per-instance streams */
+static void draw(uint32_t cx, const uint32_t *stream, uint32_t prim, uint32_t index_format, uint32_t indices, uint32_t count, uint32_t zero_stride) {
 	GfxDraw d;
 	memset(&d, 0, sizeof d);
 	uint32_t pv = RD32(cx + CX_PVSTATE), pf = RD32(cx + CX_PFSTATE);
@@ -394,7 +396,7 @@ static void draw(uint32_t cx, const uint32_t *stream, uint32_t prim, uint32_t in
 	d.nattr = (int)RD32(vp + 0x5c); if (d.nattr > 16) d.nattr = 16;
 	memcpy(d.attr, G(RD32(vp + 0x58)), 8 * d.nattr);
 	d.nstream = (int)RD32(vp + 0x64); if (d.nstream > 16) d.nstream = 16;
-	for (int i = 0; i < d.nstream; i++) d.stride[i] = RD16(RD32(vp + 0x60) + 4 * i);
+	for (int i = 0; i < d.nstream; i++) d.stride[i] = (zero_stride >> i & 1) ? 0 : RD16(RD32(vp + 0x60) + 4 * i);
 	memcpy(d.stream, stream, sizeof d.stream);
 	/* fragment program: GXP +0, the blend info copy at [+0x68] (0: no blending) */
 	d.fprog = RD32(fp);
@@ -501,11 +503,25 @@ static void streams_of(uint32_t cx, uint32_t *s) { for (int i = 0; i < 16; i++) 
 
 static void o_draw(Cpu *c) {   /* sceGxmDraw(context, primitive, index format, indices, count) */
 	uint32_t s[16]; streams_of(A0, s);
-	draw(A0, s, A1, A2, A3, STK(0));
+	draw(A0, s, A1, A2, A3, STK(0), 0);
 }
-static void o_draw_instanced(Cpu *c) {   /* (context, primitive, index format, indices, count, index wrap): one instance, as gxm.c */
+/* (context, primitive, index format, indices, count, index wrap): count / wrap instances of `wrap` indices, each an
+ * ordinary draw with the per-instance streams (SceGxmVertexStream.indexSource INSTANCE_*) at that instance's record
+ * (gxm_instance.h). Drawn as one instance of all `count` indices before (FW-20): a game's instanced field geometry read
+ * past each instance's indices and its matrix stream per vertex -> triangles torn across the screen */
+static void o_draw_instanced(Cpu *c) {
 	uint32_t s[16]; streams_of(A0, s);
-	draw(A0, s, A1, A2, A3, STK(0));
+	const uint32_t count = STK(0), wrap = STK(1);
+	const uint32_t pv = RD32(A0 + CX_PVSTATE), vp = pv ? RD32(pv) : RD32(A0 + CX_VPROG);
+	uint32_t inst = 0; int ns = vp ? (int)RD32(vp + 0x64) : 0; if (ns > 16) ns = 16;
+	for (int i = 0; i < ns; i++) if (gxm_index_source_is_instance(RD16(RD32(vp + 0x60) + 4 * i + 2))) inst |= 1u << i;
+	const uint32_t ninst = gxm_instance_count(count, wrap), nidx = gxm_instance_indices(count, wrap);
+	{ static int said; if (!said && (inst || ninst > 1)) { said = 1; fprintf(stderr, "    gxm: sceGxmDrawInstanced: %u indices, wrap %u -> %u draws of %u, instance streams %#x\n", count, wrap, ninst, nidx, inst); } }
+	for (uint32_t k = 0; k < ninst; k++) {
+		uint32_t sk[16]; memcpy(sk, s, sizeof sk);
+		for (int i = 0; i < ns; i++) if (inst >> i & 1) sk[i] = gxm_instance_stream(s[i], RD16(RD32(vp + 0x60) + 4 * i), k);
+		draw(A0, sk, A1, A2, A3, nidx, inst);
+	}
 }
 /* sceGxmDrawPrecomputed(context, draw): the draw keeps its parameters only as the six VDM words at
  * +0x14 and its streams patched into its PDS fetch instance ([+4]) through the vertex program's
@@ -522,7 +538,7 @@ static void o_draw_precomputed(Cpu *c) {
 	/* the draw's own vertex program stands in for the context's when no precomputed vertex state says otherwise */
 	uint32_t saved = RD32(A0 + CX_VPROG);
 	if (!RD32(A0 + CX_PVSTATE)) WR32(A0 + CX_VPROG, vp);
-	draw(A0, s, w0 & 0x1c000000u, RD32(pd + 0x1c) & 0x01000000u, RD32(pd + 0x18) & ~1u, w0 & 0x3fffff);
+	draw(A0, s, w0 & 0x1c000000u, RD32(pd + 0x1c) & 0x01000000u, RD32(pd + 0x18) & ~1u, w0 & 0x3fffff, 0);
 	WR32(A0 + CX_VPROG, saved);
 }
 

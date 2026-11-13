@@ -36,6 +36,7 @@ run audiodec_test     -O1 -g -Wall -D_GNU_SOURCE $INC audiodec_test.c ../../thir
 run codec_engine_test $CF $INC codec_engine_test.c -lpthread
 run audio_pace_test   -O1 -g -Wall audio_pace_test.c
 run hle_small_test    -O1 -g -Wall -I ../core hle_small_test.c
+run gxm_instance_test -O1 -g -Wall -I ../gfx gxm_instance_test.c
 run dump_fit_test     -O1 -g -Wall -I ../ui dump_fit_test.c
 run intro_skip_test   -O1 -g -Wall -I ../ui intro_skip_test.c
 run kb_bind_test      -O1 -g -Wall -I ../ui kb_bind_test.c -lm
