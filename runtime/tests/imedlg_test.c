@@ -34,6 +34,16 @@ int main(void) {
 	imedlg_open("Name", "x", 4); imedlg_close();
 	check("close (Abort/Term): no card, nothing to take", !imedlg_view(title, sizeof title, t, sizeof t, &mx, &seq) && !imedlg_take(t, sizeof t, &ok));
 
+	/* RECOMP_IME_TEXT (a run without a window): one answer per dialog in turn, the last repeated. Fail-before: a game
+	 * that refuses an empty name asked again and again and a scripted run stayed on its name entry */
+	{ char a[16]; const char *sp = "Abel|Cain";
+	  check("scripted: unset or empty -> 0 (the initial text stays)", !imedlg_scripted(0, 0, a, sizeof a) && !imedlg_scripted("", 0, a, sizeof a));
+	  check("scripted: 1st dialog the 1st entry", imedlg_scripted(sp, 0, a, sizeof a) && !strcmp(a, "Abel"));
+	  check("scripted: 2nd dialog the 2nd entry", imedlg_scripted(sp, 1, a, sizeof a) && !strcmp(a, "Cain"));
+	  check("scripted: later dialogs repeat the last", imedlg_scripted(sp, 5, a, sizeof a) && !strcmp(a, "Cain"));
+	  check("scripted: one entry serves every dialog", imedlg_scripted("Nemo", 3, a, sizeof a) && !strcmp(a, "Nemo"));
+	  char s4[4]; check("scripted: cut at the buffer (3 + 0)", imedlg_scripted("Longname", 0, s4, sizeof s4) && !strcmp(s4, "Lon")); }
+
 	if (fails) { printf("%d FAILED\n", fails); return 1; }
 	printf("all passed\n");
 	return 0;

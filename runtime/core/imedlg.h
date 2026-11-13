@@ -10,6 +10,7 @@
 #define RECOMP_IMEDLG_H
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -63,6 +64,18 @@ static inline size_t imedlg_utf8_to_utf16(const char *s, uint16_t *out, size_t m
 	out[k] = 0; return k;
 }
 /* the characters (code points) of a UTF-8 string */
+/* RECOMP_IME_TEXT="first|second|...": the answers a run without a window gives, one per dialog in turn, the last one
+ * repeated (a scripted run: a game that refuses an empty name asks again and again). The n-th (0-based) entry of spec
+ * into out; 0 when spec is unset or empty (the caller keeps the initial text, as before) */
+static inline int imedlg_scripted(const char *spec, unsigned n, char *out, size_t cap) {
+	if (!spec || !*spec || !cap) return 0;
+	const char *p = spec, *bar;
+	for (unsigned k = 0; k < n && (bar = strchr(p, '|')); k++) p = bar + 1;
+	size_t len = (bar = strchr(p, '|')) ? (size_t)(bar - p) : strlen(p);
+	if (len >= cap) len = cap - 1;
+	memcpy(out, p, len); out[len] = 0;
+	return 1;
+}
 static inline size_t imedlg_utf8_len(const char *s) { size_t n = 0; for (const uint8_t *p = (const uint8_t *)s; *p; p++) if ((*p & 0xC0) != 0x80) n++; return n; }
 
 #ifdef __cplusplus

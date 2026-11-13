@@ -87,6 +87,7 @@ static void cdlg_call(Cpu *c, int kind, int op) {   /* op: 0 init, 1 status, 2 r
  * runs until they answer, GetStatus takes the answer and writes the text. Without one (headless, tests) the initial text
  * is entered as typed (HLE-LIB-01). */
 static uint32_t ime_out, ime_max;
+static int ime_pending; static char ime_answer[IMEDLG_TEXT_MAX];   /* (FW-14) a no-window answer, written at GetStatus */
 static void ime_write(const char *utf8) {   /* the answer into the game's inputTextBuffer (max units + terminator) */
 	if (!ime_out) return;
 	static uint16_t u[4097]; const size_t m = ime_max && ime_max < 4096 ? ime_max : 4096;
@@ -103,20 +104,34 @@ static void h_ime_dlg_init(Cpu *c) {
 	imedlg_utf16_to_utf8(i16, k, text, sizeof text);
 	pthread_mutex_lock(&cdlg_lock);
 	const int card = cdlg_status(cdlg, CDLG_IME) == CDLG_STATUS_NONE && imedlg_ui_ready();
-	const uint32_t r = card ? cdlg_init_running(cdlg, CDLG_IME) : cdlg_init(cdlg, CDLG_IME);
-	if (!r) { ime_out = out; ime_max = max; }
+	/* (FW-14) both paths run like the console's dialog: RUNNING after Init, the answer written into the game's buffer
+	 * when a GetStatus finishes it -- a game may set its buffer up after Init returns, which wiped an answer written
+	 * during Init (the name screen asked again and again in runs without a window) */
+	const uint32_t r = cdlg_init_running(cdlg, CDLG_IME);
+	if (!r) { ime_out = out; ime_max = max; ime_pending = 0; }
 	pthread_mutex_unlock(&cdlg_lock);
 	if (!r) {
 		if (card) { imedlg_open(title, text, max); fprintf(stderr, "    ime dialog: \"%s\" -- the card asks the player (max %u)\n", title, max); }
-		else { ime_write(text); fprintf(stderr, "    ime dialog: no window -- the initial text is entered as typed\n"); }
+		else {   /* RECOMP_IME_TEXT: a scripted run's answers, one per dialog in turn (imedlg_scripted) */
+			static unsigned asked; char sc[IMEDLG_TEXT_MAX];
+			pthread_mutex_lock(&cdlg_lock);
+			if (imedlg_scripted(getenv("RECOMP_IME_TEXT"), asked++, sc, sizeof sc)) { snprintf(ime_answer, sizeof ime_answer, "%s", sc); fprintf(stderr, "    ime dialog: no window -- \"%s\" entered (RECOMP_IME_TEXT)\n", sc); }
+			else { snprintf(ime_answer, sizeof ime_answer, "%s", text); fprintf(stderr, "    ime dialog: no window -- the initial text is entered as typed\n"); }
+			ime_pending = 1;
+			pthread_mutex_unlock(&cdlg_lock);
+		}
 	}
 	RET(r);
 }
-/* GetStatus: a running card's answer is taken here -- the text written, the dialog FINISHED */
+/* GetStatus: a running dialog's answer is taken here -- the card's, or the no-window answer kept at Init -- the text
+ * written, the dialog FINISHED */
 static void h_ime_dlg_status(Cpu *c) {
 	char t[IMEDLG_TEXT_MAX]; int ok;
 	pthread_mutex_lock(&cdlg_lock);
-	if (cdlg_status(cdlg, CDLG_IME) == CDLG_STATUS_RUNNING && imedlg_take(t, sizeof t, &ok)) {
+	if (cdlg_status(cdlg, CDLG_IME) == CDLG_STATUS_RUNNING && ime_pending) {
+		ime_write(ime_answer); ime_pending = 0;
+		cdlg_finish(cdlg, CDLG_IME, CDLG_RESULT_OK);
+	} else if (cdlg_status(cdlg, CDLG_IME) == CDLG_STATUS_RUNNING && imedlg_take(t, sizeof t, &ok)) {
 		if (ok) ime_write(t);
 		cdlg_finish(cdlg, CDLG_IME, ok ? CDLG_RESULT_OK : CDLG_RESULT_USER_CANCELED);
 	}
