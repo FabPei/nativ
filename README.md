@@ -49,6 +49,7 @@ PersonaDancingRecomp.
 | Rayman Legends (Chinese) | PCSH00118 | 1.00 | up to 120 | up to 21:9 | 5760×3264 (6×) |
 | Toukiden Kiwami (Chinese) | PCSH00110 | 1.00 | 60 | 16:9 | 5760×3264 (6×) |
 | Sonic & All-Stars Racing Transformed | PCSB00190 | 1.00 | 30 | 16:9 | 5760×3264 (6×) |
+| Freedom Wars | PCSF00446 | 1.00 | 30 (60 / 120 experimental) | 16:9 (wider experimental) | 5760×3264 (6×) |
 
 Most of these packs were made with the fork's porting tools (below): they hold what Nativ needs to build and boot the
 game from your copy, plus frame-rate and widescreen settings found automatically.
@@ -79,6 +80,13 @@ game from your copy, plus frame-rate and widescreen settings found automatically
 - A start hint names every way to open the menu: keyboard, controller and touch.
 - **L and R in games that read the pad through the "2" functions** now arrive as the Vita sends them there (L1 / R1,
   as in Vita3K): before, such games never saw L or R from the keyboard or the controller.
+- **System fonts:** `vitarecomp fonts <folder>` copies the console's system fonts (`sa0:data/font/pvf`, from a Vita3K
+  install or its `sa0` folder) into the library; games that draw text with them (Freedom Wars) need it, others are
+  unchanged.
+- **Instanced draws** (`sceGxmDrawInstanced`) are drawn per instance, each with its own per-instance data: before,
+  such geometry was torn across the screen or black.
+- **The on-screen keyboard without a window** answers like the card does, so a game that fills its text buffer after
+  the dialog starts gets the name typed.
 - **Touch reads report the sample of the frame they are in**, and the blocking read only new ones: a game that
   drains the touch buffer until it is empty no longer loops forever at its first touch check.
 - The in-game menu opens only with F10, Select + Start or the PS button; resting the mouse at the top edge no longer

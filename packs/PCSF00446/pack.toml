@@ -1,0 +1,20 @@
+NAME = "FREEDOM WARS™"
+ELF = "eboot.bin.elf"
+MODULES = "libc libgxm_es4 libgpu_es4 libfios2 libsceavplayer libpvf libscemp4 libSceFt2"
+RUN_ENV = "RECOMP_ASPECT_HOOK=1 RECOMP_HUD_DRAWS=2d RECOMP_FRAME_RATES=30,60,120"   # NEW4-FW kamera-ar (experimental, FW-6): 60/120 via frame_dt, wider ratios via aspect
+IHOOKS = "0x81083180:frame_dt 0x81083212:frame_dt 0x81084364:frame_dt 0x81084422:frame_dt 0x810844f8:frame_dt 0x81084654:frame_dt 0x81084720:frame_dt 0x81084812:frame_dt 0x81247998:frame_dt 0x81248bee:frame_dt 0x81383b34:frame_dt 0x8169f3c6:frame_dt 0x8169f3f0:frame_dt 0x81b97838:frame_dt 0x8181f0cc:aspect 0x8188fda8:aspect"   # hooks-scan candidates, all (FW-6)
+FUNCTION_SEEDS = "0x81d61d88:arm 0x81d62274:arm 0x81d6227c:arm 0x81d62284:arm 0x81d6228c:arm 0x81d62294:arm 0x81d6229c:arm 0x81d622a4:arm 0x81d622ac:arm 0x81d622b4:arm 0x81d622bc:arm 0x81d622c4:arm 0x81d622cc:arm 0x81d622d4:arm 0x81d622dc:arm 0x81d622e4:arm 0x81d622ec:arm 0x81d622f4:arm 0x81d622fc:arm 0x81d62304:arm 0x81d6230c:arm 0x81d62314:arm 0x81d6231c:arm 0x81d62324:arm 0x81d6232c:arm 0x81d62334:arm 0x81d6233c:arm 0x81d62344:arm 0x81d6234c:arm 0x81d62354:arm 0x81d6235c:arm 0x81d62364:arm 0x81d6236c:arm 0x81d62374:arm 0x81d6237c:arm 0x81d62384:arm 0x81d6238c:arm 0x81d62394:arm 0x81d6239c:arm 0x81d623a4:arm 0x81d623ac:arm 0x81d623b4:arm 0x81d623bc:arm 0x81d623c4:arm 0x81d62e40:arm 0x81d62e88:arm 0x81d62f40:arm 0x81d6423c:arm 0x81d642a8:arm 0x81d642c8:arm 0x81d64398:arm 0x81d643f0:arm 0x81d6444c:arm 0x81d644a8:arm"   # NEW4-FW FW-12 + FW-16: every handler of the 160-entry name->handler table at 0x826a6830 (12-byte entries, handler at +4, all ARM) the analysis missed; reached through the lookup 0x81d6173c and a blx at 0x81d60ad8
+TEST_FRAMES = 600         # bootstrap's headless run length (TEST_FRAMES=<n> for one run)
+# note: shipped in sce_module/ but not loaded: libface libsmart libult (add to MODULES if the run stubs their imports)
+
+[versions."1.00"]
+sha256 = "e4444531608e8b7464aa97a5f55ef0db14c05689551ebc8988fbc9e57d41a69a"
+status = "supported"
+
+# hook candidates (vitarecomp hooks-scan, AUTO-GENERATED, UNVERIFIED): constants this game builds that the
+# runtime's generic IHOOKS replace. Each is a guess until a run shows its effect -- uncomment what holds.
+# frame_dt: 14 site(s), 1/30 (s per frame at 30 fps), in 12 function(s)
+# IHOOKS = "0x81083180:frame_dt 0x81083212:frame_dt 0x81084364:frame_dt 0x81084422:frame_dt 0x810844f8:frame_dt 0x81084654:frame_dt 0x81084720:frame_dt 0x81084812:frame_dt 0x81247998:frame_dt 0x81248bee:frame_dt 0x81383b34:frame_dt 0x8169f3c6:frame_dt 0x8169f3f0:frame_dt 0x81b97838:frame_dt"
+# aspect: 2 site(s), 960/544 (the Vita screen's aspect ratio), in 2 function(s)
+# IHOOKS = "0x8181f0cc:aspect 0x8188fda8:aspect"
+# hints (18): 1/60 (the game may have a 60 fps path)
