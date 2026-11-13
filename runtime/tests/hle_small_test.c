@@ -24,6 +24,12 @@ int main(void) {
 	check("ctrl: SceCtrlData is 32 bytes", HLE_CTRL_DATA_SIZE == 32);
 	check("ctrl: sample 1 follows sample 0 at +0x20", hle_ctrl_data_addr(0x1000, 1) == 0x1020);
 	check("ctrl: 8 samples end at +0x100 (no write past an 8-record buffer)", hle_ctrl_data_addr(0x1000, 7) + HLE_CTRL_DATA_SIZE == 0x1100);
+	/* the "2" reads: the shoulders are L1/R1, never LTRIGGER/RTRIGGER */
+	check("ctrl v2: L (0x100) is L1 (0x400)", hle_ctrl_v2_buttons(0x100) == 0x400);
+	check("ctrl v2: R (0x200) is R1 (0x800)", hle_ctrl_v2_buttons(0x200) == 0x800);
+	check("ctrl v2: both shoulders + cross", hle_ctrl_v2_buttons(0x4300) == 0x4c00);
+	check("ctrl v2: every other button unchanged", hle_ctrl_v2_buttons(0xf0f9) == 0xf0f9);
+	check("ctrl v2: L1/R1 already set stay set", hle_ctrl_v2_buttons(0xc00) == 0xc00);
 	check("model: PS TV is SCE_KERNEL_MODEL_VITATV 0x20000", hle_kernel_model(1) == 0x20000u);
 
 	{ int playing = 0;   /* NGS-PLAY-01: Play every update must not restart the voice */

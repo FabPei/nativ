@@ -66,7 +66,7 @@ static const Str catalog[] = {
 	{"bar.shortcuts", "Keyboard shortcuts...", "Tastenkürzel..."},
 	{"bar.about", "About...", "Über..."},
 	{"bar.paused", "PAUSED", "PAUSIERT"},
-	{"bar.paused_hint", "To continue: Game > Resume in the menu bar (move the mouse to the top), or press F10", "Weiter: Spiel > Weiter in der Menüleiste (Maus an den oberen Rand) oder F10 drücken"},
+	{"bar.paused_hint", "To continue: open the menu (F10, Select + Start or the PS button) and choose Resume", "Weiter: Menü öffnen (F10, Select + Start oder die PS-Taste) und Weiter wählen"},
 	/* the system-info dialog's metric names (GPU/VRAM/CPU/FPS stay as the units) */
 	{"sys.window", "Window", "Fenster"},
 	{"sys.game_image", "Game image", "Spielbild"},
@@ -83,9 +83,6 @@ static const Str catalog[] = {
 	{"sys.presentation", "Presentation mode", "Ausgabemodus"},
 	{"sys.renderer", "Renderer", "Renderer"},
 	/* the Shortcuts table's data (key names fall through ui_tr untouched) */
-	{"sb.bar", "Menu bar", "Menüleiste"},
-	{"sb.bar_kbd", "Move the mouse to the top edge (Esc hides it)", "Maus an den oberen Rand bewegen (Esc verbirgt sie)"},
-	{"sb.bar_pad", "Tap the tab at the top centre (touch screen)", "Auf den Reiter oben in der Mitte tippen (Touchscreen)"},
 	{"sb.menu", "This menu (pauses the game)", "Dieses Menü (pausiert das Spiel)"},
 	{"sb.menu_kbd", "F10 (Esc closes it)", "F10 (Esc schließt es)"},
 	{"sb.menu_pad", "PS / Guide button, or Select + Start together", "PS-/Guide-Taste oder Select + Start zusammen"},
@@ -101,7 +98,7 @@ static const Str catalog[] = {
 	/* the Help page and the dialogs */
 	{"help.about", "About", "Über"},
 	{"help.unknown_title", "unknown title", "unbekannter Titel"},
-	{"help.bar_hint", "Menu bar: move the mouse to the top of the window (or tap the tab there). This menu: F10, Select + Start or the PS button. The game pauses while it is open.", "Menüleiste: Maus an den oberen Fensterrand bewegen (oder dort auf den Reiter tippen). Dieses Menü: F10, Select + Start oder die PS-Taste. Das Spiel pausiert, solange es offen ist."},
+	{"help.bar_hint", "This menu: F10, Select + Start or the PS button. The game pauses while it is open.", "Dieses Menü: F10, Select + Start oder die PS-Taste. Das Spiel pausiert, solange es offen ist."},
 	{"help.copy_sysinfo", "Copy system info", "Systeminfo kopieren"},
 	{"help.copied", "Copied", "Kopiert"},
 	{"help.open_log", "Open log folder", "Log-Ordner öffnen"},

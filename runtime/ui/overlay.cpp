@@ -13,7 +13,8 @@
  *     every setting, the controls reference and the help page. The game is paused while it's up
  *     (display.c), every event is ImGui's (window.c), keyboard and gamepad navigation are on.
  *   - closed (build_closed): the HUD -- the performance overlay's lines and the gamepad-touch
- *     markers -- plus the MENU BAR: a strip that slides down from the window's top edge when the
+ *     markers -- plus the MENU BAR (since BAR-NOHOVER 2026-11-13 never brought down by the pointer or a pull tab:
+ *     only the headless dump shows it; the player's menu is the full one, F10 / Select + Start / PS) -- a strip that slid down from the window's top edge when the
  *     pointer rests within a few pixels of it (or the pull tab at the top centre is tapped: touch
  *     has no hover), stays while the pointer is over it or one of its menus is open, and slides
  *     away about a second after the pointer leaves. The game keeps running under it; only the full
@@ -380,7 +381,6 @@ static void set_osd(int level) { metrics_osd_set(level); settings_set_int("osd",
  * table both draw it (the game's controls are window.c's ctrl_rows; these are the keys window.c binds
  * beside them -- keep in sync with its event loop). The bar's own shortcut texts name the same keys. */
 static const char *const g_shortcuts[][3] = {
-	{"sb.bar", "sb.bar_kbd", "sb.bar_pad"},
 	{"sb.menu", "sb.menu_kbd", "sb.menu_pad"},
 	{"sb.osd", "F1", "-"},
 	{"sb.res", "F2", "-"},
@@ -1000,9 +1000,8 @@ static void build_ui(void) {
  * io.DeltaTime summed), so the headless path's fixed 1/60 s steps work the same way. */
 enum {
 	HOT_PX = 4,          /* the top-edge zone: the pointer resting within this many points of the edge opens the bar */
-	TAB_NEAR_PX = 48,    /* the pull tab shows while the pointer is within this of the top */
 };
-static const float HOT_DWELL_S = 0.18f, HIDE_S = 1.0f, SLIDE_S = 0.16f, PIN_S = 4.0f, TOAST_S = 4.5f, CURSOR_HIDE_S = 3.0f;
+static const float HIDE_S = 1.0f, SLIDE_S = 0.16f, PIN_S = 4.0f, TOAST_S = 4.5f, CURSOR_HIDE_S = 3.0f;
 static float g_bar_vis;                 /* 0 hidden (parked above the window's top edge) .. 1 fully down */
 static bool g_bar_want;                 /* where it's heading */
 static double g_hot_since = -1;         /* when the pointer entered the top-edge zone (-1: it isn't there) */
@@ -1558,13 +1557,12 @@ static void build_closed(void) {
 		const bool in_hot = inside && m.y <= HOT_PX;
 		if (!in_hot) { g_hot_since = -1; g_hot_block = false; }
 		else if (g_hot_since < 0) g_hot_since = t;
-		if (in_hot && !g_hot_block && t - g_hot_since >= HOT_DWELL_S) { g_bar_want = true; g_bar_active_t = t; }
+		/* (BAR-NOHOVER 2026-11-13, owner: the menu only through F10 or the pad combination) the pointer resting at the top
+		 * edge no longer brings the bar down, and the pull tab is gone: the full menu (F10, Select + Start, PS) has it all */
 		const bool over_bar = inside && g_bar_vis > 0 && m.y <= bar_h * g_bar_vis + 2;
 		if (over_bar || popup_open || io.WantCaptureMouse || t < g_bar_pin_until) g_bar_active_t = t;
 		if (g_bar_want && t - g_bar_active_t > HIDE_S) g_bar_want = false;
-		/* the pull tab: with the pointer near the top while the bar is away, and with the hint */
-		const bool near_top = inside && m.y < TAB_NEAR_PX;
-		const float tab_target = (near_top || t < g_toast_until) && g_bar_vis <= 0.01f ? 1.0f : 0.0f;
+		const float tab_target = 0.0f;   /* (BAR-NOHOVER: no pull tab) */
 		g_tab_a += (tab_target - g_tab_a) * (dt > 0.1f ? 1.0f : dt * 8.0f);
 		if ((tab_target == 0.0f && g_tab_a < 0.02f) || g_bar_vis > 0.01f) g_tab_a = 0;   /* (gone at once as the bar arrives: the two never overlap) */
 		/* the OS cursor: hidden after a few seconds still over the picture, back the moment it moves */
@@ -1574,7 +1572,7 @@ static void build_closed(void) {
 		if (g_touch_cursor && g_bar_vis <= 0 && !popup_open && !io.WantCaptureMouse) ImGui::SetMouseCursor(ImGuiMouseCursor_None);   /* (the touch mark stands in for it) */
 	} else {   /* headless (the dump): no pointer; RECOMP_OVERLAY_DUMP_UI says what to show */
 		if (g_force_bar) { g_bar_vis = 1; g_bar_want = true; }
-		if (g_force_toast) { g_toast_until = t + TOAST_S; g_tab_a = 1; g_force_toast = false; menu_hint_toast(); overlay_toast_titled("Balance", "[A] [D] tilt left / right", TOAST_S); }
+		if (g_force_toast) { g_toast_until = t + TOAST_S; g_force_toast = false; menu_hint_toast(); overlay_toast_titled("Balance", "[A] [D] tilt left / right", TOAST_S); }
 	}
 	{	/* the slide, at a fixed rate either way */
 		const float target = g_bar_want ? 1.0f : 0.0f, step = dt > 0.1f ? 1.0f : dt / SLIDE_S;
