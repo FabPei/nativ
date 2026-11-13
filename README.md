@@ -48,6 +48,7 @@ PersonaDancingRecomp.
 | Batman: Arkham Origins Blackgate | PCSB00353 | 1.00 | up to 120 | 16:9 | 5760×3264 (6×) |
 | Rayman Legends (Chinese) | PCSH00118 | 1.00 | up to 120 | up to 21:9 | 5760×3264 (6×) |
 | Toukiden Kiwami (Chinese) | PCSH00110 | 1.00 | 60 | 16:9 | 5760×3264 (6×) |
+| Sonic & All-Stars Racing Transformed | PCSB00190 | 1.00 | 30 | 16:9 | 5760×3264 (6×) |
 
 Most of these packs were made with the fork's porting tools (below): they hold what Nativ needs to build and boot the
 game from your copy, plus frame-rate and widescreen settings found automatically.
@@ -78,6 +79,8 @@ game from your copy, plus frame-rate and widescreen settings found automatically
 - A start hint names every way to open the menu: keyboard, controller and touch.
 - **L and R in games that read the pad through the "2" functions** now arrive as the Vita sends them there (L1 / R1,
   as in Vita3K): before, such games never saw L or R from the keyboard or the controller.
+- **Touch reads report the sample of the frame they are in**, and the blocking read only new ones: a game that
+  drains the touch buffer until it is empty no longer loops forever at its first touch check.
 - The in-game menu opens only with F10, Select + Start or the PS button; resting the mouse at the top edge no longer
   slides a menu bar down.
 - **Game language:** Auto (your computer's language) or any of the Vita's 20 languages, also in the launcher's

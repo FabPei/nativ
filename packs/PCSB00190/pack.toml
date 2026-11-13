@@ -1,0 +1,18 @@
+NAME = "Sonic & All-Stars Racing Transformed™"
+ELF = "eboot.bin.elf"
+MODULES = "libc libgxm_es4 libgpu_es4 libfios2"
+TEST_FRAMES = 4500        # the main menu (fixed clock): intro, title, then the path below
+TEST_INPUT = "3650-3656:8,3800-3806:4000,3950-3956:4000,4100-4106:4000,4250-4256:4000"   # START on the title, then ✕: autosave notice, create save, save created, new-character box (NEW4-SONIC)
+# note: shipped in sce_module/ but not loaded: libface libsmart libult (add to MODULES if the run stubs their imports)
+
+[versions."1.00"]
+sha256 = "c41f8cf2cc219985ba18b66dd07ab6cfa21d44ab64f6731e60b6596422991951"
+status = "supported"
+FUNCTION_SEEDS = "0x8116497c:arm 0x8116496c:arm 0x8116495c:arm 0x8116494c:arm 0x8116493c:arm 0x8116492c:arm 0x8116491c:arm 0x8116490c:arm"   # the ARM memcpy at 0x811648dc jumps (mov pc, r3) into these 16-byte tails; the analysis does not see them (NEW4-S5)
+
+# hook candidates (vitarecomp hooks-scan, AUTO-GENERATED, UNVERIFIED): constants this game builds that the
+# runtime's generic IHOOKS replace. Each is a guess until a run shows its effect -- uncomment what holds.
+# frame_dt: 13 site(s), 1/30 (s per frame at 30 fps), in 10 function(s)
+# IHOOKS = "0x8109941c:frame_dt 0x81099738:frame_dt 0x81135444:frame_dt 0x81154b48:frame_dt 0x811beeac:frame_dt 0x8128b9a6:frame_dt 0x8147803e:frame_dt 0x814794d4:frame_dt 0x8147964a:frame_dt 0x814797c4:frame_dt 0x81479dfe:frame_dt 0x815025ae:frame_dt 0x815027c0:frame_dt"
+# aspect: no site found
+# hints (24): 1/60 (the game may have a 60 fps path)
