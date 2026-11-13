@@ -76,6 +76,10 @@ game from your copy, plus frame-rate and widescreen settings found automatically
 - On-screen buttons for playing by touch, and a badge that shows which of the Vita's touch panels the controller is
   driving.
 - A start hint names every way to open the menu: keyboard, controller and touch.
+- **L and R in games that read the pad through the "2" functions** now arrive as the Vita sends them there (L1 / R1,
+  as in Vita3K): before, such games never saw L or R from the keyboard or the controller.
+- The in-game menu opens only with F10, Select + Start or the PS button; resting the mouse at the top edge no longer
+  slides a menu bar down.
 - **Game language:** Auto (your computer's language) or any of the Vita's 20 languages, also in the launcher's
   Settings. Games that follow the Vita's system language show their text, and often their voices, in it.
 - A full performance overlay (F1): frame times, lows, CPU and GPU load, memory.
