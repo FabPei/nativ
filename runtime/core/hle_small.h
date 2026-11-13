@@ -29,7 +29,7 @@ static inline uint32_t hle_kernel_model(int pstv) { return pstv ? HLE_KERNEL_MOD
 static inline uint32_t hle_ctrl_data_addr(uint32_t buf, uint32_t i) { return buf + HLE_CTRL_DATA_SIZE * i; }
 /* the "2" reads (sceCtrlPeek/ReadBufferPositive2) report the shoulder buttons as SCE_CTRL_L1/R1 (0x400/0x800), the other
  * reads as SCE_CTRL_LTRIGGER/RTRIGGER (0x100/0x200) -- Vita3K's is_v2 bindings, on every port. A game reading only the
- * "2" form tests L1/R1: with the v1 bits on its port 0, Soul Sacrifice Delta never saw L or R (PAD-LBRB 2026-11-13) */
+ * "2" form tests L1/R1: with the v1 bits on its port 0, such a game never saw L or R */
 static inline uint32_t hle_ctrl_v2_buttons(uint32_t b) {
 	return (b & ~0x300u) | (b & 0x100u ? 0x400u : 0) | (b & 0x200u ? 0x800u : 0);
 }
