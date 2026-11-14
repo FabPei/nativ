@@ -1,0 +1,11 @@
+NAME = "Silent Hill: Book of Memories"
+ELF = "eboot.bin.elf"
+MODULES = "libc libgxm_es4 libgpu_es4 libfios2 libscemp4"
+HOOKS = "0x811975ca:sh_wait_logos_stop"     # SH-LOAD-ORDER (hooks.c): the first load ends after the boot logos, as on the console
+IHOOKS = "0x811978fa:sh_wait_logos_load 0x81196a56:sh_skip_set 0x81196a72:sh_skip_clear 0x81205898:sh_skip_read 0x8120593e:sh_skip_read 0x812059f6:sh_skip_read 0x81205a58:sh_skip_read"   # SH-LOAD-ORDER, SH-SKIP-PODS (hooks.c)
+TEST_FRAMES = 600         # bootstrap's headless run length (TEST_FRAMES=<n> for one run)
+# note: shipped in sce_module/ but not loaded: libult (add to MODULES if the run stubs their imports)
+
+[versions."1.00"]
+sha256 = "8bed0839970fedc848357026374463e425a111355c8e02ece859d93176dec62d"
+status = "supported"

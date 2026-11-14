@@ -50,6 +50,7 @@ PersonaDancingRecomp.
 | Toukiden Kiwami (Chinese) | PCSH00110 | 1.00 | 60 | 16:9 | 5760×3264 (6×) |
 | Sonic & All-Stars Racing Transformed | PCSB00190 | 1.00 | 30 | 16:9 | 5760×3264 (6×) |
 | Freedom Wars | PCSF00446 | 1.00 | 30 (60 / 120 experimental) | 16:9 (wider experimental) | 5760×3264 (6×) |
+| Silent Hill: Book of Memories | PCSB00115 | 1.00 | not measured yet | not checked yet | 5760×3264 (6×) |
 
 Most of these packs were made with the fork's porting tools (below): they hold what Nativ needs to build and boot the
 game from your copy, plus frame-rate and widescreen settings found automatically.
@@ -87,6 +88,11 @@ game from your copy, plus frame-rate and widescreen settings found automatically
   such geometry was torn across the screen or black.
 - **The on-screen keyboard without a window** answers like the card does, so a game that fills its text buffer after
   the dialog starts gets the name typed.
+- **Shader subroutines:** a shader that calls a routine at the start of its code (a return, then branches back to it)
+  is run in the right order and drawn on the GPU. Before, each call ran as a jump back to the start: such draws went to
+  the CPU and took seconds each (Silent Hill: Book of Memories' title screen and menus).
+- **Memory blocks keep the console's budget:** a game that probes how much memory it can take gets the Vita's answer
+  instead of the PC's, and freed blocks are reused for aligned requests.
 - **Touch reads report the sample of the frame they are in**, and the blocking read only new ones: a game that
   drains the touch buffer until it is empty no longer loops forever at its first touch check.
 - The in-game menu opens only with F10, Select + Start or the PS button; resting the mouse at the top edge no longer
