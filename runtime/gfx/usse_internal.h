@@ -46,7 +46,7 @@ typedef struct {
 	uint64_t raw;
 } UOp;
 /* OP_NOP's sub: which known instruction runs as a no-op (named in the disassembly; GAPS-03) */
-enum { USSE_NOP_PLAIN = 0, USSE_NOP_EMIT = 1, USSE_NOP_FENCE = 2 };
+enum { USSE_NOP_PLAIN = 0, USSE_NOP_EMIT = 1, USSE_NOP_FENCE = 2, USSE_NOP_RET = 3 };   /* RET: a subroutine's return (usse.c inline_calls) */
 
 /* FPCONSTANT ROM (§2.7): 64 entries, (low word, high word); a translator can emit these as plain
  * SPIR-V constants (the ROM is fixed, not draw state) instead of modelling the bank at all. */
